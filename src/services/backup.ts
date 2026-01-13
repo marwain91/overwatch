@@ -2,15 +2,11 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { loadConfig, getContainerPrefix, getBackupServices, resolveEnvValue } from '../config';
+import { loadConfig, getContainerPrefix, getBackupServices, resolveEnvValue, getTenantsDir } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { getTenantInfo, listTenants } from './docker';
 
 const execAsync = promisify(exec);
-
-function getTenantsDir(): string {
-  return process.env.TENANTS_DIR || '/opt/overwatch/tenants';
-}
 
 function getBackupTempDir(): string {
   const config = loadConfig();
