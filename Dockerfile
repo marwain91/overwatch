@@ -3,8 +3,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies for health checks and backup operations
-RUN apk add --no-cache wget curl restic
+# Install dependencies for health checks, backup operations, and database dumps
+RUN apk add --no-cache wget curl restic docker-cli docker-cli-compose mysql-client postgresql-client
 
 # Copy package files
 COPY package*.json ./
