@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
-import { loadConfig } from './config';
+import { loadConfig, OverwatchConfig } from './config';
 import { loginToRegistry } from './adapters/registry';
 import { authMiddleware } from './middleware/auth';
 import tenantsRouter from './routes/tenants';
@@ -14,7 +14,7 @@ import backupsRouter from './routes/backups';
 dotenv.config();
 
 // Validate configuration early
-let config;
+let config: OverwatchConfig;
 try {
   config = loadConfig();
   console.log(`Overwatch configured for project: ${config.project.name}`);
