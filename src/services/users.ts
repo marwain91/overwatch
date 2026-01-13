@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 // Store admin users in a JSON file that persists across restarts
-const DATA_DIR = process.env.DATA_DIR || '/opt/overwatch/data';
+const DATA_DIR = process.env.DATA_DIR || '/app/data';
 const ADMIN_USERS_FILE = path.join(DATA_DIR, 'admin-users.json');
 
 // Initial allowed emails from environment (seed data)
