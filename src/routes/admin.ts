@@ -11,7 +11,7 @@ const execAsync = promisify(exec);
 // Configuration - all configurable via environment variables
 const OVERWATCH_IMAGE = process.env.OVERWATCH_IMAGE || 'ghcr.io/marwain91/overwatch:latest';
 const COMPOSE_DIR = process.env.COMPOSE_DIR || '/opt/overwatch/infrastructure';
-const SERVICE_NAME = process.env.SERVICE_NAME || 'admin';
+const SERVICE_NAME = process.env.SERVICE_NAME || 'overwatch';
 
 // Get current Overwatch version/image info
 router.get('/version', async (req: Request, res: Response) => {
