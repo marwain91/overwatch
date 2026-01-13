@@ -429,7 +429,6 @@ async function loadDashboard() {
     document.getElementById('tenant-count').textContent = tenants.length;
 
     renderTenants(tenants);
-    loadAdminUsers();
   } catch (error) {
     console.error('Failed to load dashboard:', error);
   }
@@ -1145,6 +1144,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Overwatch self-update
   document.getElementById('update-overwatch-btn').addEventListener('click', checkForOverwatchUpdate);
+
+  // Manage admins modal
+  document.getElementById('manage-admins-btn').addEventListener('click', () => {
+    showModal('manage-admins-modal');
+    loadAdminUsers();
+  });
 
   document.getElementById('create-tenant-btn').addEventListener('click', () => {
     document.getElementById('create-tenant-form').reset();
