@@ -3,7 +3,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { loadConfig, getContainerPrefix, getServiceNames, getRequiredServices } from '../config';
+import { loadConfig, getContainerPrefix, getServiceNames, getRequiredServices, getTenantsDir } from '../config';
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
@@ -25,10 +25,6 @@ export interface TenantStatus {
   runningContainers: number;
   totalContainers: number;
   healthy: boolean;
-}
-
-function getTenantsDir(): string {
-  return process.env.TENANTS_DIR || '/opt/overwatch/tenants';
 }
 
 /**

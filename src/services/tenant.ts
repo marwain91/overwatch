@@ -3,14 +3,10 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { loadConfig, getDatabasePrefix } from '../config';
+import { loadConfig, getDatabasePrefix, getTenantsDir } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 
 const execAsync = promisify(exec);
-
-function getTenantsDir(): string {
-  return process.env.TENANTS_DIR || '/opt/overwatch/tenants';
-}
 
 function getTemplateDir(): string {
   const config = loadConfig();

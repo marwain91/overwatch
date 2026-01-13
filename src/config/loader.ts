@@ -96,3 +96,10 @@ export function getBackupServices(): Array<{ name: string; paths: Array<{ contai
       paths: s.backup!.paths!,
     }));
 }
+
+/**
+ * Get the tenants directory path from config
+ */
+export function getTenantsDir(): string {
+  return process.env.TENANTS_DIR || loadConfig().networking?.tenants_path || '/opt/overwatch/tenants';
+}

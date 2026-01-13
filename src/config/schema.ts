@@ -95,6 +95,7 @@ export const CredentialsSchema = z.object({
 export const NetworkingSchema = z.object({
   external_network: z.string(),
   internal_network_template: z.string().default('${prefix}-${tenantId}-internal'),
+  tenants_path: z.string().optional(),
 });
 
 // Main Overwatch configuration schema
