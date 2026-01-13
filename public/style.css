@@ -402,6 +402,16 @@ main {
   z-index: 1000;
 }
 
+/* Nested modals (confirmation dialogs, add forms) appear on top */
+#add-admin-modal,
+#delete-admin-modal,
+#delete-modal,
+#delete-backup-modal,
+#restore-backup-modal,
+#create-from-backup-modal {
+  z-index: 1010;
+}
+
 .modal-content {
   background: white;
   border-radius: 12px;
