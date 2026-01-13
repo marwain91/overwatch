@@ -9,9 +9,9 @@ const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 const execAsync = promisify(exec);
 
 // Configuration - all configurable via environment variables
-const OVERWATCH_IMAGE = process.env.OVERWATCH_IMAGE || 'ghcr.io/overwatch/overwatch:latest';
+const OVERWATCH_IMAGE = process.env.OVERWATCH_IMAGE || 'ghcr.io/marwain91/overwatch:latest';
 const COMPOSE_DIR = process.env.COMPOSE_DIR || '/opt/overwatch/infrastructure';
-const SERVICE_NAME = process.env.SERVICE_NAME || 'overwatch';
+const SERVICE_NAME = process.env.SERVICE_NAME || 'admin';
 
 // Get current Overwatch version/image info
 router.get('/version', async (req: Request, res: Response) => {

@@ -134,10 +134,10 @@ router.post('/:tenantId/access-token', async (req, res) => {
     }
 
     // Build token payload from config
-    const tokenPayload = adminAccess.token_payload || {};
-    const adminFlag = tokenPayload.admin_flag || 'isSystemAdmin';
-    const emailTemplate = tokenPayload.email_template || `admin@${config.project.name}.local`;
-    const adminName = tokenPayload.name || 'System Admin';
+    const tokenPayload = adminAccess.token_payload;
+    const adminFlag = tokenPayload?.admin_flag || 'isSystemAdmin';
+    const emailTemplate = tokenPayload?.email_template || `admin@${config.project.name}.local`;
+    const adminName = tokenPayload?.name || 'System Admin';
 
     // Generate admin access token
     const adminToken = jwt.sign(
