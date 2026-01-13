@@ -1,0 +1,57 @@
+# Overwatch - Multi-Tenant Management Tool
+# This compose file runs Overwatch itself (not the tenants it manages)
+
+services:
+  overwatch:
+    build: .
+    container_name: overwatch
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      # Database root credentials (for tenant database management)
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      # Registry credentials
+      GHCR_TOKEN: ${GHCR_TOKEN:-}
+      DOCKER_USERNAME: ${DOCKER_USERNAME:-}
+      DOCKER_PASSWORD: ${DOCKER_PASSWORD:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+      # Backup credentials
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+    volumes:
+      # Mount Docker socket for container management
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount configuration file
+      - ./overwatch.yaml:/app/overwatch.yaml:ro
+      # Mount admin users file (persisted)
+      - ./data/admin-users.json:/app/data/admin-users.json
+      # Mount tenants directory
+      - ${TENANTS_PATH:-./tenants}:/app/tenants
+    networks:
+      - default
+      # Connect to your project's network for database/container access
+      # - your-project-network
+
+networks:
+  default:
+    name: overwatch-network
+
+# To connect Overwatch to your project's existing network:
+# 1. Uncomment the network in the service and at the bottom
+# 2. Replace 'your-project-network' with your actual network name
+# Example for MyApp:
+#   networks:
+#     - myapp-network
+#   ...
+#   myapp-network:
+#     external: true

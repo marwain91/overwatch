@@ -1,0 +1,104 @@
+import { Router, Request, Response } from 'express';
+import { OAuth2Client } from 'google-auth-library';
+import jwt from 'jsonwebtoken';
+import { isAdminEmail } from '../services/users';
+
+const router = Router();
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const JWT_SECRET = process.env.JWT_SECRET || 'PLACEHOLDER_REMOVED';
+
+const client = new OAuth2Client(GOOGLE_CLIENT_ID);
+
+// Verify Google ID token and issue JWT
+router.post('/google', async (req: Request, res: Response) => {
+  const { credential } = req.body;
+
+  if (!credential) {
+    return res.status(400).json({ error: 'Missing credential' });
+  }
+
+  if (!GOOGLE_CLIENT_ID) {
+    return res.status(500).json({ error: 'Google OAuth not configured' });
+  }
+
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken: credential,
+      audience: GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload || !payload.email) {
+      return res.status(401).json({ error: 'Invalid token payload' });
+    }
+
+    const email = payload.email.toLowerCase();
+
+    // Check if user is in allowed admins list
+    const isAllowed = await isAdminEmail(email);
+    if (!isAllowed) {
+      console.log(`Unauthorized login attempt from: ${email}`);
+      return res.status(403).json({ error: 'You are not authorized to access the admin panel' });
+    }
+
+    // Generate JWT for session
+    const token = jwt.sign(
+      {
+        email: payload.email,
+        name: payload.name,
+        picture: payload.picture,
+      },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    console.log(`Admin login successful: ${email}`);
+
+    res.json({
+      token,
+      user: {
+        email: payload.email,
+        name: payload.name,
+        picture: payload.picture,
+      },
+    });
+  } catch (error) {
+    console.error('Google auth error:', error);
+    res.status(401).json({ error: 'Invalid Google token' });
+  }
+});
+
+// Verify JWT token
+router.get('/verify', (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+
+  const token = authHeader.substring(7);
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { email: string; name: string; picture: string };
+    res.json({
+      user: {
+        email: decoded.email,
+        name: decoded.name,
+        picture: decoded.picture,
+      },
+    });
+  } catch (error) {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});
+
+// Get Google Client ID for frontend
+router.get('/config', (req: Request, res: Response) => {
+  res.json({
+    googleClientId: GOOGLE_CLIENT_ID,
+    configured: !!GOOGLE_CLIENT_ID,
+  });
+});
+
+export default router;

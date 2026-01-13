@@ -1,0 +1,80 @@
+# Overwatch Configuration Example
+# Copy this file to the project root as 'overwatch.yaml' and customize for your project.
+
+project:
+  name: "MyApp"              # Display name for the admin panel
+  prefix: "myapp"            # Container prefix: {prefix}-{tenantId}-{service}
+  db_prefix: "myapp"         # Database prefix: {db_prefix}_{tenantId}
+
+# Database Configuration
+# Supports: mysql, mariadb, postgres
+database:
+  type: "postgres"           # Database type
+  host: "myapp-postgres"     # Database host (container name or hostname)
+  port: 5432                 # Database port
+  root_user: "postgres"      # Root/superuser username
+  root_password_env: "POSTGRES_PASSWORD"  # Environment variable for root password
+  container_name: "myapp-postgres"        # Container name for database
+
+# Container Registry Configuration
+# Supports: ghcr (GitHub), dockerhub, ecr (AWS), custom
+registry:
+  type: "dockerhub"
+  url: "docker.io"
+  repository: "myorg/myapp"
+  auth:
+    type: "credentials"
+    username_env: "DOCKER_USERNAME"
+    password_env: "DOCKER_PASSWORD"
+
+# Services to manage per tenant
+services:
+  # Required backend service
+  - name: "api"
+    required: true
+    image_suffix: "api"      # Image: {registry}/{repository}/{image_suffix}:{tag}
+    health_check:
+      path: "/health"
+      port: 3000
+    backup:
+      paths:
+        - container: "/app/data"
+          local: "data"
+
+  # Required frontend service
+  - name: "web"
+    required: true
+    image_suffix: "web"
+    health_check:
+      path: "/"
+      port: 80
+
+  # Optional worker service
+  - name: "worker"
+    required: false
+    image_suffix: "worker"
+
+  # Database migration init container
+  - name: "migrate"
+    is_init_container: true
+    image_suffix: "api"
+
+# Backup Configuration (optional)
+# Uses Restic with S3-compatible storage
+backup:
+  provider: "s3"
+  endpoint_env: "S3_ENDPOINT"
+  bucket_env: "S3_BUCKET"
+  access_key_env: "S3_ACCESS_KEY"
+  secret_key_env: "S3_SECRET_KEY"
+  password_env: "RESTIC_PASSWORD"
+
+# Credential generation settings
+credentials:
+  db_password_length: 32     # Length of generated database passwords
+  jwt_secret_length: 64      # Length of generated JWT secrets
+
+# Network Configuration
+network:
+  shared_network: "myapp-network"           # External Docker network name
+  tenants_path: "/opt/myapp/tenants"        # Path to store tenant configs
