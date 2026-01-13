@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'PLACEHOLDER_REMOVED';
+// JWT_SECRET is validated at startup in index.ts
+const JWT_SECRET = process.env.JWT_SECRET!;
 
 /**
  * JWT authentication middleware

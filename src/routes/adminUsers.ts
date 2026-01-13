@@ -4,7 +4,8 @@ import { listAdminUsers, addAdminUser, removeAdminUser } from '../services/users
 
 const router = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'PLACEHOLDER_REMOVED';
+// JWT_SECRET is validated at startup in index.ts
+const JWT_SECRET = process.env.JWT_SECRET!;
 
 // Helper to get current user email from token
 function getCurrentUserEmail(req: Request): string | null {

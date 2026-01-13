@@ -6,7 +6,8 @@ import { isAdminEmail } from '../services/users';
 const router = Router();
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
-const JWT_SECRET = process.env.JWT_SECRET || 'PLACEHOLDER_REMOVED';
+// JWT_SECRET is validated at startup in index.ts
+const JWT_SECRET = process.env.JWT_SECRET!;
 
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
