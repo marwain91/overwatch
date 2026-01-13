@@ -6,9 +6,6 @@ import { createTenant, deleteTenant, updateTenant, CreateTenantInput } from '../
 
 const router = Router();
 
-// Shared secret for admin access tokens - must match AUTH_SERVICE_SECRET in tenants
-const AUTH_SERVICE_SECRET = process.env.AUTH_SERVICE_SECRET;
-
 // List all tenants
 router.get('/', async (req, res) => {
   try {
@@ -112,12 +109,23 @@ router.post('/:tenantId/restart', async (req, res) => {
 // Generate admin access token for a tenant
 router.post('/:tenantId/access-token', async (req, res) => {
   try {
-    if (!AUTH_SERVICE_SECRET) {
-      return res.status(500).json({ error: 'AUTH_SERVICE_SECRET not configured' });
+    const config = loadConfig();
+    const adminAccess = config.admin_access;
+
+    // Check if admin access is enabled
+    if (!adminAccess?.enabled) {
+      return res.status(400).json({ error: 'Admin access is not enabled in configuration' });
+    }
+
+    // Get the secret from the configured environment variable
+    const secretEnv = adminAccess.secret_env || 'AUTH_SERVICE_SECRET';
+    const secret = process.env[secretEnv];
+
+    if (!secret) {
+      return res.status(500).json({ error: `${secretEnv} not configured` });
     }
 
     const { tenantId } = req.params;
-    const config = loadConfig();
 
     // Get tenant info to build the URL
     const tenantInfo = await getTenantInfo(tenantId);
@@ -125,22 +133,31 @@ router.post('/:tenantId/access-token', async (req, res) => {
       return res.status(404).json({ error: 'Tenant not found' });
     }
 
+    // Build token payload from config
+    const tokenPayload = adminAccess.token_payload || {};
+    const adminFlag = tokenPayload.admin_flag || 'isSystemAdmin';
+    const emailTemplate = tokenPayload.email_template || `admin@${config.project.name}.local`;
+    const adminName = tokenPayload.name || 'System Admin';
+
     // Generate admin access token
-    // This token grants admin access to the tenant's application
     const adminToken = jwt.sign(
       {
-        isSystemAdmin: true,
+        [adminFlag]: true,
         tenantId,
-        email: `admin@${config.project.name}.io`,
-        name: 'System Admin',
+        email: emailTemplate.replace('${tenantId}', tenantId),
+        name: adminName,
         iat: Math.floor(Date.now() / 1000),
       },
-      AUTH_SERVICE_SECRET,
+      secret,
       { expiresIn: '1h' }
     );
 
-    // Build the access URL
-    const accessUrl = `https://${tenantInfo.domain}/admin-login?token=${adminToken}`;
+    // Build the access URL from template
+    const urlTemplate = adminAccess.url_template || 'https://${domain}/admin-login?token=${token}';
+    const accessUrl = urlTemplate
+      .replace('${domain}', tenantInfo.domain)
+      .replace('${token}', adminToken)
+      .replace('${tenantId}', tenantId);
 
     res.json({
       success: true,

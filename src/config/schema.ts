@@ -98,6 +98,18 @@ export const NetworkingSchema = z.object({
   tenants_path: z.string().optional(),
 });
 
+// Admin access configuration (for accessing tenant apps)
+export const AdminAccessSchema = z.object({
+  enabled: z.boolean().default(false),
+  url_template: z.string().default('https://${domain}/admin-login?token=${token}'),
+  secret_env: z.string().default('AUTH_SERVICE_SECRET'),
+  token_payload: z.object({
+    admin_flag: z.string().default('isSystemAdmin'),
+    email_template: z.string().default('admin@overwatch.local'),
+    name: z.string().default('System Admin'),
+  }).optional(),
+});
+
 // Main Overwatch configuration schema
 export const OverwatchConfigSchema = z.object({
   project: z.object({
@@ -112,6 +124,7 @@ export const OverwatchConfigSchema = z.object({
   tenant_template: TenantTemplateSchema.optional(),
   credentials: CredentialsSchema.optional(),
   networking: NetworkingSchema.optional(),
+  admin_access: AdminAccessSchema.optional(),
 });
 
 // TypeScript types derived from schemas

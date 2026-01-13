@@ -2,21 +2,24 @@ import { Router, Request, Response } from 'express';
 import Docker from 'dockerode';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { loadConfig, getContainerPrefix } from '../config';
 
 const router = Router();
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 const execAsync = promisify(exec);
 
-// Configuration
-const OVERWATCH_IMAGE = process.env.OVERWATCH_IMAGE || 'ghcr.io/marwain91/overwatch:latest';
-const COMPOSE_DIR = process.env.COMPOSE_DIR || '/opt/myapp/deploy/infrastructure';
-const SERVICE_NAME = process.env.SERVICE_NAME || 'admin';
+// Configuration - all configurable via environment variables
+const OVERWATCH_IMAGE = process.env.OVERWATCH_IMAGE || 'ghcr.io/overwatch/overwatch:latest';
+const COMPOSE_DIR = process.env.COMPOSE_DIR || '/opt/overwatch/infrastructure';
+const SERVICE_NAME = process.env.SERVICE_NAME || 'overwatch';
 
 // Get current Overwatch version/image info
 router.get('/version', async (req: Request, res: Response) => {
   try {
+    // Use config prefix to find the admin container
+    const prefix = getContainerPrefix();
     const containers = await docker.listContainers({
-      filters: { name: ['myapp-admin', 'overwatch'] }
+      filters: { name: [`${prefix}-admin`, `${prefix}-overwatch`, 'overwatch'] }
     });
 
     const currentContainer = containers.find(c =>
