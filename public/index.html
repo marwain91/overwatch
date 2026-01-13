@@ -12,6 +12,9 @@
     <!-- Login Screen -->
     <div id="login-screen" class="screen">
       <div class="login-card">
+        <div class="login-logo">
+          <img src="/logo.svg" alt="Overwatch" class="logo-img">
+        </div>
         <h1 id="login-title">Overwatch</h1>
         <p id="login-subtitle" class="login-subtitle"></p>
 
@@ -40,7 +43,10 @@
     <!-- Main Dashboard -->
     <div id="dashboard-screen" class="screen hidden">
       <header>
-        <h1 id="dashboard-title">Overwatch</h1>
+        <div class="header-brand">
+          <img src="/logo.svg" alt="Overwatch" class="header-logo">
+          <h1 id="dashboard-title">Overwatch</h1>
+        </div>
         <div class="header-actions">
           <span id="health-status" class="status-badge">Checking...</span>
           <button id="update-overwatch-btn" class="btn btn-secondary btn-sm" title="Update Overwatch">Update</button>
@@ -120,9 +126,7 @@
           </div>
           <div class="form-group">
             <label for="tenant-tag">Image Tag</label>
-            <select id="tenant-tag">
-              <option value="latest">latest</option>
-            </select>
+            <div id="tenant-tag-container" class="searchable-select-container" data-value="latest"></div>
           </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
@@ -148,9 +152,7 @@
           </div>
           <div class="form-group">
             <label for="update-tag">New Image Tag</label>
-            <select id="update-tag" required>
-              <option value="latest">latest</option>
-            </select>
+            <div id="update-tag-container" class="searchable-select-container" data-value="latest"></div>
           </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
@@ -307,9 +309,7 @@
           </div>
           <div class="form-group">
             <label for="new-tenant-tag">Image Tag</label>
-            <select id="new-tenant-tag">
-              <option value="latest">latest</option>
-            </select>
+            <div id="new-tenant-tag-container" class="searchable-select-container" data-value="latest"></div>
           </div>
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>

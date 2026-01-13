@@ -94,13 +94,216 @@ async function loadImageTags() {
   }
 }
 
-function populateTagSelect(selectId, selectedValue = 'latest') {
-  const select = document.getElementById(selectId);
-  if (!select || !cachedTags) return;
+// Searchable Select Component
+class SearchableSelect {
+  constructor(container, options = []) {
+    this.container = container;
+    this.options = options;
+    this.selectedValue = container.dataset.value || '';
+    this.isOpen = false;
+    this.highlightedIndex = -1;
+    this.filteredOptions = [...options];
+    this.render();
+    this.attachEvents();
+  }
 
-  select.innerHTML = cachedTags.map(tag =>
-    `<option value="${tag}" ${tag === selectedValue ? 'selected' : ''}>${tag}</option>`
-  ).join('');
+  render() {
+    const selectedLabel = this.selectedValue || 'Select...';
+    this.container.innerHTML = `
+      <div class="searchable-select">
+        <input type="text" class="searchable-select-input" value="${selectedLabel}" readonly>
+        <span class="searchable-select-arrow">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 4.5L6 7.5L9 4.5"/>
+          </svg>
+        </span>
+        <div class="searchable-select-dropdown">
+          <div class="searchable-select-search">
+            <input type="text" placeholder="Search..." class="searchable-search-input">
+          </div>
+          <div class="searchable-select-options"></div>
+        </div>
+      </div>
+    `;
+
+    this.selectEl = this.container.querySelector('.searchable-select');
+    this.inputEl = this.container.querySelector('.searchable-select-input');
+    this.dropdownEl = this.container.querySelector('.searchable-select-dropdown');
+    this.searchInputEl = this.container.querySelector('.searchable-search-input');
+    this.optionsEl = this.container.querySelector('.searchable-select-options');
+
+    this.renderOptions();
+  }
+
+  renderOptions() {
+    if (this.filteredOptions.length === 0) {
+      this.optionsEl.innerHTML = '<div class="searchable-select-empty">No matches found</div>';
+      return;
+    }
+
+    this.optionsEl.innerHTML = this.filteredOptions.map((option, index) => {
+      const isSelected = option === this.selectedValue;
+      const isHighlighted = index === this.highlightedIndex;
+      return `<div class="searchable-select-option${isSelected ? ' selected' : ''}${isHighlighted ? ' highlighted' : ''}" data-value="${option}" data-index="${index}">${option}</div>`;
+    }).join('');
+  }
+
+  attachEvents() {
+    // Toggle dropdown on input click
+    this.inputEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggle();
+    });
+
+    // Search input
+    this.searchInputEl.addEventListener('input', (e) => {
+      const query = e.target.value.toLowerCase();
+      this.filteredOptions = this.options.filter(opt => opt.toLowerCase().includes(query));
+      this.highlightedIndex = this.filteredOptions.length > 0 ? 0 : -1;
+      this.renderOptions();
+    });
+
+    // Prevent dropdown close when clicking search
+    this.searchInputEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+
+    // Option click
+    this.optionsEl.addEventListener('click', (e) => {
+      const option = e.target.closest('.searchable-select-option');
+      if (option) {
+        this.selectOption(option.dataset.value);
+      }
+    });
+
+    // Keyboard navigation
+    this.searchInputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        this.highlightedIndex = Math.min(this.highlightedIndex + 1, this.filteredOptions.length - 1);
+        this.renderOptions();
+        this.scrollToHighlighted();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        this.highlightedIndex = Math.max(this.highlightedIndex - 1, 0);
+        this.renderOptions();
+        this.scrollToHighlighted();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (this.highlightedIndex >= 0 && this.highlightedIndex < this.filteredOptions.length) {
+          this.selectOption(this.filteredOptions[this.highlightedIndex]);
+        }
+      } else if (e.key === 'Escape') {
+        this.close();
+      }
+    });
+
+    // Close on outside click
+    document.addEventListener('click', (e) => {
+      if (!this.container.contains(e.target)) {
+        this.close();
+      }
+    });
+  }
+
+  scrollToHighlighted() {
+    const highlighted = this.optionsEl.querySelector('.highlighted');
+    if (highlighted) {
+      highlighted.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  selectOption(value) {
+    this.selectedValue = value;
+    this.container.dataset.value = value;
+    this.inputEl.value = value;
+    this.close();
+  }
+
+  toggle() {
+    if (this.isOpen) {
+      this.close();
+    } else {
+      this.open();
+    }
+  }
+
+  open() {
+    this.isOpen = true;
+    this.selectEl.classList.add('open');
+    this.searchInputEl.value = '';
+    this.filteredOptions = [...this.options];
+    this.highlightedIndex = this.options.indexOf(this.selectedValue);
+    if (this.highlightedIndex === -1 && this.options.length > 0) {
+      this.highlightedIndex = 0;
+    }
+    this.renderOptions();
+    setTimeout(() => this.searchInputEl.focus(), 10);
+    this.scrollToHighlighted();
+  }
+
+  close() {
+    this.isOpen = false;
+    this.selectEl.classList.remove('open');
+  }
+
+  getValue() {
+    return this.selectedValue;
+  }
+
+  setValue(value) {
+    this.selectedValue = value;
+    this.container.dataset.value = value;
+    if (this.inputEl) {
+      this.inputEl.value = value;
+    }
+  }
+
+  setOptions(options) {
+    this.options = options;
+    this.filteredOptions = [...options];
+    if (this.options.length > 0 && !this.options.includes(this.selectedValue)) {
+      this.selectedValue = this.options[0];
+      this.container.dataset.value = this.selectedValue;
+    }
+    this.renderOptions();
+    if (this.inputEl) {
+      this.inputEl.value = this.selectedValue;
+    }
+  }
+}
+
+// Store searchable select instances
+const searchableSelects = {};
+
+function initSearchableSelect(containerId, selectedValue = 'latest') {
+  const container = document.getElementById(containerId);
+  if (!container) return null;
+
+  const options = cachedTags || ['latest'];
+  if (searchableSelects[containerId]) {
+    searchableSelects[containerId].setOptions(options);
+    searchableSelects[containerId].setValue(selectedValue);
+    return searchableSelects[containerId];
+  }
+
+  container.dataset.value = selectedValue;
+  const select = new SearchableSelect(container, options);
+  select.setValue(selectedValue);
+  searchableSelects[containerId] = select;
+  return select;
+}
+
+function populateTagSelect(selectId, selectedValue = 'latest') {
+  // Map old selectId to new container IDs
+  const containerMap = {
+    'tenant-tag': 'tenant-tag-container',
+    'update-tag': 'update-tag-container',
+    'new-tenant-tag': 'new-tenant-tag-container'
+  };
+
+  const containerId = containerMap[selectId] || selectId;
+  initSearchableSelect(containerId, selectedValue);
 }
 
 // Auth
@@ -822,7 +1025,7 @@ async function createTenantFromBackup(e) {
   const snapshotId = document.getElementById('create-from-backup-snapshot-id').value;
   const tenantId = document.getElementById('new-tenant-id').value;
   const domain = document.getElementById('new-tenant-domain').value;
-  const imageTag = document.getElementById('new-tenant-tag').value || 'latest';
+  const imageTag = document.getElementById('new-tenant-tag-container').dataset.value || 'latest';
 
   setButtonLoading(btn, true, 'Creating...');
 
@@ -958,7 +1161,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const data = {
       tenantId: document.getElementById('tenant-id').value,
       domain: document.getElementById('tenant-domain').value,
-      imageTag: document.getElementById('tenant-tag').value || 'latest',
+      imageTag: document.getElementById('tenant-tag-container').dataset.value || 'latest',
     };
 
     setButtonLoading(btn, true, 'Creating...');
@@ -981,7 +1184,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const btn = e.target.querySelector('button[type="submit"]');
     const tenantId = document.getElementById('update-tenant-id').value;
-    const imageTag = document.getElementById('update-tag').value;
+    const imageTag = document.getElementById('update-tag-container').dataset.value;
     const errorEl = document.getElementById('update-error');
 
     let backupsConfigured = false;
