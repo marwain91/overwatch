@@ -1,6 +1,11 @@
 # Overwatch - Multi-Tenant Management Tool
 FROM node:20-alpine
 
+ARG BUILD_TIME=dev
+ARG BUILD_COMMIT=dev
+ENV BUILD_TIME=$BUILD_TIME
+ENV BUILD_COMMIT=$BUILD_COMMIT
+
 WORKDIR /app
 
 # Install dependencies for health checks, backup operations, and database dumps

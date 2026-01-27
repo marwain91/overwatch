@@ -406,10 +406,11 @@ function showScreen(screen) {
 // UI Updates
 async function loadDashboard() {
   try {
-    const [health, tenants] = await Promise.all([
+    const [health, tenants, , buildHealth] = await Promise.all([
       api('/status/health'),
       api('/tenants'),
       loadImageTags(),
+      fetch('/health').then(r => r.json()).catch(() => ({})),
     ]);
 
     cachedTenants = tenants;
@@ -418,6 +419,21 @@ async function loadDashboard() {
       health.database === 'connected' ? 'Healthy' : 'Unhealthy';
     document.getElementById('health-status').className =
       `status-badge ${health.database === 'connected' ? 'healthy' : 'unhealthy'}`;
+
+    // Display build info
+    const buildInfoEl = document.getElementById('build-info');
+    if (buildInfoEl && buildHealth.buildTime && buildHealth.buildTime !== 'dev') {
+      const shortCommit = buildHealth.buildCommit && buildHealth.buildCommit !== 'dev'
+        ? buildHealth.buildCommit.substring(0, 7)
+        : '';
+      const buildDate = new Date(buildHealth.buildTime).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+      buildInfoEl.textContent = shortCommit ? `Build: ${buildDate} (${shortCommit})` : `Build: ${buildDate}`;
+    } else if (buildInfoEl) {
+      buildInfoEl.textContent = 'Build: dev';
+    }
 
     document.getElementById('db-status').textContent = health.database;
 

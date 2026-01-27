@@ -45,6 +45,8 @@ app.get('/health', (req, res) => {
     status: 'ok',
     project: config.project.name,
     timestamp: new Date().toISOString(),
+    buildTime: process.env.BUILD_TIME || 'dev',
+    buildCommit: process.env.BUILD_COMMIT || 'dev',
   });
 });
 
