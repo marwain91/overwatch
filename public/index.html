@@ -62,51 +62,60 @@
       </header>
 
       <main>
-        <!-- System Status -->
-        <section class="card">
-          <h2>System Status</h2>
-          <div id="system-status" class="status-grid">
-            <div class="status-item">
-              <span class="label">Database</span>
-              <span id="db-status" class="value">-</span>
-            </div>
-            <div class="status-item">
-              <span class="label">Containers</span>
-              <span id="container-count" class="value">-</span>
-            </div>
-            <div class="status-item">
-              <span class="label">Tenants</span>
-              <span id="tenant-count" class="value">-</span>
-            </div>
-            <div class="status-item">
-              <span class="label">Backups</span>
-              <span id="backup-status-indicator" class="value">-</span>
-            </div>
-          </div>
-        </section>
+        <div class="tab-bar">
+          <button class="tab-btn active" data-tab="tenants">Tenants</button>
+          <button class="tab-btn" data-tab="environment">Environment</button>
+        </div>
 
-        <!-- Environment Variables -->
-        <section class="card">
-          <div class="card-header">
-            <h2>Environment Variables</h2>
-            <button id="add-env-var-btn" class="btn btn-primary btn-sm">+ Add Variable</button>
-          </div>
-          <p class="section-description">Global variables inherited by all tenants. Per-tenant overrides available via tenant settings.</p>
-          <div id="env-vars-list" class="env-vars-list">
-            <p class="loading">Loading environment variables...</p>
-          </div>
-        </section>
+        <div id="tab-tenants" class="tab-content">
+          <!-- System Status -->
+          <section class="card">
+            <h2>System Status</h2>
+            <div id="system-status" class="status-grid">
+              <div class="status-item">
+                <span class="label">Database</span>
+                <span id="db-status" class="value">-</span>
+              </div>
+              <div class="status-item">
+                <span class="label">Containers</span>
+                <span id="container-count" class="value">-</span>
+              </div>
+              <div class="status-item">
+                <span class="label">Tenants</span>
+                <span id="tenant-count" class="value">-</span>
+              </div>
+              <div class="status-item">
+                <span class="label">Backups</span>
+                <span id="backup-status-indicator" class="value">-</span>
+              </div>
+            </div>
+          </section>
 
-        <!-- Tenants List -->
-        <section class="card">
-          <div class="card-header">
-            <h2>Tenants</h2>
-            <button id="create-tenant-btn" class="btn btn-primary">+ Create Tenant</button>
-          </div>
-          <div id="tenants-list" class="tenants-list">
-            <p class="loading">Loading tenants...</p>
-          </div>
-        </section>
+          <!-- Tenants List -->
+          <section class="card">
+            <div class="card-header">
+              <h2>Tenants</h2>
+              <button id="create-tenant-btn" class="btn btn-primary">+ Create Tenant</button>
+            </div>
+            <div id="tenants-list" class="tenants-list">
+              <p class="loading">Loading tenants...</p>
+            </div>
+          </section>
+        </div>
+
+        <div id="tab-environment" class="tab-content hidden">
+          <!-- Environment Variables -->
+          <section class="card">
+            <div class="card-header">
+              <h2>Environment Variables</h2>
+              <button id="add-env-var-btn" class="btn btn-primary btn-sm">+ Add Variable</button>
+            </div>
+            <p class="section-description">Global variables inherited by all tenants. Per-tenant overrides available via tenant settings.</p>
+            <div id="env-vars-list" class="env-vars-list">
+              <p class="loading">Loading environment variables...</p>
+            </div>
+          </section>
+        </div>
 
       </main>
     </div>

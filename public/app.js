@@ -4,6 +4,20 @@ let authToken = localStorage.getItem('overwatch_admin_token') || '';
 let currentUser = JSON.parse(localStorage.getItem('overwatch_admin_user') || 'null');
 let googleClientId = '';
 let projectConfig = null;
+let envVarsLoaded = false;
+
+function switchTab(tabName) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+
+  document.getElementById(`tab-${tabName}`).classList.remove('hidden');
+  document.querySelector(`.tab-btn[data-tab="${tabName}"]`).classList.add('active');
+
+  if (tabName === 'environment' && !envVarsLoaded) {
+    envVarsLoaded = true;
+    loadEnvVars();
+  }
+}
 
 // API Helper
 async function api(endpoint, options = {}) {
@@ -445,7 +459,6 @@ async function loadDashboard() {
     document.getElementById('tenant-count').textContent = tenants.length;
 
     renderTenants(tenants);
-    loadEnvVars();
   } catch (error) {
     console.error('Failed to load dashboard:', error);
   }
@@ -1419,6 +1432,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   document.getElementById('logout-btn').addEventListener('click', logout);
+
+  // Tab switching
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
 
   // Overwatch self-update
   document.getElementById('update-overwatch-btn').addEventListener('click', checkForOverwatchUpdate);
