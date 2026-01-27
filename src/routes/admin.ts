@@ -98,7 +98,7 @@ router.post('/update', async (req: Request, res: Response) => {
     setTimeout(async () => {
       try {
         console.log(`Restarting via docker compose in ${COMPOSE_DIR}...`);
-        exec(`cd ${COMPOSE_DIR} && docker compose up -d ${SERVICE_NAME}`, (error, stdout, stderr) => {
+        exec(`cd ${COMPOSE_DIR} && docker compose up -d --force-recreate ${SERVICE_NAME}`, (error, stdout, stderr) => {
           if (error) {
             console.error('Restart error:', error);
             console.error('stderr:', stderr);

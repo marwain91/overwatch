@@ -1362,13 +1362,35 @@ async function performOverwatchUpdate() {
   try {
     await api('/admin/update', { method: 'POST' });
 
-    // Show message and wait for container to restart
-    alert('Update initiated. The page will reload in 10 seconds...');
+    setButtonLoading(btn, true, 'Restarting...');
 
-    // Wait for container to restart, then reload
-    setTimeout(() => {
-      window.location.reload();
-    }, 10000);
+    // Wait for the old container to begin shutting down, then poll /health
+    await new Promise(r => setTimeout(r, 5000));
+
+    const maxAttempts = 60;
+    let attempts = 0;
+    let sawDown = false;
+
+    const poll = setInterval(async () => {
+      attempts++;
+      try {
+        const res = await fetch('/health', { signal: AbortSignal.timeout(3000) });
+        if (res.ok && sawDown) {
+          clearInterval(poll);
+          window.location.reload();
+        } else if (!res.ok) {
+          sawDown = true;
+        }
+      } catch {
+        sawDown = true;
+      }
+
+      if (attempts >= maxAttempts) {
+        clearInterval(poll);
+        alert('Update is taking longer than expected. Please refresh the page manually.');
+        setButtonLoading(btn, false, 'Update');
+      }
+    }, 2000);
   } catch (error) {
     setButtonLoading(btn, false, 'Update');
     alert(`Update failed: ${error.message}`);
