@@ -5,6 +5,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { loadConfig, getDatabasePrefix, getTenantsDir } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
+import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
 
 const execAsync = promisify(exec);
 
@@ -75,6 +76,9 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   const envContent = generateEnvContent(config, tenantId, domain, imageTag, dbPassword, jwtSecret);
   await fs.writeFile(path.join(tenantPath, '.env'), envContent);
 
+  // Generate shared.env for this tenant
+  await generateSharedEnvFile(tenantId);
+
   // Copy docker-compose template
   const templateDir = getTemplateDir();
   const composeFile = config.tenant_template?.compose_file || 'docker-compose.yml';
@@ -113,6 +117,9 @@ export async function deleteTenant(tenantId: string, keepData: boolean = false):
   } catch {
     throw new Error(`Tenant '${tenantId}' not found`);
   }
+
+  // Clean up tenant env var overrides
+  await deleteTenantAllOverrides(tenantId);
 
   // Stop containers
   try {
@@ -156,6 +163,9 @@ export async function updateTenant(tenantId: string, newTag: string): Promise<vo
   // Update IMAGE_TAG in .env
   const newEnvContent = originalEnvContent.replace(/^IMAGE_TAG=.*/m, `IMAGE_TAG=${newTag}`);
   await fs.writeFile(envPath, newEnvContent);
+
+  // Regenerate shared.env in case env vars changed
+  await generateSharedEnvFile(tenantId);
 
   // Update docker-compose.yml from template (picks up any template changes)
   try {

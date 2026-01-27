@@ -35,6 +35,9 @@ services:
       - ./overwatch.yaml:/app/overwatch.yaml:ro
       # Mount admin users file (persisted)
       - ./data/admin-users.json:/app/data/admin-users.json
+      # Mount env vars data files (persisted)
+      - ./data/env-vars.json:/app/data/env-vars.json
+      - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
       # Mount tenants directory
       - ${TENANTS_PATH:-./tenants}:/app/tenants
     networks:

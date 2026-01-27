@@ -429,6 +429,7 @@ async function loadDashboard() {
     document.getElementById('tenant-count').textContent = tenants.length;
 
     renderTenants(tenants);
+    loadEnvVars();
   } catch (error) {
     console.error('Failed to load dashboard:', error);
   }
@@ -459,6 +460,7 @@ const icons = {
   logs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>',
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>',
+  env: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v1m0 16v1m-8-9H3m18 0h-1m-2.636-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707"></path><circle cx="12" cy="12" r="4"></circle></svg>',
 };
 
 function renderTenants(tenants) {
@@ -492,6 +494,7 @@ function renderTenants(tenants) {
           <button class="btn btn-primary btn-sm btn-icon has-tooltip" onclick="startTenant('${tenant.tenantId}', this)" data-tooltip="Start">${icons.play}</button>
         `}
         <button class="btn btn-secondary btn-sm btn-icon has-tooltip" onclick="showTenantBackupsModal('${tenant.tenantId}')" data-tooltip="Backups">${icons.backup}</button>
+        <button class="btn btn-secondary btn-sm btn-icon has-tooltip" onclick="showTenantEnvVarsModal('${tenant.tenantId}')" data-tooltip="Env Vars">${icons.env}</button>
         <button class="btn btn-secondary btn-sm btn-icon has-tooltip" onclick="showUpdateModal('${tenant.tenantId}', '${tenant.version}')" data-tooltip="Update">${icons.update}</button>
         <button class="btn btn-secondary btn-sm btn-icon has-tooltip" onclick="showLogs('${tenant.tenantId}')" data-tooltip="Logs">${icons.logs}</button>
         <button class="btn btn-danger btn-sm btn-icon has-tooltip" onclick="showDeleteModal('${tenant.tenantId}')" data-tooltip="Delete">${icons.trash}</button>
@@ -1076,6 +1079,243 @@ async function deleteBackup(snapshotId) {
   }
 }
 
+// Environment Variables Management
+let currentEnvVarTenantId = null;
+
+async function loadEnvVars() {
+  try {
+    const vars = await api('/env-vars');
+    renderEnvVars(vars);
+  } catch (error) {
+    document.getElementById('env-vars-list').innerHTML =
+      `<p class="error">Error: ${error.message}</p>`;
+  }
+}
+
+function renderEnvVars(vars) {
+  const container = document.getElementById('env-vars-list');
+
+  if (vars.length === 0) {
+    container.innerHTML = '<p class="env-vars-empty">No environment variables defined. Add variables to share configuration across all tenants.</p>';
+    return;
+  }
+
+  container.innerHTML = vars.map(v => `
+    <div class="env-var-card">
+      <div class="env-var-info">
+        <span class="env-var-key">${v.key}</span>
+        <span class="env-var-value">${v.value}</span>
+        ${v.description ? `<span class="env-var-description">${v.description}</span>` : ''}
+      </div>
+      <div class="env-var-actions">
+        <button class="btn btn-secondary btn-xs" onclick="showEditEnvVarModal('${v.key}', '${escapeAttr(v.value)}', ${v.sensitive}, '${escapeAttr(v.description || '')}')">Edit</button>
+        <button class="btn btn-danger btn-xs" onclick="showDeleteEnvVarModal('${v.key}')">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function escapeAttr(str) {
+  return str.replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function showAddEnvVarModal() {
+  document.getElementById('env-var-modal-title').textContent = 'Add Environment Variable';
+  document.getElementById('env-var-key').value = '';
+  document.getElementById('env-var-key').disabled = false;
+  document.getElementById('env-var-value').value = '';
+  document.getElementById('env-var-sensitive').checked = false;
+  document.getElementById('env-var-description').value = '';
+  document.getElementById('env-var-error').textContent = '';
+  resetModalButtons('env-var-modal');
+  showModal('env-var-modal');
+}
+
+function showEditEnvVarModal(key, value, sensitive, description) {
+  document.getElementById('env-var-modal-title').textContent = 'Edit Environment Variable';
+  document.getElementById('env-var-key').value = key;
+  document.getElementById('env-var-key').disabled = true;
+  document.getElementById('env-var-value').value = sensitive ? '' : value;
+  document.getElementById('env-var-value').placeholder = sensitive ? 'Enter new value (leave blank to keep current)' : 'Variable value';
+  document.getElementById('env-var-sensitive').checked = sensitive;
+  document.getElementById('env-var-description').value = description;
+  document.getElementById('env-var-error').textContent = '';
+  resetModalButtons('env-var-modal');
+  showModal('env-var-modal');
+}
+
+async function saveEnvVar(e) {
+  e.preventDefault();
+
+  const btn = e.target.querySelector('button[type="submit"]');
+  const key = document.getElementById('env-var-key').value.trim();
+  const value = document.getElementById('env-var-value').value;
+  const sensitive = document.getElementById('env-var-sensitive').checked;
+  const description = document.getElementById('env-var-description').value.trim();
+  const isEdit = document.getElementById('env-var-key').disabled;
+
+  if (isEdit && sensitive && !value) {
+    document.getElementById('env-var-error').textContent = 'Value is required';
+    return;
+  }
+
+  setButtonLoading(btn, true, 'Saving...');
+
+  try {
+    const result = await api('/env-vars', {
+      method: 'POST',
+      body: JSON.stringify({ key, value, sensitive, description: description || undefined }),
+    });
+    hideModal('env-var-modal');
+    loadEnvVars();
+
+    if (result.tenantsAffected > 0) {
+      document.getElementById('restart-tenants-count').textContent = result.tenantsAffected;
+      showModal('restart-tenants-modal');
+    }
+  } catch (error) {
+    setButtonLoading(btn, false, 'Save');
+    document.getElementById('env-var-error').textContent = error.message;
+  }
+}
+
+function showDeleteEnvVarModal(key) {
+  document.getElementById('delete-env-var-key').textContent = key;
+  document.getElementById('confirm-delete-env-var-btn').onclick = () => deleteEnvVar(key);
+  resetModalButtons('delete-env-var-modal');
+  showModal('delete-env-var-modal');
+}
+
+async function deleteEnvVar(key) {
+  const btn = document.getElementById('confirm-delete-env-var-btn');
+  setButtonLoading(btn, true, 'Deleting...');
+
+  try {
+    const result = await api(`/env-vars/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    hideModal('delete-env-var-modal');
+    loadEnvVars();
+
+    if (result.tenantsAffected > 0) {
+      document.getElementById('restart-tenants-count').textContent = result.tenantsAffected;
+      showModal('restart-tenants-modal');
+    }
+  } catch (error) {
+    setButtonLoading(btn, false, 'Delete');
+    alert(`Failed to delete: ${error.message}`);
+  }
+}
+
+async function restartAllTenants() {
+  const btn = document.getElementById('confirm-restart-tenants-btn');
+  setButtonLoading(btn, true, 'Restarting...');
+
+  try {
+    for (const tenant of cachedTenants) {
+      if (tenant.healthy) {
+        try {
+          await api(`/tenants/${tenant.tenantId}/restart`, { method: 'POST' });
+        } catch (err) {
+          console.error(`Failed to restart ${tenant.tenantId}:`, err);
+        }
+      }
+    }
+    hideModal('restart-tenants-modal');
+    loadDashboard();
+  } catch (error) {
+    setButtonLoading(btn, false, 'Restart All');
+    alert(`Failed to restart tenants: ${error.message}`);
+  }
+}
+
+// Tenant Environment Variables
+
+async function showTenantEnvVarsModal(tenantId) {
+  currentEnvVarTenantId = tenantId;
+  document.getElementById('tenant-env-vars-name').textContent = tenantId;
+  document.getElementById('tenant-env-vars-list').innerHTML = '<p class="loading">Loading...</p>';
+  showModal('tenant-env-vars-modal');
+
+  try {
+    const vars = await api(`/env-vars/tenants/${tenantId}`);
+    renderTenantEnvVars(vars, tenantId);
+  } catch (error) {
+    document.getElementById('tenant-env-vars-list').innerHTML =
+      `<p class="error">Error: ${error.message}</p>`;
+  }
+}
+
+function renderTenantEnvVars(vars, tenantId) {
+  const container = document.getElementById('tenant-env-vars-list');
+
+  if (vars.length === 0) {
+    container.innerHTML = '<p class="env-vars-empty">No environment variables configured. Add global variables first.</p>';
+    return;
+  }
+
+  container.innerHTML = vars.map(v => `
+    <div class="env-var-card">
+      <div class="env-var-info">
+        <span class="env-var-key">${v.key} <span class="source-badge ${v.source}">${v.source}</span></span>
+        <span class="env-var-value">${v.value}</span>
+        ${v.description ? `<span class="env-var-description">${v.description}</span>` : ''}
+      </div>
+      <div class="env-var-actions">
+        <button class="btn btn-secondary btn-xs" onclick="showOverrideEnvVarModal('${tenantId}', '${v.key}', '${escapeAttr(v.value)}', ${v.sensitive})">Override</button>
+        ${v.source === 'override' ? `<button class="btn btn-danger btn-xs" onclick="resetTenantOverride('${tenantId}', '${v.key}')">Reset</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function showOverrideEnvVarModal(tenantId, key, value, sensitive) {
+  document.getElementById('override-tenant-id').value = tenantId;
+  document.getElementById('override-env-var-key').textContent = key;
+  document.getElementById('override-env-var-value').value = sensitive ? '' : value;
+  document.getElementById('override-env-var-value').placeholder = sensitive ? 'Enter override value' : 'Override value';
+  document.getElementById('override-env-var-sensitive').checked = sensitive;
+  document.getElementById('override-env-var-error').textContent = '';
+  resetModalButtons('override-env-var-modal');
+  showModal('override-env-var-modal');
+}
+
+async function saveOverrideEnvVar(e) {
+  e.preventDefault();
+
+  const btn = e.target.querySelector('button[type="submit"]');
+  const tenantId = document.getElementById('override-tenant-id').value;
+  const key = document.getElementById('override-env-var-key').textContent;
+  const value = document.getElementById('override-env-var-value').value;
+  const sensitive = document.getElementById('override-env-var-sensitive').checked;
+
+  if (!value) {
+    document.getElementById('override-env-var-error').textContent = 'Value is required';
+    return;
+  }
+
+  setButtonLoading(btn, true, 'Saving...');
+
+  try {
+    await api(`/env-vars/tenants/${tenantId}/overrides`, {
+      method: 'POST',
+      body: JSON.stringify({ key, value, sensitive }),
+    });
+    hideModal('override-env-var-modal');
+    showTenantEnvVarsModal(tenantId);
+  } catch (error) {
+    setButtonLoading(btn, false, 'Save Override');
+    document.getElementById('override-env-var-error').textContent = error.message;
+  }
+}
+
+async function resetTenantOverride(tenantId, key) {
+  try {
+    await api(`/env-vars/tenants/${tenantId}/overrides/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    showTenantEnvVarsModal(tenantId);
+  } catch (error) {
+    alert(`Failed to reset override: ${error.message}`);
+  }
+}
+
 // Overwatch Self-Update
 async function checkForOverwatchUpdate() {
   const btn = document.getElementById('update-overwatch-btn');
@@ -1243,6 +1483,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
   });
+
+  // Env var management
+  document.getElementById('add-env-var-btn').addEventListener('click', showAddEnvVarModal);
+  document.getElementById('env-var-form').addEventListener('submit', saveEnvVar);
+  document.getElementById('override-env-var-form').addEventListener('submit', saveOverrideEnvVar);
+  document.getElementById('confirm-restart-tenants-btn').addEventListener('click', restartAllTenants);
 
   document.getElementById('add-admin-btn').addEventListener('click', showAddAdminModal);
   document.getElementById('add-admin-form').addEventListener('submit', addAdmin);

@@ -30,8 +30,8 @@ services:
     image: ${IMAGE_REGISTRY}/backend:${IMAGE_TAG}
     container_name: ${PROJECT_PREFIX}-${TENANT_ID}-backend
     restart: unless-stopped
-    # env_file:
-    #   - ${SHARED_ENV_PATH}  # Uncomment if using shared env
+    env_file:
+      - ./shared.env
     environment:
       NODE_ENV: production
       PORT: 3001
@@ -103,6 +103,8 @@ services:
     image: ${IMAGE_REGISTRY}/backend:${IMAGE_TAG}
     container_name: ${PROJECT_PREFIX}-${TENANT_ID}-migrator
     user: root
+    env_file:
+      - ./shared.env
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}

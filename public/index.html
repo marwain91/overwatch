@@ -84,6 +84,18 @@
           </div>
         </section>
 
+        <!-- Environment Variables -->
+        <section class="card">
+          <div class="card-header">
+            <h2>Environment Variables</h2>
+            <button id="add-env-var-btn" class="btn btn-primary btn-sm">+ Add Variable</button>
+          </div>
+          <p class="section-description">Global variables inherited by all tenants. Per-tenant overrides available via tenant settings.</p>
+          <div id="env-vars-list" class="env-vars-list">
+            <p class="loading">Loading environment variables...</p>
+          </div>
+        </section>
+
         <!-- Tenants List -->
         <section class="card">
           <div class="card-header">
@@ -325,6 +337,126 @@
           <div class="modal-actions">
             <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
             <button type="button" id="confirm-delete-backup-btn" class="btn btn-danger">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add/Edit Env Var Modal -->
+    <div id="env-var-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="env-var-modal-title">Add Environment Variable</h2>
+          <button class="close-btn" data-close-modal>&times;</button>
+        </div>
+        <form id="env-var-form">
+          <div class="form-group">
+            <label for="env-var-key">Key</label>
+            <input type="text" id="env-var-key" placeholder="e.g., GOOGLE_PROJECT_ID" pattern="[A-Z][A-Z0-9_]*" required>
+            <small>Uppercase letters, digits, and underscores. Must start with a letter.</small>
+          </div>
+          <div class="form-group">
+            <label for="env-var-value">Value</label>
+            <input type="text" id="env-var-value" placeholder="Variable value" required>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="env-var-sensitive">
+              Sensitive (mask value in UI)
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="env-var-description">Description (optional)</label>
+            <input type="text" id="env-var-description" placeholder="What this variable is used for">
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+          <p id="env-var-error" class="error"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- Delete Env Var Modal -->
+    <div id="delete-env-var-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Delete Environment Variable</h2>
+          <button class="close-btn" data-close-modal>&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Are you sure you want to delete <strong id="delete-env-var-key"></strong>?</p>
+          <p class="warning">This will remove the variable from all tenant shared.env files.</p>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+            <button type="button" id="confirm-delete-env-var-btn" class="btn btn-danger">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tenant Env Vars Modal -->
+    <div id="tenant-env-vars-modal" class="modal hidden">
+      <div class="modal-content modal-large">
+        <div class="modal-header">
+          <h2>Environment Variables: <span id="tenant-env-vars-name"></span></h2>
+          <button class="close-btn" data-close-modal>&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="section-description">Variables applied to this tenant. Override global values or reset to use the global default.</p>
+          <div id="tenant-env-vars-list" class="env-vars-list">
+            <p class="loading">Loading...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Override Env Var Modal -->
+    <div id="override-env-var-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Override Variable</h2>
+          <button class="close-btn" data-close-modal>&times;</button>
+        </div>
+        <form id="override-env-var-form">
+          <input type="hidden" id="override-tenant-id">
+          <div class="form-group">
+            <label>Key</label>
+            <p id="override-env-var-key" class="readonly-value"></p>
+          </div>
+          <div class="form-group">
+            <label for="override-env-var-value">Value</label>
+            <input type="text" id="override-env-var-value" placeholder="Override value" required>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="override-env-var-sensitive">
+              Sensitive (mask value in UI)
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Override</button>
+          </div>
+          <p id="override-env-var-error" class="error"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- Restart All Tenants Confirmation Modal -->
+    <div id="restart-tenants-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Apply Changes</h2>
+          <button class="close-btn" data-close-modal>&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Environment variable changes have been saved and shared.env files regenerated for <strong id="restart-tenants-count"></strong> tenant(s).</p>
+          <p>Restart all tenants to apply the changes?</p>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-close-modal>Later</button>
+            <button type="button" id="confirm-restart-tenants-btn" class="btn btn-primary">Restart All</button>
           </div>
         </div>
       </div>
