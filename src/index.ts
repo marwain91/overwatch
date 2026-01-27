@@ -9,7 +9,6 @@ import statusRouter from './routes/status';
 import authRouter from './routes/auth';
 import adminUsersRouter from './routes/adminUsers';
 import backupsRouter from './routes/backups';
-import adminRouter from './routes/admin';
 import envVarsRouter from './routes/envVars';
 import { regenerateAllSharedEnvFiles } from './services/envVars';
 
@@ -58,7 +57,6 @@ app.use('/api/tenants', authMiddleware, tenantsRouter);
 app.use('/api/admin-users', authMiddleware, adminUsersRouter);
 app.use('/api/status', authMiddleware, statusRouter);
 app.use('/api/backups', authMiddleware, backupsRouter);
-app.use('/api/admin', authMiddleware, adminRouter);
 app.use('/api/env-vars', authMiddleware, envVarsRouter);
 
 // Serve frontend for all other routes

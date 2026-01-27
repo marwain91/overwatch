@@ -1345,71 +1345,6 @@ async function resetTenantOverride(tenantId, key) {
   }
 }
 
-// Overwatch Self-Update
-async function checkForOverwatchUpdate() {
-  const btn = document.getElementById('update-overwatch-btn');
-  setButtonLoading(btn, true, 'Checking...');
-
-  try {
-    const result = await api('/admin/check-update');
-
-    setButtonLoading(btn, false, 'Update');
-
-    if (result.updateAvailable) {
-      if (confirm('A new version of Overwatch is available. Update now?\n\nThe page will reload after the update.')) {
-        await performOverwatchUpdate();
-      }
-    } else {
-      alert('Overwatch is up to date!');
-    }
-  } catch (error) {
-    setButtonLoading(btn, false, 'Update');
-    alert(`Failed to check for updates: ${error.message}`);
-  }
-}
-
-async function performOverwatchUpdate() {
-  const btn = document.getElementById('update-overwatch-btn');
-  setButtonLoading(btn, true, 'Updating...');
-
-  try {
-    await api('/admin/update', { method: 'POST' });
-
-    setButtonLoading(btn, true, 'Restarting...');
-
-    // Wait for the old container to begin shutting down, then poll /health
-    await new Promise(r => setTimeout(r, 5000));
-
-    const maxAttempts = 60;
-    let attempts = 0;
-    let sawDown = false;
-
-    const poll = setInterval(async () => {
-      attempts++;
-      try {
-        const res = await fetch('/health', { signal: AbortSignal.timeout(3000) });
-        if (res.ok && sawDown) {
-          clearInterval(poll);
-          window.location.reload();
-        } else if (!res.ok) {
-          sawDown = true;
-        }
-      } catch {
-        sawDown = true;
-      }
-
-      if (attempts >= maxAttempts) {
-        clearInterval(poll);
-        alert('Update is taking longer than expected. Please refresh the page manually.');
-        setButtonLoading(btn, false, 'Update');
-      }
-    }, 2000);
-  } catch (error) {
-    setButtonLoading(btn, false, 'Update');
-    alert(`Update failed: ${error.message}`);
-  }
-}
-
 // Event Listeners
 document.addEventListener('DOMContentLoaded', async () => {
   await initGoogleSignIn();
@@ -1437,9 +1372,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
-
-  // Overwatch self-update
-  document.getElementById('update-overwatch-btn').addEventListener('click', checkForOverwatchUpdate);
 
   // Manage admins modal
   document.getElementById('manage-admins-btn').addEventListener('click', () => {
