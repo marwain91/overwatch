@@ -1153,6 +1153,8 @@ function showAddEnvVarModal() {
   document.getElementById('env-var-key').value = '';
   document.getElementById('env-var-key').disabled = false;
   document.getElementById('env-var-value').value = '';
+  document.getElementById('env-var-value').required = true;
+  document.getElementById('env-var-value').placeholder = 'Variable value';
   document.getElementById('env-var-sensitive').checked = false;
   document.getElementById('env-var-description').value = '';
   document.getElementById('env-var-error').textContent = '';
@@ -1166,6 +1168,7 @@ function showEditEnvVarModal(key, value, sensitive, description) {
   document.getElementById('env-var-key').disabled = true;
   document.getElementById('env-var-value').value = sensitive ? '' : value;
   document.getElementById('env-var-value').placeholder = sensitive ? 'Enter new value (leave blank to keep current)' : 'Variable value';
+  document.getElementById('env-var-value').required = !sensitive;
   document.getElementById('env-var-sensitive').checked = sensitive;
   document.getElementById('env-var-description').value = description;
   document.getElementById('env-var-error').textContent = '';
@@ -1183,10 +1186,6 @@ async function saveEnvVar(e) {
   const description = document.getElementById('env-var-description').value.trim();
   const isEdit = document.getElementById('env-var-key').disabled;
 
-  if (isEdit && sensitive && !value) {
-    document.getElementById('env-var-error').textContent = 'Value is required';
-    return;
-  }
 
   setButtonLoading(btn, true, 'Saving...');
 

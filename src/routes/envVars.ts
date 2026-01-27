@@ -32,11 +32,24 @@ router.post('/', async (req: Request, res: Response) => {
   try {
     const { key, value, sensitive, description } = req.body;
 
-    if (!key || value === undefined || value === null) {
-      return res.status(400).json({ error: 'Key and value are required' });
+    if (!key) {
+      return res.status(400).json({ error: 'Key is required' });
     }
 
-    const envVar = await setEnvVar(key, String(value), sensitive ?? false, description);
+    // When value is omitted, keep the existing value (for sensitive field edits)
+    let effectiveValue: string;
+    if (value === undefined || value === null || value === '') {
+      const existing = (await listEnvVars()).find(v => v.key === key);
+      if (existing) {
+        effectiveValue = existing.value;
+      } else {
+        return res.status(400).json({ error: 'Value is required for new variables' });
+      }
+    } else {
+      effectiveValue = String(value);
+    }
+
+    const envVar = await setEnvVar(key, effectiveValue, sensitive ?? false, description);
     const tenantsAffected = await regenerateAllSharedEnvFiles();
 
     res.json({
