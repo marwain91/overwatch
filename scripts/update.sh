@@ -8,8 +8,8 @@
 set -e
 
 # Configuration
-COMPOSE_DIR="${COMPOSE_DIR:-/opt/myapp/deploy/infrastructure}"
-SERVICE_NAME="${SERVICE_NAME:-admin}"
+COMPOSE_DIR="${COMPOSE_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+SERVICE_NAME="${SERVICE_NAME:-overwatch}"
 IMAGE="${IMAGE:-ghcr.io/marwain91/overwatch:latest}"
 
 # Colors

@@ -12,7 +12,7 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 - **Backup & Restore**: Full tenant backups using Restic (database + files), restore to existing or new tenants
 - **Admin Access**: Generate JWT tokens for direct tenant application access (optional)
 - **Google OAuth**: Secure admin panel login with allowlist
-- **Self-Update**: Check for and apply Overwatch updates from the admin panel
+- **Self-Update**: Update Overwatch via SSH script (`scripts/update.sh`)
 
 ## Supported Infrastructure
 
@@ -39,6 +39,8 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 - [Environment Variables](#environment-variables)
 - [API Reference](#api-reference)
 - [Deployment](#deployment)
+- [Updating](#updating)
+- [Deploying for a New Project](#deploying-for-a-new-project)
 - [Architecture](#architecture)
 - [Security](#security)
 - [Development](#development)
@@ -528,14 +530,6 @@ All API endpoints require authentication via Bearer token (except `/api/auth/*` 
 | `POST` | `/api/admin-users` | Add admin user |
 | `DELETE` | `/api/admin-users/:email` | Remove admin user |
 
-### Self-Update
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/admin/version` | Current Overwatch version info |
-| `GET` | `/api/admin/check-update` | Check for updates (pulls latest) |
-| `POST` | `/api/admin/update` | Apply update and restart |
-
 ### Health Check
 
 | Method | Endpoint | Description |
@@ -609,6 +603,197 @@ Overwatch needs access to:
 
 ---
 
+## Updating
+
+Overwatch is updated via the `scripts/update.sh` SSH script. Connect to your server and run:
+
+```bash
+./scripts/update.sh
+```
+
+This will pull the latest image, compare digests, and recreate the container if an update is available.
+
+To check for updates without applying:
+
+```bash
+./scripts/update.sh --check
+```
+
+### Environment Overrides
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `COMPOSE_DIR` | Parent of `scripts/` directory | Path to the directory containing `docker-compose.yml` |
+| `SERVICE_NAME` | `overwatch` | Docker Compose service name to restart |
+| `IMAGE` | `ghcr.io/marwain91/overwatch:latest` | Image to pull and check |
+
+Example with overrides:
+
+```bash
+COMPOSE_DIR=/opt/myapp/deploy SERVICE_NAME=admin ./scripts/update.sh
+```
+
+---
+
+## Deploying for a New Project
+
+This guide walks through adapting Overwatch to manage a completely different containerized application.
+
+### Prerequisites
+
+- Docker and Docker Compose installed on the server
+- A database engine (MySQL, MariaDB, or PostgreSQL) running in Docker
+- Your application images published to a container registry (GHCR, Docker Hub, ECR, or a custom registry)
+- A reverse proxy (Traefik, nginx, etc.) for HTTPS termination (recommended)
+
+### Step-by-step Setup
+
+#### 1. Create a deploy directory
+
+```bash
+mkdir -p /opt/myapp/deploy
+cd /opt/myapp/deploy
+```
+
+#### 2. Write `overwatch.yaml`
+
+Define your project, database, registry, and services:
+
+```yaml
+project:
+  name: "My App"
+  prefix: "myapp"
+  db_prefix: "myapp"
+
+database:
+  type: "postgres"
+  host: "myapp-postgres"
+  port: 5432
+  root_user: "postgres"
+  root_password_env: "POSTGRES_PASSWORD"
+  container_name: "myapp-postgres"
+
+registry:
+  type: "dockerhub"
+  url: "docker.io"
+  repository: "myorg/myapp"
+  auth:
+    type: "basic"
+    username_env: "DOCKER_USERNAME"
+
+services:
+  - name: "app"
+    required: true
+    image_suffix: "app"
+
+networking:
+  external_network: "myapp-network"
+  tenants_path: "/app/tenants"
+```
+
+#### 3. Create `.env`
+
+```bash
+JWT_SECRET=<generate-a-strong-secret>
+GOOGLE_CLIENT_ID=<your-google-oauth-client-id>
+POSTGRES_PASSWORD=<your-db-root-password>
+DOCKER_USERNAME=<your-dockerhub-username>
+DOCKER_PASSWORD=<your-dockerhub-token>
+```
+
+#### 4. Create a tenant template
+
+Create `tenant-template/docker-compose.yml` using the variables documented in [Tenant Template](#tenant-template). This defines what containers each tenant gets.
+
+#### 5. Set up Docker Compose
+
+Create `docker-compose.yml` for Overwatch alongside your infrastructure:
+
+```yaml
+services:
+  overwatch:
+    image: ghcr.io/marwain91/overwatch:latest
+    container_name: overwatch
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./overwatch.yaml:/app/overwatch.yaml:ro
+      - ./data/admin-users.json:/app/data/admin-users.json
+      - ./tenants:/app/tenants
+      - ./tenant-template:/app/tenant-template:ro
+    networks:
+      - myapp-network
+
+  postgres:
+    image: postgres:16
+    container_name: myapp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - myapp-network
+
+networks:
+  myapp-network:
+    name: myapp-network
+
+volumes:
+  pgdata:
+```
+
+#### 6. Start everything
+
+```bash
+docker compose up -d
+```
+
+Access Overwatch at `http://<your-server>:3002`, log in with Google OAuth, and create your first tenant.
+
+### Example
+
+Suppose you're deploying **Acme SaaS** — a Node.js app with a PostgreSQL database, images on Docker Hub at `acmecorp/acme-saas`.
+
+| Setting | Value |
+|---------|-------|
+| `project.prefix` | `acme` |
+| `database.type` | `postgres` |
+| `registry.type` | `dockerhub` |
+| `registry.repository` | `acmecorp/acme-saas` |
+| `services[0].name` | `app` |
+| `services[0].image_suffix` | `app` |
+| `networking.external_network` | `acme-network` |
+
+Tenants will get containers named `acme-{tenantId}-app`, databases named `acme_{tenantId}`, and connect to the shared `acme-network`.
+
+### Final Directory Structure
+
+```
+/opt/myapp/deploy/
+├── docker-compose.yml          # Overwatch + infrastructure
+├── overwatch.yaml              # Project configuration
+├── .env                        # Secrets and credentials
+├── tenant-template/
+│   └── docker-compose.yml      # Template for tenant containers
+├── tenants/                    # Created automatically per tenant
+│   ├── tenant-a/
+│   │   ├── docker-compose.yml
+│   │   └── .env
+│   └── tenant-b/
+│       ├── docker-compose.yml
+│       └── .env
+├── data/
+│   └── admin-users.json        # Admin user list
+└── scripts/
+    └── update.sh               # SSH update script
+```
+
+---
+
 ## Architecture
 
 ```
@@ -676,8 +861,7 @@ overwatch/
 │   │   ├── tenants.ts        # Tenant endpoints
 │   │   ├── status.ts         # System status endpoints
 │   │   ├── backups.ts        # Backup endpoints
-│   │   ├── adminUsers.ts     # Admin user endpoints
-│   │   └── admin.ts          # Self-update endpoints
+│   │   └── adminUsers.ts     # Admin user endpoints
 │   └── middleware/
 │       └── auth.ts           # JWT authentication
 ├── public/                   # Static frontend files
