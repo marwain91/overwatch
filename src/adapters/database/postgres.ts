@@ -17,6 +17,9 @@ export class PostgresAdapter implements DatabaseAdapter {
   }
 
   async initialize(): Promise<void> {
+    if (this.pool) {
+      return; // Already initialized
+    }
     this.pool = new Pool({
       host: this.config.host,
       port: this.config.port,

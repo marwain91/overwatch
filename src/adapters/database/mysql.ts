@@ -17,6 +17,9 @@ export class MySQLAdapter implements DatabaseAdapter {
   }
 
   async initialize(): Promise<void> {
+    if (this.pool) {
+      return; // Already initialized
+    }
     this.pool = mysql.createPool({
       host: this.config.host,
       port: this.config.port,

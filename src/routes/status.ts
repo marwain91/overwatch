@@ -49,7 +49,6 @@ router.get('/health', async (req, res) => {
     const prefix = getContainerPrefix();
     const db = getDatabaseAdapter();
 
-    await db.initialize();
     const dbConnected = await db.testConnection();
     const containers = await listContainers();
     const databases = await db.listDatabases();
