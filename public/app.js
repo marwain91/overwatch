@@ -150,16 +150,29 @@ class SearchableSelect {
   }
 
   renderOptions() {
-    if (this.filteredOptions.length === 0) {
-      this.optionsEl.innerHTML = '<div class="searchable-select-empty">No matches found</div>';
-      return;
+    const searchQuery = this.searchInputEl ? this.searchInputEl.value.trim() : '';
+    let html = '';
+
+    if (this.filteredOptions.length > 0) {
+      html = this.filteredOptions.map((option, index) => {
+        const isSelected = option === this.selectedValue;
+        const isHighlighted = index === this.highlightedIndex;
+        return `<div class="searchable-select-option${isSelected ? ' selected' : ''}${isHighlighted ? ' highlighted' : ''}" data-value="${option}" data-index="${index}">${option}</div>`;
+      }).join('');
     }
 
-    this.optionsEl.innerHTML = this.filteredOptions.map((option, index) => {
-      const isSelected = option === this.selectedValue;
-      const isHighlighted = index === this.highlightedIndex;
-      return `<div class="searchable-select-option${isSelected ? ' selected' : ''}${isHighlighted ? ' highlighted' : ''}" data-value="${option}" data-index="${index}">${option}</div>`;
-    }).join('');
+    // Show custom tag option when search text doesn't exactly match any option
+    if (searchQuery && !this.options.includes(searchQuery)) {
+      const customIndex = this.filteredOptions.length;
+      const isHighlighted = customIndex === this.highlightedIndex;
+      html += `<div class="searchable-select-option custom-tag${isHighlighted ? ' highlighted' : ''}" data-value="${searchQuery}" data-index="${customIndex}">Use "${searchQuery}"</div>`;
+    }
+
+    if (!html) {
+      html = '<div class="searchable-select-empty">Type a custom tag or search</div>';
+    }
+
+    this.optionsEl.innerHTML = html;
   }
 
   attachEvents() {
@@ -174,6 +187,10 @@ class SearchableSelect {
       const query = e.target.value.toLowerCase();
       this.filteredOptions = this.options.filter(opt => opt.toLowerCase().includes(query));
       this.highlightedIndex = this.filteredOptions.length > 0 ? 0 : -1;
+      // If no exact match and there's a custom option, highlight it
+      if (e.target.value.trim() && !this.options.includes(e.target.value.trim()) && this.highlightedIndex === -1) {
+        this.highlightedIndex = 0;
+      }
       this.renderOptions();
     });
 
@@ -206,6 +223,12 @@ class SearchableSelect {
         e.preventDefault();
         if (this.highlightedIndex >= 0 && this.highlightedIndex < this.filteredOptions.length) {
           this.selectOption(this.filteredOptions[this.highlightedIndex]);
+        } else {
+          // Accept custom input
+          const customValue = this.searchInputEl.value.trim();
+          if (customValue) {
+            this.selectOption(customValue);
+          }
         }
       } else if (e.key === 'Escape') {
         this.close();
