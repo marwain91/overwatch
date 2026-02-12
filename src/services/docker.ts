@@ -185,7 +185,7 @@ export async function stopTenant(tenantId: string): Promise<void> {
 
 export async function restartTenant(tenantId: string): Promise<void> {
   const tenantPath = path.join(getTenantsDir(), tenantId);
-  await execAsync(`docker compose -f ${tenantPath}/docker-compose.yml restart`);
+  await execAsync(`docker compose -f ${tenantPath}/docker-compose.yml up -d --force-recreate`);
 }
 
 /**
