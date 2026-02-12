@@ -52,7 +52,7 @@ networks:
 # To connect Overwatch to your project's existing network:
 # 1. Uncomment the network in the service and at the bottom
 # 2. Replace 'your-project-network' with your actual network name
-# Example for MyApp:
+# Example:
 #   networks:
 #     - myapp-network
 #   ...
