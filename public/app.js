@@ -1262,12 +1262,10 @@ async function restartAllTenants() {
 
   try {
     for (const tenant of cachedTenants) {
-      if (tenant.healthy) {
-        try {
-          await api(`/tenants/${tenant.tenantId}/restart`, { method: 'POST' });
-        } catch (err) {
-          console.error(`Failed to restart ${tenant.tenantId}:`, err);
-        }
+      try {
+        await api(`/tenants/${tenant.tenantId}/restart`, { method: 'POST' });
+      } catch (err) {
+        console.error(`Failed to restart ${tenant.tenantId}:`, err);
       }
     }
     hideModal('restart-tenants-modal');
