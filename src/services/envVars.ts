@@ -292,7 +292,19 @@ export async function generateSharedEnvFile(tenantId: string): Promise<void> {
 
   lines.push(''); // trailing newline
 
-  await fs.writeFile(path.join(tenantPath, 'shared.env'), lines.join('\n'));
+  const sharedEnvPath = path.join(tenantPath, 'shared.env');
+
+  // If shared.env is a symlink, remove it first so we write a real file
+  try {
+    const stat = await fs.lstat(sharedEnvPath);
+    if (stat.isSymbolicLink()) {
+      await fs.unlink(sharedEnvPath);
+    }
+  } catch {
+    // File doesn't exist yet, that's fine
+  }
+
+  await fs.writeFile(sharedEnvPath, lines.join('\n'));
 }
 
 export async function regenerateAllSharedEnvFiles(): Promise<number> {
