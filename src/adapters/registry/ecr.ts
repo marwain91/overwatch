@@ -44,9 +44,9 @@ export class ECRAdapter implements RegistryAdapter {
         .flat()
         .filter((t: string | null) => t !== null);
 
-      // Filter for version tags (starting with 'v') and sort descending
+      const pattern = this.config.tagPattern || /^v/;
       return tags
-        .filter((name: string) => name.startsWith('v'))
+        .filter((name: string) => pattern.test(name))
         .sort((a: string, b: string) => b.localeCompare(a, undefined, { numeric: true }));
     } catch (error) {
       console.error('Failed to fetch tags from ECR:', error);

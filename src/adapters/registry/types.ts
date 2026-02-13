@@ -36,6 +36,7 @@ export interface RegistryAdapterConfig {
   username?: string;
   token?: string;
   awsRegion?: string;
+  tagPattern?: RegExp;
 }
 
 /**
@@ -49,5 +50,6 @@ export function toAdapterConfig(config: RegistryConfig): RegistryAdapterConfig {
     username: config.auth.username_env ? process.env[config.auth.username_env] : undefined,
     token: config.auth.token_env ? process.env[config.auth.token_env] : undefined,
     awsRegion: config.auth.aws_region_env ? process.env[config.auth.aws_region_env] : undefined,
+    tagPattern: config.tag_pattern ? new RegExp(config.tag_pattern) : undefined,
   };
 }

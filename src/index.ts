@@ -12,6 +12,7 @@ import authRouter from './routes/auth';
 import adminUsersRouter from './routes/adminUsers';
 import backupsRouter from './routes/backups';
 import envVarsRouter from './routes/envVars';
+import auditLogsRouter from './routes/auditLogs';
 import { regenerateAllSharedEnvFiles } from './services/envVars';
 
 // Load environment variables
@@ -65,10 +66,18 @@ app.use('/api/admin-users', authMiddleware, apiLimiter, auditLog, adminUsersRout
 app.use('/api/status', authMiddleware, apiLimiter, statusRouter);
 app.use('/api/backups', authMiddleware, apiLimiter, auditLog, backupsRouter);
 app.use('/api/env-vars', authMiddleware, apiLimiter, auditLog, envVarsRouter);
+app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
 
 // Serve frontend for all other routes
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
+// Global error handler — catches errors forwarded by asyncHandler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error(`Error in ${req.method} ${req.path}:`, err);
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({ error: err.message || 'Internal server error' });
 });
 
 // Initialize and start server
@@ -90,12 +99,35 @@ async function start() {
     console.error('Warning: Failed to generate shared.env files:', error);
   }
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Overwatch running on port ${PORT}`);
     console.log(`Managing project: ${config.project.name}`);
     console.log(`Database: ${config.database.type} @ ${config.database.host}`);
     console.log(`Registry: ${config.registry.type} @ ${config.registry.url}`);
   });
+
+  // Graceful shutdown
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n${signal} received — shutting down gracefully...`);
+
+    // Stop accepting new connections
+    server.close(() => {
+      console.log('All connections closed. Exiting.');
+      process.exit(0);
+    });
+
+    // Force exit after timeout if connections don't drain
+    setTimeout(() => {
+      console.error('Shutdown timed out after 30s — forcing exit.');
+      process.exit(1);
+    }, 30_000).unref();
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start();

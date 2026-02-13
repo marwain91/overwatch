@@ -5,6 +5,7 @@ let currentUser = JSON.parse(localStorage.getItem('overwatch_admin_user') || 'nu
 let googleClientId = '';
 let projectConfig = null;
 let envVarsLoaded = false;
+let activityLoaded = false;
 
 // Toast Notifications
 const toastIcons = {
@@ -52,6 +53,9 @@ function switchTab(tabName) {
   if (tabName === 'environment' && !envVarsLoaded) {
     envVarsLoaded = true;
     loadEnvVars();
+  }
+  if (tabName === 'activity') {
+    loadAuditLogs();
   }
 }
 
@@ -520,12 +524,29 @@ async function loadDashboard(silent = false) {
 
     document.getElementById('tenant-count').textContent = tenants.length;
 
-    renderTenants(tenants);
+    renderFilteredTenants();
   } catch (error) {
     console.error('Failed to load dashboard:', error);
   } finally {
     if (refreshEl) refreshEl.classList.add('hidden');
   }
+}
+
+function renderFilteredTenants() {
+  const search = (document.getElementById('tenant-search')?.value || '').toLowerCase();
+  const sortBy = document.getElementById('tenant-sort')?.value || 'name';
+
+  let filtered = cachedTenants.filter(t =>
+    !search || t.tenantId.toLowerCase().includes(search) || t.domain.toLowerCase().includes(search)
+  );
+
+  filtered.sort((a, b) => {
+    if (sortBy === 'status') return (b.healthy ? 1 : 0) - (a.healthy ? 1 : 0);
+    if (sortBy === 'version') return (a.version || '').localeCompare(b.version || '', undefined, { numeric: true });
+    return a.tenantId.localeCompare(b.tenantId);
+  });
+
+  renderTenants(filtered);
 }
 
 function formatContainerTooltip(containers) {
@@ -596,48 +617,24 @@ function renderTenants(tenants) {
   `}).join('');
 }
 
-// Tenant Actions
-async function startTenant(tenantId, btn) {
-  guardAction(`start-${tenantId}`, async () => {
-    setButtonLoading(btn, true, 'Starting...');
+// Tenant Actions — generic helper
+async function tenantAction(tenantId, action, label, btn) {
+  guardAction(`${action}-${tenantId}`, async () => {
+    setButtonLoading(btn, true, `${label}ing...`);
     try {
-      await api(`/tenants/${tenantId}/start`, { method: 'POST' });
-      showToast(`Tenant ${tenantId} started`, 'success');
+      await api(`/tenants/${tenantId}/${action}`, { method: 'POST' });
+      showToast(`Tenant ${tenantId} ${label.toLowerCase()}ed`, 'success');
       loadDashboard();
     } catch (error) {
-      setButtonLoading(btn, false, 'Start');
-      showToast(`Failed to start ${tenantId}: ${error.message}`, 'error');
+      setButtonLoading(btn, false, label);
+      showToast(`Failed to ${action} ${tenantId}: ${error.message}`, 'error');
     }
   });
 }
 
-async function stopTenant(tenantId, btn) {
-  guardAction(`stop-${tenantId}`, async () => {
-    setButtonLoading(btn, true, 'Stopping...');
-    try {
-      await api(`/tenants/${tenantId}/stop`, { method: 'POST' });
-      showToast(`Tenant ${tenantId} stopped`, 'success');
-      loadDashboard();
-    } catch (error) {
-      setButtonLoading(btn, false, 'Stop');
-      showToast(`Failed to stop ${tenantId}: ${error.message}`, 'error');
-    }
-  });
-}
-
-async function restartTenant(tenantId, btn) {
-  guardAction(`restart-${tenantId}`, async () => {
-    setButtonLoading(btn, true, 'Restarting...');
-    try {
-      await api(`/tenants/${tenantId}/restart`, { method: 'POST' });
-      showToast(`Tenant ${tenantId} restarted`, 'success');
-      loadDashboard();
-    } catch (error) {
-      setButtonLoading(btn, false, 'Restart');
-      showToast(`Failed to restart ${tenantId}: ${error.message}`, 'error');
-    }
-  });
-}
+function startTenant(tenantId, btn) { tenantAction(tenantId, 'start', 'Start', btn); }
+function stopTenant(tenantId, btn) { tenantAction(tenantId, 'stop', 'Stopp', btn); }
+function restartTenant(tenantId, btn) { tenantAction(tenantId, 'restart', 'Restart', btn); }
 
 async function accessTenant(tenantId, btn) {
   guardAction(`access-${tenantId}`, async () => {
@@ -1433,6 +1430,95 @@ async function resetTenantOverride(tenantId, key) {
   }
 }
 
+// Audit Log
+async function loadAuditLogs() {
+  const container = document.getElementById('activity-list');
+  container.innerHTML = '<p class="loading">Loading activity...</p>';
+
+  try {
+    const entries = await api('/audit-logs?limit=50');
+    renderAuditLogs(entries);
+  } catch (error) {
+    container.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+  }
+}
+
+function renderAuditLogs(entries) {
+  const container = document.getElementById('activity-list');
+
+  if (entries.length === 0) {
+    container.innerHTML = '<p class="empty">No activity recorded yet.</p>';
+    return;
+  }
+
+  container.innerHTML = entries.map(entry => {
+    const date = new Date(entry.timestamp);
+    const timeStr = date.toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+    const isError = entry.status >= 400;
+    return `
+      <div class="activity-card">
+        <div class="activity-info">
+          <span class="activity-action">${escapeHtml(entry.action)}</span>
+          <span class="activity-meta">${escapeHtml(entry.user)} &middot; ${timeStr}</span>
+        </div>
+        <span class="activity-status ${isError ? 'error' : 'success'}">${entry.status}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+// Bulk Tenant Actions
+async function stopAllTenants(btn) {
+  guardAction('stop-all', async () => {
+    setButtonLoading(btn, true, 'Stopping...');
+
+    const failed = [];
+    for (const tenant of cachedTenants) {
+      if (!tenant.healthy) continue;
+      try {
+        await api(`/tenants/${tenant.tenantId}/stop`, { method: 'POST' });
+      } catch (err) {
+        failed.push(tenant.tenantId);
+      }
+    }
+
+    setButtonLoading(btn, false, 'Stop All');
+    loadDashboard();
+
+    if (failed.length > 0) {
+      showToast(`Failed to stop: ${failed.join(', ')}`, 'error', 6000);
+    } else {
+      showToast('All tenants stopped', 'success');
+    }
+  });
+}
+
+async function restartAllTenantsFromBtn(btn) {
+  guardAction('restart-all', async () => {
+    setButtonLoading(btn, true, 'Restarting...');
+
+    const failed = [];
+    for (const tenant of cachedTenants) {
+      try {
+        await api(`/tenants/${tenant.tenantId}/restart`, { method: 'POST' });
+      } catch (err) {
+        failed.push(tenant.tenantId);
+      }
+    }
+
+    setButtonLoading(btn, false, 'Restart All');
+    loadDashboard();
+
+    if (failed.length > 0) {
+      showToast(`Failed to restart: ${failed.join(', ')}`, 'error', 6000);
+    } else {
+      showToast('All tenants restarted', 'success');
+    }
+  });
+}
+
 // Event Listeners
 document.addEventListener('DOMContentLoaded', async () => {
   await initGoogleSignIn();
@@ -1466,6 +1552,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     showModal('manage-admins-modal');
     loadAdminUsers();
   });
+
+  // Search & sort
+  document.getElementById('tenant-search').addEventListener('input', renderFilteredTenants);
+  document.getElementById('tenant-sort').addEventListener('change', renderFilteredTenants);
+
+  // Bulk actions
+  document.getElementById('stop-all-btn').addEventListener('click', (e) => stopAllTenants(e.target));
+  document.getElementById('restart-all-btn').addEventListener('click', (e) => restartAllTenantsFromBtn(e.target));
+
+  // Activity tab refresh
+  document.getElementById('refresh-activity-btn').addEventListener('click', loadAuditLogs);
 
   document.getElementById('create-tenant-btn').addEventListener('click', () => {
     document.getElementById('create-tenant-form').reset();

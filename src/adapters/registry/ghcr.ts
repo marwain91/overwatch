@@ -59,10 +59,10 @@ export class GHCRAdapter implements RegistryAdapter {
 
       const gitTags = await response.json() as Array<{ name: string }>;
 
-      // Filter for version tags (starting with 'v') and sort descending
+      const pattern = this.config.tagPattern || /^v/;
       return gitTags
         .map(t => t.name)
-        .filter(name => name.startsWith('v'))
+        .filter(name => pattern.test(name))
         .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
     } catch (error) {
       console.error('Failed to fetch tags from GitHub:', error);

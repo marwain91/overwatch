@@ -65,6 +65,7 @@
         <div class="tab-bar">
           <button class="tab-btn active" data-tab="tenants">Tenants</button>
           <button class="tab-btn" data-tab="environment">Environment</button>
+          <button class="tab-btn" data-tab="activity">Activity</button>
         </div>
 
         <div id="tab-tenants" class="tab-content">
@@ -95,10 +96,34 @@
           <section class="card">
             <div class="card-header">
               <h2>Tenants</h2>
-              <button id="create-tenant-btn" class="btn btn-primary">+ Create Tenant</button>
+              <div class="card-header-actions">
+                <button id="stop-all-btn" class="btn btn-secondary btn-sm">Stop All</button>
+                <button id="restart-all-btn" class="btn btn-secondary btn-sm">Restart All</button>
+                <button id="create-tenant-btn" class="btn btn-primary btn-sm">+ Create Tenant</button>
+              </div>
+            </div>
+            <div class="tenants-toolbar">
+              <input type="text" id="tenant-search" class="tenant-search-input" placeholder="Search by ID or domain...">
+              <select id="tenant-sort" class="tenant-sort-select">
+                <option value="name">Sort: Name</option>
+                <option value="status">Sort: Status</option>
+                <option value="version">Sort: Version</option>
+              </select>
             </div>
             <div id="tenants-list" class="tenants-list">
               <p class="loading">Loading tenants...</p>
+            </div>
+          </section>
+        </div>
+
+        <div id="tab-activity" class="tab-content hidden">
+          <section class="card">
+            <div class="card-header">
+              <h2>Recent Activity</h2>
+              <button id="refresh-activity-btn" class="btn btn-secondary btn-sm">Refresh</button>
+            </div>
+            <div id="activity-list" class="activity-list">
+              <p class="loading">Loading activity...</p>
             </div>
           </section>
         </div>

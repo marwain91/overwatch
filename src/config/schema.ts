@@ -24,6 +24,7 @@ export const RegistryConfigSchema = z.object({
   url: z.string(),
   repository: z.string(),
   auth: RegistryAuthSchema,
+  tag_pattern: z.string().optional(),
 });
 
 // Health check configuration

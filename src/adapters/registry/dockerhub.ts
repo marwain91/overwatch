@@ -45,10 +45,10 @@ export class DockerHubAdapter implements RegistryAdapter {
 
       const data = await response.json() as { results: Array<{ name: string }> };
 
-      // Filter for version tags (starting with 'v') and sort descending
+      const pattern = this.config.tagPattern || /^v/;
       return data.results
         .map(t => t.name)
-        .filter(name => name.startsWith('v'))
+        .filter(name => pattern.test(name))
         .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
     } catch (error) {
       console.error('Failed to fetch tags from Docker Hub:', error);
