@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
 import { isAdminEmail } from '../services/users';
+import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
 
@@ -12,7 +13,7 @@ const JWT_SECRET = process.env.JWT_SECRET!;
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 // Verify Google ID token and issue JWT
-router.post('/google', async (req: Request, res: Response) => {
+router.post('/google', asyncHandler(async (req: Request, res: Response) => {
   const { credential } = req.body;
 
   if (!credential) {
@@ -23,52 +24,47 @@ router.post('/google', async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Google OAuth not configured' });
   }
 
-  try {
-    const ticket = await client.verifyIdToken({
-      idToken: credential,
-      audience: GOOGLE_CLIENT_ID,
-    });
+  const ticket = await client.verifyIdToken({
+    idToken: credential,
+    audience: GOOGLE_CLIENT_ID,
+  });
 
-    const payload = ticket.getPayload();
-    if (!payload || !payload.email) {
-      return res.status(401).json({ error: 'Invalid token payload' });
-    }
-
-    const email = payload.email.toLowerCase();
-
-    // Check if user is in allowed admins list
-    const isAllowed = await isAdminEmail(email);
-    if (!isAllowed) {
-      console.log(`Unauthorized login attempt from: ${email}`);
-      return res.status(403).json({ error: 'You are not authorized to access the admin panel' });
-    }
-
-    // Generate JWT for session
-    const token = jwt.sign(
-      {
-        email: payload.email,
-        name: payload.name,
-        picture: payload.picture,
-      },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    console.log(`Admin login successful: ${email}`);
-
-    res.json({
-      token,
-      user: {
-        email: payload.email,
-        name: payload.name,
-        picture: payload.picture,
-      },
-    });
-  } catch (error) {
-    console.error('Google auth error:', error);
-    res.status(401).json({ error: 'Invalid Google token' });
+  const payload = ticket.getPayload();
+  if (!payload || !payload.email) {
+    return res.status(401).json({ error: 'Invalid token payload' });
   }
-});
+
+  const email = payload.email.toLowerCase();
+
+  // Check if user is in allowed admins list
+  const isAllowed = await isAdminEmail(email);
+  if (!isAllowed) {
+    console.log(`Unauthorized login attempt from: ${email}`);
+    return res.status(403).json({ error: 'You are not authorized to access the admin panel' });
+  }
+
+  // Generate JWT for session
+  const token = jwt.sign(
+    {
+      email: payload.email,
+      name: payload.name,
+      picture: payload.picture,
+    },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+
+  console.log(`Admin login successful: ${email}`);
+
+  res.json({
+    token,
+    user: {
+      email: payload.email,
+      name: payload.name,
+      picture: payload.picture,
+    },
+  });
+}));
 
 // Verify JWT token
 router.get('/verify', (req: Request, res: Response) => {
