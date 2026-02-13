@@ -6,6 +6,42 @@ let googleClientId = '';
 let projectConfig = null;
 let envVarsLoaded = false;
 
+// Toast Notifications
+const toastIcons = {
+  success: '&#10003;',
+  error: '&#10007;',
+  warning: '&#9888;',
+  info: '&#8505;',
+};
+
+function showToast(message, type = 'info', duration = 4000) {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `
+    <span class="toast-icon">${toastIcons[type]}</span>
+    <span class="toast-body">${escapeHtml(message)}</span>
+    <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>
+  `;
+  container.appendChild(toast);
+
+  if (duration > 0) {
+    setTimeout(() => {
+      toast.classList.add('removing');
+      setTimeout(() => toast.remove(), 250);
+    }, duration);
+  }
+}
+
+// Double-click protection
+const _activeActions = new Set();
+
+function guardAction(key, fn) {
+  if (_activeActions.has(key)) return;
+  _activeActions.add(key);
+  return Promise.resolve(fn()).finally(() => _activeActions.delete(key));
+}
+
 function switchTab(tabName) {
   document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
   document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -441,7 +477,10 @@ function showScreen(screen) {
 }
 
 // UI Updates
-async function loadDashboard() {
+async function loadDashboard(silent = false) {
+  const refreshEl = document.getElementById('refresh-indicator');
+  if (silent && refreshEl) refreshEl.classList.remove('hidden');
+
   try {
     const [health, tenants, , buildHealth] = await Promise.all([
       api('/status/health'),
@@ -484,6 +523,8 @@ async function loadDashboard() {
     renderTenants(tenants);
   } catch (error) {
     console.error('Failed to load dashboard:', error);
+  } finally {
+    if (refreshEl) refreshEl.classList.add('hidden');
   }
 }
 
@@ -557,48 +598,59 @@ function renderTenants(tenants) {
 
 // Tenant Actions
 async function startTenant(tenantId, btn) {
-  setButtonLoading(btn, true, 'Starting...');
-  try {
-    await api(`/tenants/${tenantId}/start`, { method: 'POST' });
-    loadDashboard();
-  } catch (error) {
-    setButtonLoading(btn, false, 'Start');
-    alert(`Failed to start tenant: ${error.message}`);
-  }
+  guardAction(`start-${tenantId}`, async () => {
+    setButtonLoading(btn, true, 'Starting...');
+    try {
+      await api(`/tenants/${tenantId}/start`, { method: 'POST' });
+      showToast(`Tenant ${tenantId} started`, 'success');
+      loadDashboard();
+    } catch (error) {
+      setButtonLoading(btn, false, 'Start');
+      showToast(`Failed to start ${tenantId}: ${error.message}`, 'error');
+    }
+  });
 }
 
 async function stopTenant(tenantId, btn) {
-  setButtonLoading(btn, true, 'Stopping...');
-  try {
-    await api(`/tenants/${tenantId}/stop`, { method: 'POST' });
-    loadDashboard();
-  } catch (error) {
-    setButtonLoading(btn, false, 'Stop');
-    alert(`Failed to stop tenant: ${error.message}`);
-  }
+  guardAction(`stop-${tenantId}`, async () => {
+    setButtonLoading(btn, true, 'Stopping...');
+    try {
+      await api(`/tenants/${tenantId}/stop`, { method: 'POST' });
+      showToast(`Tenant ${tenantId} stopped`, 'success');
+      loadDashboard();
+    } catch (error) {
+      setButtonLoading(btn, false, 'Stop');
+      showToast(`Failed to stop ${tenantId}: ${error.message}`, 'error');
+    }
+  });
 }
 
 async function restartTenant(tenantId, btn) {
-  setButtonLoading(btn, true, 'Restarting...');
-  try {
-    await api(`/tenants/${tenantId}/restart`, { method: 'POST' });
-    loadDashboard();
-  } catch (error) {
-    setButtonLoading(btn, false, 'Restart');
-    alert(`Failed to restart tenant: ${error.message}`);
-  }
+  guardAction(`restart-${tenantId}`, async () => {
+    setButtonLoading(btn, true, 'Restarting...');
+    try {
+      await api(`/tenants/${tenantId}/restart`, { method: 'POST' });
+      showToast(`Tenant ${tenantId} restarted`, 'success');
+      loadDashboard();
+    } catch (error) {
+      setButtonLoading(btn, false, 'Restart');
+      showToast(`Failed to restart ${tenantId}: ${error.message}`, 'error');
+    }
+  });
 }
 
 async function accessTenant(tenantId, btn) {
-  setButtonLoading(btn, true, 'Loading...');
-  try {
-    const result = await api(`/tenants/${tenantId}/access-token`, { method: 'POST' });
-    setButtonLoading(btn, false, 'Access');
-    window.open(result.accessUrl, '_blank');
-  } catch (error) {
-    setButtonLoading(btn, false, 'Access');
-    alert(`Failed to access tenant: ${error.message}`);
-  }
+  guardAction(`access-${tenantId}`, async () => {
+    setButtonLoading(btn, true, 'Loading...');
+    try {
+      const result = await api(`/tenants/${tenantId}/access-token`, { method: 'POST' });
+      setButtonLoading(btn, false, 'Access');
+      window.open(result.accessUrl, '_blank');
+    } catch (error) {
+      setButtonLoading(btn, false, 'Access');
+      showToast(`Failed to access ${tenantId}: ${error.message}`, 'error');
+    }
+  });
 }
 
 // Modals
@@ -674,10 +726,11 @@ async function deleteTenant(tenantId) {
   try {
     await api(`/tenants/${tenantId}?keepData=${keepData}`, { method: 'DELETE' });
     hideAllModals();
+    showToast(`Tenant ${tenantId} deleted`, 'success');
     loadDashboard();
   } catch (error) {
     setButtonLoading(btn, false, 'Delete');
-    alert(`Failed to delete tenant: ${error.message}`);
+    showToast(`Failed to delete tenant: ${error.message}`, 'error');
   }
 }
 
@@ -727,10 +780,10 @@ function renderAdminUsers(admins) {
       ${admins.map(admin => `
         <div class="admin-user-card">
           <div class="admin-user-info">
-            <span class="admin-email">${admin.email}</span>
-            <span class="admin-meta">Added ${formatDate(admin.addedAt)} by ${admin.addedBy}</span>
+            <span class="admin-email">${escapeHtml(admin.email)}</span>
+            <span class="admin-meta">Added ${formatDate(admin.addedAt)} by ${escapeHtml(admin.addedBy)}</span>
           </div>
-          <button class="btn btn-danger btn-xs" onclick="confirmDeleteAdmin('${admin.email}')">Remove</button>
+          <button class="btn btn-danger btn-xs" onclick="confirmDeleteAdmin('${escapeAttr(admin.email)}')">Remove</button>
         </div>
       `).join('')}
     </div>
@@ -763,6 +816,7 @@ async function addAdmin(e) {
       body: JSON.stringify({ email }),
     });
     hideModal('add-admin-modal');
+    showToast(`Admin ${email} added`, 'success');
     loadAdminUsers();
   } catch (error) {
     setButtonLoading(btn, false, 'Add Admin');
@@ -784,10 +838,11 @@ async function deleteAdmin(email) {
   try {
     await api(`/admin-users/${encodeURIComponent(email)}`, { method: 'DELETE' });
     hideModal('delete-admin-modal');
+    showToast(`Admin ${email} removed`, 'success');
     loadAdminUsers();
   } catch (error) {
     setButtonLoading(btn, false, 'Remove');
-    alert(`Failed to remove admin: ${error.message}`);
+    showToast(`Failed to remove admin: ${error.message}`, 'error');
   }
 }
 
@@ -829,10 +884,10 @@ async function initBackupRepo() {
   try {
     await api('/backups/init', { method: 'POST' });
     await loadBackupStatus();
-    alert('Backup repository initialized successfully!');
+    showToast('Backup repository initialized', 'success');
   } catch (error) {
     statusEl.textContent = 'Error';
-    alert(`Failed to initialize: ${error.message}`);
+    showToast(`Failed to initialize: ${error.message}`, 'error');
   }
 }
 
@@ -849,7 +904,7 @@ async function showTenantBackupsModal(tenantId) {
     if (error.isLocked) {
       showLockedError('tenant-backups-list', error.lockInfo);
     } else {
-      document.getElementById('tenant-backups-list').innerHTML = `<p class="error">Failed to check backup status: ${error.message}</p>`;
+      document.getElementById('tenant-backups-list').innerHTML = `<p class="error">Failed to check backup status: ${escapeHtml(error.message)}</p>`;
     }
     return;
   }
@@ -886,7 +941,7 @@ async function initBackupRepoFromModal() {
     if (error.isLocked) {
       showLockedError('tenant-backups-list', error.lockInfo);
     } else {
-      document.getElementById('tenant-backups-list').innerHTML = `<p class="error">Failed to initialize: ${error.message}</p>`;
+      document.getElementById('tenant-backups-list').innerHTML = `<p class="error">Failed to initialize: ${escapeHtml(error.message)}</p>`;
     }
   }
 }
@@ -901,7 +956,7 @@ async function loadTenantBackups(tenantId) {
     if (error.isLocked) {
       showLockedError('tenant-backups-list', error.lockInfo);
     } else {
-      listEl.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+      listEl.innerHTML = `<p class="error">Error: ${escapeHtml(error.message)}</p>`;
     }
   }
 }
@@ -918,7 +973,7 @@ function renderTenantBackups(backups, tenantId) {
   const container = document.getElementById('tenant-backups-list');
 
   if (backups.length === 0) {
-    container.innerHTML = `<p class="empty">No backups for ${tenantId}. Create your first backup!</p>`;
+    container.innerHTML = `<p class="empty">No backups for ${escapeHtml(tenantId)}. Create your first backup!</p>`;
     return;
   }
 
@@ -952,12 +1007,13 @@ async function createTenantBackup(btn) {
       method: 'POST',
       body: JSON.stringify({ tenantId: currentBackupTenantId }),
     });
+    showToast('Backup created', 'success');
     await loadTenantBackups(currentBackupTenantId);
   } catch (error) {
     if (error.isLocked) {
       showLockedError('tenant-backups-list', error.lockInfo);
     } else {
-      alert(`Backup failed: ${error.message}`);
+      showToast(`Backup failed: ${error.message}`, 'error');
     }
   } finally {
     setButtonLoading(btn, false, '+ Create Backup');
@@ -1004,7 +1060,7 @@ async function unlockRepository() {
       }
     }
   } catch (error) {
-    listEl.innerHTML = `<p class="error">Failed to unlock: ${error.message}</p>`;
+    listEl.innerHTML = `<p class="error">Failed to unlock: ${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -1049,7 +1105,7 @@ async function restoreBackup(e) {
       body: JSON.stringify({ tenantId }),
     });
     hideModal('restore-backup-modal');
-    alert('Backup restored successfully!');
+    showToast('Backup restored successfully', 'success');
   } catch (error) {
     setButtonLoading(btn, false, 'Restore');
     if (error.isLocked) {
@@ -1089,7 +1145,7 @@ async function createTenantFromBackup(e) {
       body: JSON.stringify({ tenantId, domain, imageTag }),
     });
     hideAllModals();
-    alert(`Tenant ${tenantId} created from backup!`);
+    showToast(`Tenant ${tenantId} created from backup`, 'success');
     currentBackupTenantId = null;
     loadDashboard();
   } catch (error) {
@@ -1117,6 +1173,7 @@ async function deleteBackup(snapshotId) {
   try {
     await api(`/backups/${snapshotId}`, { method: 'DELETE' });
     hideModal('delete-backup-modal');
+    showToast('Backup deleted', 'success');
     if (currentBackupTenantId) {
       await loadTenantBackups(currentBackupTenantId);
     }
@@ -1126,7 +1183,7 @@ async function deleteBackup(snapshotId) {
       hideModal('delete-backup-modal');
       showLockedError('tenant-backups-list', error.lockInfo);
     } else {
-      alert(`Failed to delete backup: ${error.message}`);
+      showToast(`Failed to delete backup: ${error.message}`, 'error');
     }
   }
 }
@@ -1167,8 +1224,12 @@ function renderEnvVars(vars) {
   `).join('');
 }
 
+function escapeHtml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function escapeAttr(str) {
-  return str.replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return escapeHtml(str);
 }
 
 function showAddEnvVarModal() {
@@ -1218,6 +1279,7 @@ async function saveEnvVar(e) {
       body: JSON.stringify({ key, value, sensitive, description: description || undefined }),
     });
     hideModal('env-var-modal');
+    showToast(`Variable ${key} saved`, 'success');
     loadEnvVars();
 
     if (result.tenantsAffected > 0) {
@@ -1244,6 +1306,7 @@ async function deleteEnvVar(key) {
   try {
     const result = await api(`/env-vars/${encodeURIComponent(key)}`, { method: 'DELETE' });
     hideModal('delete-env-var-modal');
+    showToast(`Variable ${key} deleted`, 'success');
     loadEnvVars();
 
     if (result.tenantsAffected > 0) {
@@ -1252,7 +1315,7 @@ async function deleteEnvVar(key) {
     }
   } catch (error) {
     setButtonLoading(btn, false, 'Delete');
-    alert(`Failed to delete: ${error.message}`);
+    showToast(`Failed to delete: ${error.message}`, 'error');
   }
 }
 
@@ -1260,19 +1323,22 @@ async function restartAllTenants() {
   const btn = document.getElementById('confirm-restart-tenants-btn');
   setButtonLoading(btn, true, 'Restarting...');
 
-  try {
-    for (const tenant of cachedTenants) {
-      try {
-        await api(`/tenants/${tenant.tenantId}/restart`, { method: 'POST' });
-      } catch (err) {
-        console.error(`Failed to restart ${tenant.tenantId}:`, err);
-      }
+  const failed = [];
+  for (const tenant of cachedTenants) {
+    try {
+      await api(`/tenants/${tenant.tenantId}/restart`, { method: 'POST' });
+    } catch (err) {
+      failed.push(tenant.tenantId);
+      console.error(`Failed to restart ${tenant.tenantId}:`, err);
     }
-    hideModal('restart-tenants-modal');
-    loadDashboard();
-  } catch (error) {
-    setButtonLoading(btn, false, 'Restart All');
-    alert(`Failed to restart tenants: ${error.message}`);
+  }
+  hideModal('restart-tenants-modal');
+  loadDashboard();
+
+  if (failed.length > 0) {
+    showToast(`Failed to restart: ${failed.join(', ')}`, 'error', 6000);
+  } else {
+    showToast('All tenants restarted', 'success');
   }
 }
 
@@ -1349,6 +1415,7 @@ async function saveOverrideEnvVar(e) {
       body: JSON.stringify({ key, value, sensitive }),
     });
     hideModal('override-env-var-modal');
+    showToast(`Override for ${key} saved`, 'success');
     showTenantEnvVarsModal(tenantId);
   } catch (error) {
     setButtonLoading(btn, false, 'Save Override');
@@ -1359,9 +1426,10 @@ async function saveOverrideEnvVar(e) {
 async function resetTenantOverride(tenantId, key) {
   try {
     await api(`/env-vars/tenants/${tenantId}/overrides/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    showToast(`Override for ${key} reset`, 'success');
     showTenantEnvVarsModal(tenantId);
   } catch (error) {
-    alert(`Failed to reset override: ${error.message}`);
+    showToast(`Failed to reset override: ${error.message}`, 'error');
   }
 }
 
@@ -1425,6 +1493,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         body: JSON.stringify(data),
       });
       hideAllModals();
+      showToast(`Tenant ${data.tenantId} created`, 'success');
       loadDashboard();
     } catch (error) {
       setButtonLoading(btn, false, 'Create Tenant');
@@ -1468,6 +1537,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         body: JSON.stringify({ imageTag }),
       });
       hideAllModals();
+      showToast(`Tenant ${tenantId} updated`, 'success');
       loadDashboard();
     } catch (error) {
       setButtonLoading(btn, false, 'Update');
@@ -1508,7 +1578,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   setInterval(() => {
     if (authToken && !document.querySelector('.modal:not(.hidden)')) {
-      loadDashboard();
+      loadDashboard(true);
     }
   }, 30000);
 });

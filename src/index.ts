@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors } from './config';
 import { loginToRegistry } from './adapters/registry';
 import { authMiddleware } from './middleware/auth';
+import { rateLimit } from './middleware/rateLimit';
+import { auditLog } from './middleware/audit';
 import tenantsRouter from './routes/tenants';
 import statusRouter from './routes/status';
 import authRouter from './routes/auth';
@@ -39,6 +41,10 @@ const PORT = process.env.PORT || 3002;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
+// Rate limiting
+const apiLimiter = rateLimit({ windowMs: 60_000, maxRequests: 100 });
+const authLimiter = rateLimit({ windowMs: 60_000, maxRequests: 10, message: 'Too many login attempts, please try again later' });
+
 // Health check (no auth)
 app.get('/health', (req, res) => {
   res.json({
@@ -50,15 +56,15 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Auth routes (no auth required)
-app.use('/api/auth', authRouter);
+// Auth routes (no auth required, stricter rate limit)
+app.use('/api/auth', authLimiter, authRouter);
 
-// API routes (with auth)
-app.use('/api/tenants', authMiddleware, tenantsRouter);
-app.use('/api/admin-users', authMiddleware, adminUsersRouter);
-app.use('/api/status', authMiddleware, statusRouter);
-app.use('/api/backups', authMiddleware, backupsRouter);
-app.use('/api/env-vars', authMiddleware, envVarsRouter);
+// API routes (with auth, rate limiting, and audit logging)
+app.use('/api/tenants', authMiddleware, apiLimiter, auditLog, tenantsRouter);
+app.use('/api/admin-users', authMiddleware, apiLimiter, auditLog, adminUsersRouter);
+app.use('/api/status', authMiddleware, apiLimiter, statusRouter);
+app.use('/api/backups', authMiddleware, apiLimiter, auditLog, backupsRouter);
+app.use('/api/env-vars', authMiddleware, apiLimiter, auditLog, envVarsRouter);
 
 // Serve frontend for all other routes
 app.get('*', (req, res) => {

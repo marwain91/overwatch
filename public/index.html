@@ -49,6 +49,7 @@
           <h1 id="dashboard-title">Overwatch</h1>
         </div>
         <div class="header-actions">
+          <span id="refresh-indicator" class="refresh-indicator hidden" title="Refreshing..."></span>
           <span id="build-info" class="build-info"></span>
           <span id="health-status" class="status-badge">Checking...</span>
           <button id="manage-admins-btn" class="btn btn-secondary btn-sm" title="Manage Admin Users">Admins</button>
@@ -489,6 +490,8 @@
         </div>
       </div>
     </div>
+    <!-- Toast Notifications -->
+    <div id="toast-container" class="toast-container"></div>
   </div>
 
   <script src="/app.js"></script>

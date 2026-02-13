@@ -1120,6 +1120,128 @@ main {
   z-index: 1010;
 }
 
+/* Refresh Indicator */
+.refresh-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3b82f6;
+  animation: pulse-refresh 1s ease-in-out infinite;
+}
+
+.refresh-indicator.hidden {
+  display: none;
+}
+
+@keyframes pulse-refresh {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* Toast Notifications */
+.toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-size: 0.875rem;
+  line-height: 1.4;
+  max-width: 400px;
+  min-width: 280px;
+  pointer-events: auto;
+  animation: toast-in 0.25s ease-out;
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.toast.removing {
+  opacity: 0;
+  transform: translateX(100%);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  font-size: 1rem;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  font-size: 1.125rem;
+  cursor: pointer;
+  opacity: 0.6;
+  line-height: 1;
+  padding: 0;
+  margin-top: -2px;
+}
+
+.toast-close:hover {
+  opacity: 1;
+}
+
+.toast.toast-success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.toast.toast-success .toast-close { color: #166534; }
+
+.toast.toast-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.toast.toast-error .toast-close { color: #991b1b; }
+
+.toast.toast-warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+.toast.toast-warning .toast-close { color: #92400e; }
+
+.toast.toast-info {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e40af;
+}
+
+.toast.toast-info .toast-close { color: #1e40af; }
+
 /* Responsive */
 @media (max-width: 640px) {
   main {
@@ -1138,5 +1260,15 @@ main {
 
   .tenant-actions .btn {
     flex: 1;
+  }
+
+  .toast-container {
+    left: 1rem;
+    right: 1rem;
+  }
+
+  .toast {
+    max-width: none;
+    min-width: 0;
   }
 }

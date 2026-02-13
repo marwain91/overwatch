@@ -64,33 +64,37 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   await db.initialize();
   await db.createDatabase(tenantId, dbPassword);
 
-  // Create tenant directory
-  await fs.mkdir(tenantPath, { recursive: true });
+  let dbCreated = true;
 
-  // Generate .env file using config values
-  const envContent = generateEnvContent(config, tenantId, domain, imageTag, dbPassword, jwtSecret);
-  await fs.writeFile(path.join(tenantPath, '.env'), envContent);
-
-  // Generate shared.env for this tenant
-  await generateSharedEnvFile(tenantId);
-
-  // Copy docker-compose template
-  const templateDir = getTemplateDir();
-  const composeFile = config.tenant_template?.compose_file || 'docker-compose.yml';
-  const templateContent = await fs.readFile(
-    path.join(templateDir, composeFile),
-    'utf-8'
-  );
-  await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), templateContent);
-
-  // Start tenant
   try {
+    // Create tenant directory
+    await fs.mkdir(tenantPath, { recursive: true });
+
+    // Generate .env file using config values
+    const envContent = generateEnvContent(config, tenantId, domain, imageTag, dbPassword, jwtSecret);
+    await fs.writeFile(path.join(tenantPath, '.env'), envContent);
+
+    // Generate shared.env for this tenant
+    await generateSharedEnvFile(tenantId);
+
+    // Copy docker-compose template
+    const templateDir = getTemplateDir();
+    const composeFile = config.tenant_template?.compose_file || 'docker-compose.yml';
+    const templateContent = await fs.readFile(
+      path.join(templateDir, composeFile),
+      'utf-8'
+    );
+    await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), templateContent);
+
+    // Start tenant
     await execAsync(`docker compose -f ${tenantPath}/docker-compose.yml up -d`);
   } catch (error) {
-    // Cleanup on failure
-    await fs.rm(tenantPath, { recursive: true, force: true });
-    await db.dropDatabase(tenantId);
-    throw new Error(`Failed to start tenant containers: ${error}`);
+    // Cleanup on failure - remove directory and database
+    await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
+    if (dbCreated) {
+      await db.dropDatabase(tenantId).catch(() => {});
+    }
+    throw new Error(`Failed to create tenant: ${error instanceof Error ? error.message : error}`);
   }
 
   return {

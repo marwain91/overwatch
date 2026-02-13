@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getTenantsDir, getDataDir } from '../config';
+import { withFileLock } from './fileLock';
 
 function getEnvVarsFile(): string {
   return path.join(getDataDir(), 'env-vars.json');
@@ -113,40 +114,44 @@ export async function setEnvVar(
     throw new Error(validation.error);
   }
 
-  const vars = await readEnvVars();
-  const now = new Date().toISOString();
-  const existing = vars.find(v => v.key === key);
+  return withFileLock('env-vars', async () => {
+    const vars = await readEnvVars();
+    const now = new Date().toISOString();
+    const existing = vars.find(v => v.key === key);
 
-  if (existing) {
-    existing.value = value;
-    existing.sensitive = sensitive;
-    if (description !== undefined) {
-      existing.description = description;
+    if (existing) {
+      existing.value = value;
+      existing.sensitive = sensitive;
+      if (description !== undefined) {
+        existing.description = description;
+      }
+      existing.updatedAt = now;
+    } else {
+      vars.push({
+        key,
+        value,
+        sensitive,
+        description,
+        createdAt: now,
+        updatedAt: now,
+      });
     }
-    existing.updatedAt = now;
-  } else {
-    vars.push({
-      key,
-      value,
-      sensitive,
-      description,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
 
-  await saveEnvVars(vars);
-  return vars.find(v => v.key === key)!;
+    await saveEnvVars(vars);
+    return vars.find(v => v.key === key)!;
+  });
 }
 
 export async function deleteEnvVar(key: string): Promise<void> {
-  const vars = await readEnvVars();
-  const index = vars.findIndex(v => v.key === key);
-  if (index === -1) {
-    throw new Error(`Environment variable "${key}" not found`);
-  }
-  vars.splice(index, 1);
-  await saveEnvVars(vars);
+  return withFileLock('env-vars', async () => {
+    const vars = await readEnvVars();
+    const index = vars.findIndex(v => v.key === key);
+    if (index === -1) {
+      throw new Error(`Environment variable "${key}" not found`);
+    }
+    vars.splice(index, 1);
+    await saveEnvVars(vars);
+  });
 }
 
 // Per-tenant overrides
@@ -168,60 +173,66 @@ export async function setTenantOverride(
     throw new Error(validation.error);
   }
 
-  const allOverrides = await readTenantOverrides();
-  let tenant = allOverrides.find(t => t.tenantId === tenantId);
+  return withFileLock('tenant-overrides', async () => {
+    const allOverrides = await readTenantOverrides();
+    let tenant = allOverrides.find(t => t.tenantId === tenantId);
 
-  if (!tenant) {
-    tenant = { tenantId, overrides: [] };
-    allOverrides.push(tenant);
-  }
+    if (!tenant) {
+      tenant = { tenantId, overrides: [] };
+      allOverrides.push(tenant);
+    }
 
-  const now = new Date().toISOString();
-  const existing = tenant.overrides.find(o => o.key === key);
+    const now = new Date().toISOString();
+    const existing = tenant.overrides.find(o => o.key === key);
 
-  if (existing) {
-    existing.value = value;
-    existing.sensitive = sensitive;
-    existing.updatedAt = now;
-  } else {
-    tenant.overrides.push({ key, value, sensitive, updatedAt: now });
-  }
+    if (existing) {
+      existing.value = value;
+      existing.sensitive = sensitive;
+      existing.updatedAt = now;
+    } else {
+      tenant.overrides.push({ key, value, sensitive, updatedAt: now });
+    }
 
-  await saveTenantOverrides(allOverrides);
+    await saveTenantOverrides(allOverrides);
+  });
 }
 
 export async function deleteTenantOverride(tenantId: string, key: string): Promise<void> {
-  const allOverrides = await readTenantOverrides();
-  const tenant = allOverrides.find(t => t.tenantId === tenantId);
+  return withFileLock('tenant-overrides', async () => {
+    const allOverrides = await readTenantOverrides();
+    const tenant = allOverrides.find(t => t.tenantId === tenantId);
 
-  if (!tenant) {
-    throw new Error(`No overrides found for tenant "${tenantId}"`);
-  }
+    if (!tenant) {
+      throw new Error(`No overrides found for tenant "${tenantId}"`);
+    }
 
-  const index = tenant.overrides.findIndex(o => o.key === key);
-  if (index === -1) {
-    throw new Error(`Override "${key}" not found for tenant "${tenantId}"`);
-  }
+    const index = tenant.overrides.findIndex(o => o.key === key);
+    if (index === -1) {
+      throw new Error(`Override "${key}" not found for tenant "${tenantId}"`);
+    }
 
-  tenant.overrides.splice(index, 1);
+    tenant.overrides.splice(index, 1);
 
-  // Remove tenant entry if no overrides remain
-  if (tenant.overrides.length === 0) {
-    const tenantIndex = allOverrides.indexOf(tenant);
-    allOverrides.splice(tenantIndex, 1);
-  }
+    // Remove tenant entry if no overrides remain
+    if (tenant.overrides.length === 0) {
+      const tenantIndex = allOverrides.indexOf(tenant);
+      allOverrides.splice(tenantIndex, 1);
+    }
 
-  await saveTenantOverrides(allOverrides);
+    await saveTenantOverrides(allOverrides);
+  });
 }
 
 export async function deleteTenantAllOverrides(tenantId: string): Promise<void> {
-  const allOverrides = await readTenantOverrides();
-  const index = allOverrides.findIndex(t => t.tenantId === tenantId);
+  return withFileLock('tenant-overrides', async () => {
+    const allOverrides = await readTenantOverrides();
+    const index = allOverrides.findIndex(t => t.tenantId === tenantId);
 
-  if (index !== -1) {
-    allOverrides.splice(index, 1);
-    await saveTenantOverrides(allOverrides);
-  }
+    if (index !== -1) {
+      allOverrides.splice(index, 1);
+      await saveTenantOverrides(allOverrides);
+    }
+  });
 }
 
 // Merged view

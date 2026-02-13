@@ -266,6 +266,7 @@ function ensureDataFiles(): void {
     { file: 'admin-users.json', default: '[]' },
     { file: 'env-vars.json', default: '[]' },
     { file: 'tenant-env-overrides.json', default: '[]' },
+    { file: 'audit.log', default: '' },
   ];
 
   for (const { file, default: defaultContent } of dataFiles) {

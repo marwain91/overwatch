@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getDataDir } from '../config';
+import { withFileLock } from './fileLock';
 
 function getAdminUsersFile(): string {
   return path.join(getDataDir(), 'admin-users.json');
@@ -60,45 +61,49 @@ export async function isAdminEmail(email: string): Promise<boolean> {
 }
 
 export async function addAdminUser(email: string, addedBy: string): Promise<AdminUser> {
-  const users = await readAdminUsers();
-  const normalizedEmail = email.toLowerCase().trim();
+  return withFileLock('admin-users', async () => {
+    const users = await readAdminUsers();
+    const normalizedEmail = email.toLowerCase().trim();
 
-  // Check if already exists
-  if (users.some(u => u.email.toLowerCase() === normalizedEmail)) {
-    throw new Error('Admin user already exists');
-  }
+    // Check if already exists
+    if (users.some(u => u.email.toLowerCase() === normalizedEmail)) {
+      throw new Error('Admin user already exists');
+    }
 
-  const newUser: AdminUser = {
-    email: normalizedEmail,
-    addedAt: new Date().toISOString(),
-    addedBy,
-  };
+    const newUser: AdminUser = {
+      email: normalizedEmail,
+      addedAt: new Date().toISOString(),
+      addedBy,
+    };
 
-  users.push(newUser);
-  await saveAdminUsers(users);
+    users.push(newUser);
+    await saveAdminUsers(users);
 
-  return newUser;
+    return newUser;
+  });
 }
 
 export async function removeAdminUser(email: string, removedBy: string): Promise<void> {
-  const users = await readAdminUsers();
-  const normalizedEmail = email.toLowerCase().trim();
+  return withFileLock('admin-users', async () => {
+    const users = await readAdminUsers();
+    const normalizedEmail = email.toLowerCase().trim();
 
-  // Can't remove yourself
-  if (normalizedEmail === removedBy.toLowerCase()) {
-    throw new Error('Cannot remove yourself from admin users');
-  }
+    // Can't remove yourself
+    if (normalizedEmail === removedBy.toLowerCase()) {
+      throw new Error('Cannot remove yourself from admin users');
+    }
 
-  // Must have at least one admin
-  if (users.length <= 1) {
-    throw new Error('Cannot remove the last admin user');
-  }
+    // Must have at least one admin
+    if (users.length <= 1) {
+      throw new Error('Cannot remove the last admin user');
+    }
 
-  const index = users.findIndex(u => u.email.toLowerCase() === normalizedEmail);
-  if (index === -1) {
-    throw new Error('Admin user not found');
-  }
+    const index = users.findIndex(u => u.email.toLowerCase() === normalizedEmail);
+    if (index === -1) {
+      throw new Error('Admin user not found');
+    }
 
-  users.splice(index, 1);
-  await saveAdminUsers(users);
+    users.splice(index, 1);
+    await saveAdminUsers(users);
+  });
 }

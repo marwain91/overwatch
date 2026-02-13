@@ -6,6 +6,17 @@ services:
     build: .
     container_name: overwatch
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
     ports:
       - "3002:3002"
     environment:
@@ -38,6 +49,8 @@ services:
       # Mount env vars data files (persisted)
       - ./data/env-vars.json:/app/data/env-vars.json
       - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
+      # Mount audit log (persisted)
+      - ./data/audit.log:/app/data/audit.log
       # Mount tenants directory (path inside container matches default in overwatch.yaml)
       - ./tenants:/app/tenants
     networks:
