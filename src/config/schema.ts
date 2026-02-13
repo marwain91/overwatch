@@ -125,6 +125,7 @@ export const OverwatchConfigSchema = z.object({
   credentials: CredentialsSchema.optional(),
   networking: NetworkingSchema.optional(),
   admin_access: AdminAccessSchema.optional(),
+  data_dir: z.string().optional(),
 });
 
 // TypeScript types derived from schemas

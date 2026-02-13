@@ -1,16 +1,20 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getTenantsDir } from '../config';
+import { getTenantsDir, getDataDir } from '../config';
 
-const DATA_DIR = process.env.DATA_DIR || '/app/data';
-const ENV_VARS_FILE = path.join(DATA_DIR, 'env-vars.json');
-const TENANT_OVERRIDES_FILE = path.join(DATA_DIR, 'tenant-env-overrides.json');
+function getEnvVarsFile(): string {
+  return path.join(getDataDir(), 'env-vars.json');
+}
+
+function getTenantOverridesFile(): string {
+  return path.join(getDataDir(), 'tenant-env-overrides.json');
+}
 
 const PROTECTED_KEYS = new Set([
   'NODE_ENV', 'PORT', 'FRONTEND_URL', 'BACKEND_URL',
   'DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME',
   'JWT_SECRET', 'JWT_EXPIRES_IN', 'TENANT_ID', 'TENANT_DOMAIN',
-  'IMAGE_TAG', 'GITHUB_REPO',
+  'IMAGE_REGISTRY', 'IMAGE_TAG', 'PROJECT_PREFIX', 'SHARED_NETWORK',
 ]);
 
 export interface EnvVar {
@@ -37,7 +41,7 @@ export interface EffectiveEnvVar {
 
 async function ensureDataDir(): Promise<void> {
   try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.mkdir(getDataDir(), { recursive: true });
   } catch (error) {
     // Directory might already exist
   }
@@ -45,7 +49,7 @@ async function ensureDataDir(): Promise<void> {
 
 async function readEnvVars(): Promise<EnvVar[]> {
   try {
-    const data = await fs.readFile(ENV_VARS_FILE, 'utf-8');
+    const data = await fs.readFile(getEnvVarsFile(), 'utf-8');
     return JSON.parse(data);
   } catch (error: any) {
     if (error.code === 'ENOENT') {
@@ -58,12 +62,12 @@ async function readEnvVars(): Promise<EnvVar[]> {
 
 async function saveEnvVars(vars: EnvVar[]): Promise<void> {
   await ensureDataDir();
-  await fs.writeFile(ENV_VARS_FILE, JSON.stringify(vars, null, 2));
+  await fs.writeFile(getEnvVarsFile(), JSON.stringify(vars, null, 2));
 }
 
 async function readTenantOverrides(): Promise<TenantEnvOverride[]> {
   try {
-    const data = await fs.readFile(TENANT_OVERRIDES_FILE, 'utf-8');
+    const data = await fs.readFile(getTenantOverridesFile(), 'utf-8');
     return JSON.parse(data);
   } catch (error: any) {
     if (error.code === 'ENOENT') {
@@ -76,7 +80,7 @@ async function readTenantOverrides(): Promise<TenantEnvOverride[]> {
 
 async function saveTenantOverrides(overrides: TenantEnvOverride[]): Promise<void> {
   await ensureDataDir();
-  await fs.writeFile(TENANT_OVERRIDES_FILE, JSON.stringify(overrides, null, 2));
+  await fs.writeFile(getTenantOverridesFile(), JSON.stringify(overrides, null, 2));
 }
 
 export function validateEnvVarKey(key: string): { valid: boolean; error?: string } {

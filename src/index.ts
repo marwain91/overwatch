@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
-import { loadConfig, OverwatchConfig } from './config';
+import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors } from './config';
 import { loginToRegistry } from './adapters/registry';
 import { authMiddleware } from './middleware/auth';
 import tenantsRouter from './routes/tenants';
@@ -25,14 +25,15 @@ try {
   process.exit(1);
 }
 
-const app = express();
-const PORT = process.env.PORT || 3002;
-const JWT_SECRET = process.env.JWT_SECRET;
-
-if (!JWT_SECRET) {
-  console.error('JWT_SECRET environment variable is required');
+// Validate all required environment variables based on config
+const validationErrors = validateEnvironment(config);
+if (validationErrors.length > 0) {
+  console.error(formatValidationErrors(validationErrors));
   process.exit(1);
 }
+
+const app = express();
+const PORT = process.env.PORT || 3002;
 
 // Middleware
 app.use(express.json());

@@ -50,6 +50,6 @@ credentials:
   db_password_length: 32
   jwt_secret_length: 64
 
-network:
-  shared_network: "myapp-network"
+networking:
+  external_network: "myapp-network"
   tenants_path: "/opt/myapp/tenants"

@@ -101,5 +101,19 @@ export function getBackupServices(): Array<{ name: string; paths: Array<{ contai
  * Get the tenants directory path from config
  */
 export function getTenantsDir(): string {
-  return process.env.TENANTS_DIR || loadConfig().networking?.tenants_path || '/opt/overwatch/tenants';
+  return loadConfig().networking?.tenants_path || '/app/tenants';
+}
+
+/**
+ * Get the template directory path from config
+ */
+export function getTemplateDir(): string {
+  return loadConfig().tenant_template?.dir || './tenant-template';
+}
+
+/**
+ * Get the data directory path from config
+ */
+export function getDataDir(): string {
+  return loadConfig().data_dir || '/app/data';
 }

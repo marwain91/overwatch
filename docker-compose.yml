@@ -38,8 +38,8 @@ services:
       # Mount env vars data files (persisted)
       - ./data/env-vars.json:/app/data/env-vars.json
       - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
-      # Mount tenants directory
-      - ${TENANTS_PATH:-./tenants}:/app/tenants
+      # Mount tenants directory (path inside container matches default in overwatch.yaml)
+      - ./tenants:/app/tenants
     networks:
       - default
       # Connect to your project's network for database/container access

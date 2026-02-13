@@ -3,16 +3,11 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { loadConfig, getDatabasePrefix, getTenantsDir } from '../config';
+import { loadConfig, getDatabasePrefix, getTenantsDir, getTemplateDir } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
 
 const execAsync = promisify(exec);
-
-function getTemplateDir(): string {
-  const config = loadConfig();
-  return process.env.TEMPLATE_DIR || config.tenant_template?.dir || './tenant-template';
-}
 
 export interface CreateTenantInput {
   tenantId: string;
@@ -226,6 +221,8 @@ function generateEnvContent(
 ): string {
   const dbPrefix = config.project.db_prefix;
   const registry = config.registry;
+  const imageRegistry = `${registry.url}/${registry.repository}`;
+  const sharedNetwork = config.networking?.external_network || `${config.project.prefix}-network`;
 
   return `# ${config.project.name} Tenant Configuration
 # Tenant: ${tenantId}
@@ -236,16 +233,24 @@ TENANT_ID=${tenantId}
 TENANT_DOMAIN=${domain}
 
 # Container Image Configuration
-GITHUB_REPO=${registry.repository}
+IMAGE_REGISTRY=${imageRegistry}
 IMAGE_TAG=${imageTag}
 
+# Project Configuration
+PROJECT_PREFIX=${config.project.prefix}
+
 # Database Configuration
+DB_HOST=${config.database.host}
+DB_PORT=${config.database.port}
 DB_NAME=${dbPrefix}_${tenantId}
 DB_USER=${dbPrefix}_${tenantId}
 DB_PASSWORD=${dbPassword}
 
 # Application Security
 JWT_SECRET=${jwtSecret}
+
+# Network Configuration
+SHARED_NETWORK=${sharedNetwork}
 `;
 }
 

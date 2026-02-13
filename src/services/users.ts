@@ -1,9 +1,10 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getDataDir } from '../config';
 
-// Store admin users in a JSON file that persists across restarts
-const DATA_DIR = process.env.DATA_DIR || '/app/data';
-const ADMIN_USERS_FILE = path.join(DATA_DIR, 'admin-users.json');
+function getAdminUsersFile(): string {
+  return path.join(getDataDir(), 'admin-users.json');
+}
 
 // Initial allowed emails from environment (seed data)
 const INITIAL_ALLOWED_EMAILS = (process.env.ALLOWED_ADMIN_EMAILS || '')
@@ -19,7 +20,7 @@ export interface AdminUser {
 
 async function ensureDataDir(): Promise<void> {
   try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.mkdir(getDataDir(), { recursive: true });
   } catch (error) {
     // Directory might already exist
   }
@@ -27,7 +28,7 @@ async function ensureDataDir(): Promise<void> {
 
 async function readAdminUsers(): Promise<AdminUser[]> {
   try {
-    const data = await fs.readFile(ADMIN_USERS_FILE, 'utf-8');
+    const data = await fs.readFile(getAdminUsersFile(), 'utf-8');
     return JSON.parse(data);
   } catch (error: any) {
     if (error.code === 'ENOENT') {
@@ -46,7 +47,7 @@ async function readAdminUsers(): Promise<AdminUser[]> {
 
 async function saveAdminUsers(users: AdminUser[]): Promise<void> {
   await ensureDataDir();
-  await fs.writeFile(ADMIN_USERS_FILE, JSON.stringify(users, null, 2));
+  await fs.writeFile(getAdminUsersFile(), JSON.stringify(users, null, 2));
 }
 
 export async function listAdminUsers(): Promise<AdminUser[]> {
