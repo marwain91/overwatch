@@ -23,9 +23,9 @@ registry:
   url: "docker.io"
   repository: "myorg/myapp"
   auth:
-    type: "credentials"
+    type: "basic"
     username_env: "DOCKER_USERNAME"
-    password_env: "DOCKER_PASSWORD"
+  # tag_pattern: "^v\\d+"   # Optional: regex to filter image tags
 
 # Services to manage per tenant
 services:
@@ -37,6 +37,7 @@ services:
       path: "/health"
       port: 3000
     backup:
+      enabled: true
       paths:
         - container: "/app/data"
           local: "data"
@@ -62,12 +63,21 @@ services:
 # Backup Configuration (optional)
 # Uses Restic with S3-compatible storage
 backup:
-  provider: "s3"
-  endpoint_env: "S3_ENDPOINT"
-  bucket_env: "S3_BUCKET"
-  access_key_env: "S3_ACCESS_KEY"
-  secret_key_env: "S3_SECRET_KEY"
-  password_env: "RESTIC_PASSWORD"
+  enabled: true
+  schedule: "0 2 * * *"       # Cron expression for automatic backups (daily at 2 AM)
+  provider: "s3"               # "s3" | "local" | "azure" | "gcs"
+  s3:
+    endpoint_env: "S3_ENDPOINT"
+    bucket_env: "S3_BUCKET"
+    access_key_env: "S3_ACCESS_KEY"
+    secret_key_env: "S3_SECRET_KEY"
+  restic_password_env: "RESTIC_PASSWORD"
+
+# Tenant template paths (optional, defaults shown)
+# tenant_template:
+#   dir: "./tenant-template"
+#   compose_file: "docker-compose.yml"
+#   env_template: ".env.template"
 
 # Credential generation settings
 credentials:
@@ -75,6 +85,21 @@ credentials:
   jwt_secret_length: 64      # Length of generated JWT secrets
 
 # Network Configuration
-network:
-  shared_network: "myapp-network"           # External Docker network name
-  tenants_path: "/opt/myapp/tenants"        # Path to store tenant configs
+networking:
+  external_network: "myapp-network"        # External Docker network name
+  tenants_path: "/opt/myapp/tenants"       # Path to store tenant configs
+  # internal_network_template: "${prefix}-${tenantId}-internal"
+
+# Admin Access (optional)
+# Generate JWT tokens for accessing tenant applications directly
+# admin_access:
+#   enabled: true
+#   url_template: "https://${domain}/admin-login?token=${token}"
+#   secret_env: "AUTH_SERVICE_SECRET"
+#   token_payload:
+#     admin_flag: "isSystemAdmin"
+#     email_template: "admin@overwatch.local"
+#     name: "System Admin"
+
+# Data directory for persistent files (admin-users.json, env-vars.json, audit.log)
+# data_dir: "/app/data"

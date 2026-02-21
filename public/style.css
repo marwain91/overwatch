@@ -367,6 +367,14 @@ main {
   font-weight: 600;
 }
 
+.status-subtitle {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--gray-500);
+  margin-top: 0.125rem;
+}
+
 /* Status Badges */
 .status-badge {
   padding: 0.25rem 0.75rem;

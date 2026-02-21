@@ -10,6 +10,10 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 - **Container Operations**: View logs, restart containers, health monitoring
 - **Version Management**: List available image tags, deploy specific versions per tenant
 - **Backup & Restore**: Full tenant backups using Restic (database + files), restore to existing or new tenants
+- **Automated Backup Scheduling**: Built-in cron scheduler for automatic backups (via `node-cron`)
+- **Environment Variable Management**: Global and per-tenant environment variables with override support
+- **Admin User Management**: Add/remove admin users at runtime through the UI
+- **Audit Logging**: Track all state-changing operations with user, action, and timestamp
 - **Admin Access**: Generate JWT tokens for direct tenant application access (optional)
 - **Google OAuth**: Secure admin panel login with allowlist
 - **Self-Update**: Update Overwatch via SSH script (`scripts/update.sh`)
@@ -218,7 +222,8 @@ services:
 ```yaml
 backup:
   enabled: boolean                # Enable backup functionality (default: true)
-  provider: "s3" | "local"        # Storage provider (default: "s3")
+  schedule: string                # Cron expression for automatic backups (e.g., "0 2 * * *" for daily at 2 AM)
+  provider: "s3" | "local" | "azure" | "gcs"  # Storage provider (default: "s3")
   s3:
     endpoint_env: string          # Env var for S3 endpoint
     endpoint_template: string     # Or template: "s3:https://${ACCOUNT}.r2.cloudflarestorage.com/${BUCKET}"
@@ -227,6 +232,8 @@ backup:
     secret_key_env: string        # Env var for secret key
   restic_password_env: string     # Env var for Restic encryption password (default: "RESTIC_PASSWORD")
 ```
+
+When `schedule` is set, Overwatch automatically backs up all tenants on the configured cron schedule. The schedule is displayed in the System Status section of the admin panel.
 
 **What gets backed up:**
 - Database dump (SQL file)
@@ -509,6 +516,17 @@ All API endpoints require authentication via Bearer token (except `/api/auth/*` 
 }
 ```
 
+### Environment Variables
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/env-vars` | List global environment variables |
+| `POST` | `/api/env-vars` | Create or update a global variable |
+| `DELETE` | `/api/env-vars/:key` | Delete a global variable |
+| `GET` | `/api/env-vars/tenants/:tenantId` | Get effective variables for a tenant |
+| `POST` | `/api/env-vars/tenants/:tenantId/overrides` | Set a tenant-specific override |
+| `DELETE` | `/api/env-vars/tenants/:tenantId/overrides/:key` | Remove a tenant override |
+
 ### Admin Users
 
 | Method | Endpoint | Description |
@@ -516,6 +534,12 @@ All API endpoints require authentication via Bearer token (except `/api/auth/*` 
 | `GET` | `/api/admin-users` | List admin users |
 | `POST` | `/api/admin-users` | Add admin user |
 | `DELETE` | `/api/admin-users/:email` | Remove admin user |
+
+### Audit Logs
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/audit-logs` | List recent audit log entries (default 50, max 200) |
 
 ### Health Check
 
@@ -555,6 +579,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./overwatch.yaml:/app/overwatch.yaml:ro
       - ./data/admin-users.json:/app/data/admin-users.json
+      - ./data/env-vars.json:/app/data/env-vars.json
+      - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
+      - ./data/audit.log:/app/data/audit.log
       - /opt/myapp/tenants:/app/tenants
       - ./tenant-template:/app/tenant-template:ro
     networks:
@@ -707,6 +734,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./overwatch.yaml:/app/overwatch.yaml:ro
       - ./data/admin-users.json:/app/data/admin-users.json
+      - ./data/env-vars.json:/app/data/env-vars.json
+      - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
+      - ./data/audit.log:/app/data/audit.log
       - ./tenants:/app/tenants
       - ./tenant-template:/app/tenant-template:ro
     networks:
@@ -776,7 +806,8 @@ Tenants will get containers named `acme-{tenantId}-app`, databases named `acme_{
 ├── data/
 │   ├── admin-users.json        # Admin user list
 │   ├── env-vars.json           # Global environment variables
-│   └── tenant-env-overrides.json  # Per-tenant env var overrides
+│   ├── tenant-env-overrides.json  # Per-tenant env var overrides
+│   └── audit.log               # Audit log (JSON lines)
 └── scripts/
     ├── setup.ts                # Setup wizard
     └── update.sh               # SSH update script
@@ -794,6 +825,11 @@ Overwatch Instance
 │   ├── Tenant Management
 │   ├── Container Operations (via Docker API)
 │   ├── Backup/Restore (via Restic)
+│   ├── Backup Scheduler (node-cron)
+│   ├── Environment Variable Management
+│   ├── Admin User Management
+│   ├── Audit Logging
+│   ├── Rate Limiting
 │   └── Registry Integration
 ├── Database Adapter
 │   ├── MySQL/MariaDB adapter
@@ -846,15 +882,24 @@ overwatch/
 │   │   ├── docker.ts         # Container management
 │   │   ├── tenant.ts         # Tenant CRUD operations
 │   │   ├── backup.ts         # Backup/restore with Restic
-│   │   └── users.ts          # Admin user management
+│   │   ├── scheduler.ts      # Backup cron scheduler
+│   │   ├── users.ts          # Admin user management
+│   │   ├── envVars.ts        # Environment variable management
+│   │   └── fileLock.ts       # File locking for concurrent access
 │   ├── routes/
 │   │   ├── auth.ts           # Authentication endpoints
 │   │   ├── tenants.ts        # Tenant endpoints
 │   │   ├── status.ts         # System status endpoints
 │   │   ├── backups.ts        # Backup endpoints
-│   │   └── adminUsers.ts     # Admin user endpoints
-│   └── middleware/
-│       └── auth.ts           # JWT authentication
+│   │   ├── adminUsers.ts     # Admin user endpoints
+│   │   ├── envVars.ts        # Environment variable endpoints
+│   │   └── auditLogs.ts      # Audit log endpoints
+│   ├── middleware/
+│   │   ├── auth.ts           # JWT authentication
+│   │   ├── audit.ts          # Audit logging
+│   │   └── rateLimit.ts      # API rate limiting
+│   └── utils/
+│       └── asyncHandler.ts   # Async route error handling
 ├── public/                   # Static frontend files
 ├── tenant-template/          # Tenant docker-compose template
 ├── overwatch.yaml            # Main configuration

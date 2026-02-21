@@ -848,6 +848,29 @@ let cachedTenants = [];
 let currentBackupTenantId = null;
 let backupStatus = { configured: false, initialized: false };
 
+function describeCron(expr) {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return expr;
+
+  const [min, hour, dom, mon, dow] = parts;
+  const formatTime = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+
+  if (min === '*' && hour === '*' && dom === '*' && mon === '*' && dow === '*') return 'Every minute';
+  if (min.startsWith('*/') && hour === '*' && dom === '*') return `Every ${min.slice(2)} min`;
+  if (hour === '*' && dom === '*' && mon === '*' && dow === '*') {
+    return min === '0' ? 'Every hour' : `Hourly at :${String(min).padStart(2, '0')}`;
+  }
+  if (min === '0' && hour.startsWith('*/') && dom === '*') return `Every ${hour.slice(2)}h`;
+  if (dom === '*' && mon === '*' && dow === '*' && !min.includes('*') && !hour.includes('*')) {
+    return `Daily at ${formatTime(hour, min)}`;
+  }
+  if (dom === '*' && mon === '*' && !dow.includes('*') && !min.includes('*') && !hour.includes('*')) {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return `${days[parseInt(dow)] || dow} at ${formatTime(hour, min)}`;
+  }
+  return expr;
+}
+
 async function loadBackupStatus() {
   const statusEl = document.getElementById('backup-status-indicator');
 
@@ -866,7 +889,12 @@ async function loadBackupStatus() {
       return;
     }
 
-    statusEl.textContent = 'Connected';
+    const schedule = projectConfig?.backup?.schedule;
+    if (schedule) {
+      statusEl.innerHTML = `Connected <span class="status-subtitle">${escapeHtml(describeCron(schedule))}</span>`;
+    } else {
+      statusEl.textContent = 'Connected';
+    }
     statusEl.className = 'value';
   } catch (error) {
     statusEl.textContent = 'Error';

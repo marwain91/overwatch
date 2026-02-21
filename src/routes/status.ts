@@ -92,6 +92,7 @@ router.get('/config', asyncHandler(async (req, res) => {
     },
     backup: {
       enabled: config.backup?.enabled ?? false,
+      schedule: config.backup?.schedule ?? null,
     },
   });
 }));
