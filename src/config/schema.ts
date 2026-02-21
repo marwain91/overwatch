@@ -74,6 +74,7 @@ export const BackupS3Schema = z.object({
 // Backup configuration schema
 export const BackupConfigSchema = z.object({
   enabled: z.boolean().default(true),
+  schedule: z.string().optional(),
   provider: z.enum(['s3', 'local', 'azure', 'gcs']).default('s3'),
   s3: BackupS3Schema.optional(),
   restic_password_env: z.string().default('RESTIC_PASSWORD'),

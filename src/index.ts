@@ -14,6 +14,7 @@ import backupsRouter from './routes/backups';
 import envVarsRouter from './routes/envVars';
 import auditLogsRouter from './routes/auditLogs';
 import { regenerateAllSharedEnvFiles } from './services/envVars';
+import { startBackupScheduler, stopBackupScheduler } from './services/scheduler';
 
 // Load environment variables
 dotenv.config();
@@ -99,6 +100,11 @@ async function start() {
     console.error('Warning: Failed to generate shared.env files:', error);
   }
 
+  // Start backup scheduler if configured
+  if (config.backup?.enabled && config.backup?.schedule) {
+    startBackupScheduler(config.backup.schedule);
+  }
+
   const server = app.listen(PORT, () => {
     console.log(`Overwatch running on port ${PORT}`);
     console.log(`Managing project: ${config.project.name}`);
@@ -112,6 +118,8 @@ async function start() {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`\n${signal} received — shutting down gracefully...`);
+
+    stopBackupScheduler();
 
     // Stop accepting new connections
     server.close(() => {
