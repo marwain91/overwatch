@@ -61,3 +61,38 @@ jobs:
           build-args: |
             BUILD_TIME=${{ github.event.head_commit.timestamp }}
             BUILD_COMMIT=${{ github.sha }}
+
+  # Build standalone CLI binaries and attach to GitHub Releases on tags
+  cli:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Build CLI binaries
+        run: |
+          npx @yao-pkg/pkg dist/cli.js --target node20-linux-x64 --output dist/bin/overwatch-linux-x64 --compress GZip
+          npx @yao-pkg/pkg dist/cli.js --target node20-linux-arm64 --output dist/bin/overwatch-linux-arm64 --compress GZip
+
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/bin/overwatch-linux-x64
+            dist/bin/overwatch-linux-arm64

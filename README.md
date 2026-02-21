@@ -45,6 +45,7 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 - [Deployment](#deployment)
 - [Updating](#updating)
 - [CI/CD & Automation](#cicd--automation)
+- [Interactive Setup (overwatch init)](#interactive-setup-overwatch-init)
 - [Deploying for a New Project](#deploying-for-a-new-project)
 - [Architecture](#architecture)
 - [Security](#security)
@@ -779,6 +780,70 @@ jobs:
 ```
 
 > **Tip:** You can also use the bundled `scripts/update.sh` script directly on the server instead of a CI workflow. See [Updating](#updating).
+
+---
+
+## Interactive Setup (overwatch init)
+
+Deploy Overwatch on a production server in under 5 minutes. Only Docker is required.
+
+### 1. Install the CLI
+
+```bash
+# x64
+curl -fsSL https://github.com/marwain91/overwatch/releases/latest/download/overwatch-linux-x64 -o /usr/local/bin/overwatch && chmod +x /usr/local/bin/overwatch
+
+# ARM64
+curl -fsSL https://github.com/marwain91/overwatch/releases/latest/download/overwatch-linux-arm64 -o /usr/local/bin/overwatch && chmod +x /usr/local/bin/overwatch
+```
+
+### 2. Run the setup
+
+```bash
+overwatch init
+```
+
+The wizard walks you through project name, domain, database (MariaDB/PostgreSQL), container registry credentials, DNS provider for SSL, Google OAuth, and optional S3 backups. Everything has sensible defaults — press Enter to accept them.
+
+After confirming, it generates a complete deployment:
+
+```
+/opt/myapp/deploy/
+├── infrastructure/           # Traefik reverse proxy + database
+│   ├── docker-compose.yml
+│   └── .env
+├── overwatch/                # Overwatch instance
+│   ├── docker-compose.yml
+│   ├── overwatch.yaml
+│   ├── .env
+│   └── data/
+├── tenants/                  # Auto-managed by Overwatch
+└── tenant-template/          # Your app's compose template (add after init)
+```
+
+### 3. Start
+
+```bash
+overwatch start
+```
+
+That's it. Open `https://overwatch.yourdomain.com` and log in.
+
+> Add your tenant template (`docker-compose.yml`) to `tenant-template/` before creating tenants. See [Tenant Template](#tenant-template) for the format.
+
+### All CLI commands
+
+| Command | Description |
+|---------|-------------|
+| `overwatch init` | Interactive setup — generates all config files |
+| `overwatch start` | Start infrastructure + Overwatch |
+| `overwatch stop` | Stop Overwatch + infrastructure |
+| `overwatch restart` | Restart all services |
+| `overwatch status` | Show service status |
+| `overwatch update` | Pull latest image and restart |
+| `overwatch update --check` | Check for updates without applying |
+
+For a manual step-by-step setup without the CLI, see [Deploying for a New Project](#deploying-for-a-new-project) below.
 
 ---
 

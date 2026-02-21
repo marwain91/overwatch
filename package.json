@@ -1,6 +1,6 @@
 {
   "name": "overwatch",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Universal Multi-Tenant Management Tool",
   "license": "MIT",
   "author": "marwain91",
@@ -20,13 +20,21 @@
     "devops"
   ],
   "main": "dist/index.js",
+  "bin": {
+    "overwatch": "./bin/overwatch.js"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "build:cli": "tsc && pkg dist/cli.js --targets node20-linux-x64,node20-linux-arm64 --output dist/bin/overwatch --compress GZip",
     "start": "node dist/index.js",
     "setup": "tsx scripts/setup.ts",
     "setup:check": "tsx scripts/setup.ts --check",
     "setup:force": "tsx scripts/setup.ts --force"
+  },
+  "pkg": {
+    "assets": [],
+    "outputPath": "dist/bin"
   },
   "dependencies": {
     "dockerode": "^4.0.2",
@@ -38,9 +46,11 @@
     "mysql2": "^3.16.0",
     "node-cron": "^4.2.1",
     "pg": "^8.11.3",
+    "inquirer": "^8.2.6",
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@types/inquirer": "^8.2.10",
     "@types/dockerode": "^3.3.23",
     "@types/express": "^4.17.21",
     "@types/js-yaml": "^4.0.9",
@@ -48,6 +58,7 @@
     "@types/node": "^20.10.6",
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.10.9",
+    "@yao-pkg/pkg": "^6.0.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   }
