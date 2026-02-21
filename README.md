@@ -44,6 +44,7 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 - [API Reference](#api-reference)
 - [Deployment](#deployment)
 - [Updating](#updating)
+- [CI/CD & Automation](#cicd--automation)
 - [Deploying for a New Project](#deploying-for-a-new-project)
 - [Architecture](#architecture)
 - [Security](#security)
@@ -559,47 +560,51 @@ services:
     image: ghcr.io/marwain91/overwatch:latest
     container_name: overwatch
     restart: unless-stopped
-    ports:
-      - "3002:3002"
-    environment:
-      PORT: 3002
-      JWT_SECRET: ${JWT_SECRET}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      GHCR_TOKEN: ${GHCR_TOKEN}
-      # Backup env vars (optional)
-      R2_ENDPOINT: ${R2_ENDPOINT:-}
-      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
-      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
-      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
-      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
-      # Admin access (optional)
-      AUTH_SERVICE_SECRET: ${AUTH_SERVICE_SECRET:-}
+    env_file: .env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker:/root/.docker:ro          # Registry credentials (for pulling tenant images)
       - ./overwatch.yaml:/app/overwatch.yaml:ro
       - ./data/admin-users.json:/app/data/admin-users.json
       - ./data/env-vars.json:/app/data/env-vars.json
       - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
       - ./data/audit.log:/app/data/audit.log
-      - /opt/myapp/tenants:/app/tenants
+      - ./tenants:/app/tenants
       - ./tenant-template:/app/tenant-template:ro
     networks:
       - myapp-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.overwatch.rule=Host(`overwatch.example.com`)"
+      - "traefik.http.routers.overwatch.entrypoints=websecure"
+      - "traefik.http.routers.overwatch.tls=true"
+      - "traefik.http.routers.overwatch.tls.certresolver=letsencrypt"
+      - "traefik.http.services.overwatch.loadbalancer.server.port=3002"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
 networks:
   myapp-network:
     external: true
 ```
 
+> **Note:** The `/root/.docker` mount shares Docker registry credentials so Overwatch can pull tenant images. If your registry doesn't require authentication, you can omit it. When using Traefik, you don't need `ports:` — Traefik routes traffic via the shared Docker network.
+
 ### Network Requirements
 
 Overwatch needs access to:
 
-1. **Docker socket** (`/var/run/docker.sock`) - for container management
-2. **Database container** - on the same Docker network
-3. **Tenant configs directory** - mounted volume
-4. **Traefik/proxy** - optional, for routing (shares network)
+1. **Docker socket** (`/var/run/docker.sock`) — for container management
+2. **Database container** — on the same Docker network
+3. **Tenant configs directory** — mounted volume
+4. **Reverse proxy** (Traefik, nginx, etc.) — shares the Docker network for routing
 
 ### Production Checklist
 
@@ -609,11 +614,15 @@ Overwatch needs access to:
 - [ ] Configure database credentials
 - [ ] Configure registry credentials
 - [ ] Create and customize tenant template
-- [ ] Set up backup credentials (recommended)
+- [ ] Set up backup credentials and initialize repository (`POST /api/backups/init`)
+- [ ] Configure backup schedule in `overwatch.yaml` (e.g., `schedule: "0 2 * * *"`)
 - [ ] Connect to shared Docker network
 - [ ] Mount tenant configs directory
+- [ ] Mount Docker credentials (`/root/.docker`) if using private registry
 - [ ] Configure reverse proxy (Traefik/nginx) for HTTPS
 - [ ] Set appropriate file permissions on mounted volumes
+- [ ] Set resource limits (`deploy.resources.limits`)
+- [ ] Verify healthcheck endpoint responds (`/health`)
 
 ---
 
@@ -649,168 +658,486 @@ COMPOSE_DIR=/opt/myapp/deploy SERVICE_NAME=admin ./scripts/update.sh
 
 ---
 
+## CI/CD & Automation
+
+Automate server provisioning and Overwatch updates with CI/CD workflows. The examples below use GitHub Actions but the pattern works with any CI system.
+
+### Server Setup Workflow
+
+A `workflow_dispatch` workflow that provisions a fresh server with Docker, copies deploy files, and starts everything:
+
+```yaml
+# .github/workflows/setup-server.yml
+name: Setup Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_ip:
+        description: "Server IP address"
+        required: true
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Docker on server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ inputs.server_ip }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            curl -fsSL https://get.docker.com | sh
+
+      - name: Copy deploy files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ inputs.server_ip }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "deploy/*"
+          target: "/opt/myapp"
+          strip_components: 0
+
+      - name: Generate .env and start services
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ inputs.server_ip }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /opt/myapp/deploy
+
+            # Generate .env from secrets
+            cat > overwatch/.env << 'ENVEOF'
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
+            MYSQL_ROOT_PASSWORD=${{ secrets.MYSQL_ROOT_PASSWORD }}
+            GHCR_TOKEN=${{ secrets.GHCR_TOKEN }}
+            ALLOWED_ADMIN_EMAILS=${{ secrets.ADMIN_EMAILS }}
+            ENVEOF
+
+            # Create shared network
+            docker network create myapp-network || true
+
+            # Start infrastructure first, then Overwatch
+            docker compose -f infrastructure/docker-compose.yml up -d
+            sleep 10
+            docker compose -f overwatch/docker-compose.yml up -d
+```
+
+### Auto-Update Workflow
+
+A scheduled workflow that checks for new Overwatch images and recreates the container if an update is available:
+
+```yaml
+# .github/workflows/update-overwatch.yml
+name: Update Overwatch
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"    # Weekly on Monday at 4 AM
+  workflow_dispatch:         # Manual trigger
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Overwatch
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /opt/myapp/deploy/overwatch
+
+            IMAGE="ghcr.io/marwain91/overwatch:latest"
+
+            # Get current digest
+            CURRENT=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || echo "none")
+
+            # Pull latest
+            docker pull "$IMAGE"
+
+            # Get new digest
+            NEW=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE" 2>/dev/null || echo "unknown")
+
+            # Recreate if changed
+            if [ "$CURRENT" != "$NEW" ]; then
+              echo "Update available, recreating container..."
+              docker compose up -d --force-recreate overwatch
+              echo "Updated: $NEW"
+            else
+              echo "Already up to date: $CURRENT"
+            fi
+```
+
+> **Tip:** You can also use the bundled `scripts/update.sh` script directly on the server instead of a CI workflow. See [Updating](#updating).
+
+---
+
 ## Deploying for a New Project
 
-This guide walks through adapting Overwatch to manage a completely different containerized application.
+This guide walks through deploying Overwatch on a production server to manage a multi-tenant containerized application. It uses a **separated directory pattern** where infrastructure, Overwatch, and tenants each have their own compose files.
 
 ### Prerequisites
 
-- Docker and Docker Compose installed on the server
-- A database engine (MySQL, MariaDB, or PostgreSQL) running in Docker
-- Your application images published to a container registry (GHCR, Docker Hub, ECR, or a custom registry)
-- A reverse proxy (Traefik, nginx, etc.) for HTTPS termination (recommended)
+- A server (VPS, cloud instance, etc.) with Docker and Docker Compose installed
+- Your application images published to a container registry (GHCR, Docker Hub, ECR, etc.)
+- A domain with DNS configured (e.g., `*.example.com` pointing to your server)
+- DNS provider API credentials for wildcard SSL (e.g., Cloudflare API token)
 
-### Step-by-step Setup
+### Directory Structure
 
-#### 1. Create a deploy directory
+The deployment uses a separated layout — infrastructure, Overwatch, and tenants are independent compose stacks sharing a Docker network:
+
+```
+/opt/myapp/deploy/
+├── infrastructure/        # Traefik reverse proxy + database
+│   └── docker-compose.yml
+├── overwatch/             # Overwatch instance
+│   ├── docker-compose.yml
+│   ├── overwatch.yaml
+│   └── .env
+├── tenants/               # Auto-generated by Overwatch
+│   ├── tenant-a/
+│   └── tenant-b/
+└── tenant-template/       # Template for new tenants
+    └── docker-compose.yml
+```
+
+This separation means you can restart infrastructure without touching Overwatch, update Overwatch without affecting tenants, and each component has its own lifecycle.
+
+### Step 1: Create directory structure
 
 ```bash
-mkdir -p /opt/myapp/deploy
-cd /opt/myapp/deploy
+mkdir -p /opt/myapp/deploy/{infrastructure,overwatch,overwatch/data,tenant-template,tenants}
 ```
 
-#### 2. Write `overwatch.yaml`
+### Step 2: Set up infrastructure
 
-Define your project, database, registry, and services:
+Create the Traefik reverse proxy and database. This example uses MariaDB — substitute PostgreSQL if preferred.
 
-```yaml
-project:
-  name: "My App"
-  prefix: "myapp"
-  db_prefix: "myapp"
-
-database:
-  type: "postgres"
-  host: "myapp-postgres"
-  port: 5432
-  root_user: "postgres"
-  root_password_env: "POSTGRES_PASSWORD"
-  container_name: "myapp-postgres"
-
-registry:
-  type: "dockerhub"
-  url: "docker.io"
-  repository: "myorg/myapp"
-  auth:
-    type: "basic"
-    username_env: "DOCKER_USERNAME"
-
-services:
-  - name: "app"
-    required: true
-    image_suffix: "app"
-
-networking:
-  external_network: "myapp-network"
-  tenants_path: "/app/tenants"
-```
-
-#### 3. Generate `.env`
-
-```bash
-npm run setup
-```
-
-This reads your `overwatch.yaml` and generates a `.env` with only the variables your configuration requires. Fill in the values marked `<FILL_IN>`.
-
-#### 4. Create a tenant template
-
-Create `tenant-template/docker-compose.yml` using the variables documented in [Tenant Template](#tenant-template). This defines what containers each tenant gets.
-
-#### 5. Set up Docker Compose
-
-Create `docker-compose.yml` for Overwatch alongside your infrastructure:
+**`infrastructure/docker-compose.yml`:**
 
 ```yaml
 services:
-  overwatch:
-    image: ghcr.io/marwain91/overwatch:latest
-    container_name: overwatch
+  traefik:
+    image: traefik:v3.3
+    container_name: myapp-traefik
     restart: unless-stopped
+    command:
+      - "--api.dashboard=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=myapp-network"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.websecure.address=:443"
+      # Wildcard SSL via DNS challenge (Cloudflare example)
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      # HTTP challenge for custom tenant domains
+      - "--certificatesresolvers.letsencrypt-http.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt-http.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt-http.acme.email=admin@example.com"
+      - "--certificatesresolvers.letsencrypt-http.acme.storage=/letsencrypt/acme.json"
+    environment:
+      CF_DNS_API_TOKEN: "${CF_DNS_API_TOKEN}"
     ports:
-      - "3002:3002"
-    env_file: .env
+      - "80:80"
+      - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./overwatch.yaml:/app/overwatch.yaml:ro
-      - ./data/admin-users.json:/app/data/admin-users.json
-      - ./data/env-vars.json:/app/data/env-vars.json
-      - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
-      - ./data/audit.log:/app/data/audit.log
-      - ./tenants:/app/tenants
-      - ./tenant-template:/app/tenant-template:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
     networks:
       - myapp-network
 
-  postgres:
-    image: postgres:16
-    container_name: myapp-postgres
+  mariadb:
+    image: mariadb:11
+    container_name: myapp-mariadb
     restart: unless-stopped
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD}"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mariadb-data:/var/lib/mysql
     networks:
       - myapp-network
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 networks:
   myapp-network:
     name: myapp-network
 
 volumes:
-  pgdata:
+  letsencrypt:
+  mariadb-data:
 ```
 
-#### 6. Start everything
+> **Note:** This example uses Cloudflare for DNS challenge (set `CF_DNS_API_TOKEN` in the infrastructure `.env`). Traefik supports [many DNS providers](https://doc.traefik.io/traefik/https/acme/#providers). The HTTP challenge resolver is available for tenants using custom (non-wildcard) domains.
+
+### Step 3: Configure Overwatch
+
+Create the Overwatch configuration file.
+
+**`overwatch/overwatch.yaml`:**
+
+```yaml
+project:
+  name: "MyApp"
+  prefix: "myapp"
+  db_prefix: "myapp"
+
+database:
+  type: "mariadb"
+  host: "myapp-mariadb"
+  port: 3306
+  root_user: "root"
+  root_password_env: "MYSQL_ROOT_PASSWORD"
+  container_name: "myapp-mariadb"
+
+registry:
+  type: "ghcr"
+  url: "ghcr.io"
+  repository: "myorg/myapp"
+  auth:
+    type: "token"
+    token_env: "GHCR_TOKEN"
+
+services:
+  - name: "backend"
+    required: true
+    image_suffix: "backend"
+    backup:
+      enabled: true
+      paths:
+        - container: "/app/uploads"
+          local: "uploads"
+
+  - name: "frontend"
+    required: true
+    image_suffix: "frontend"
+
+  - name: "migrator"
+    is_init_container: true
+    image_suffix: "backend"
+
+backup:
+  enabled: true
+  schedule: "0 2 * * *"     # Daily at 2 AM
+  provider: "s3"
+  s3:
+    endpoint_template: "s3:https://${ACCOUNT}.r2.cloudflarestorage.com/${BUCKET}"
+    bucket_env: "R2_BUCKET_NAME"
+    access_key_env: "R2_ACCESS_KEY_ID"
+    secret_key_env: "R2_SECRET_ACCESS_KEY"
+  restic_password_env: "RESTIC_PASSWORD"
+
+admin_access:
+  enabled: true
+  url_template: "https://${domain}/admin-login?token=${token}"
+
+networking:
+  external_network: "myapp-network"
+  tenants_path: "/app/tenants"
+```
+
+Then generate the `.env` file:
 
 ```bash
-docker compose up -d
+# From the overwatch directory (or use npm run setup from the repo)
+# Fill in all values marked <FILL_IN>
 ```
 
-Access Overwatch at `http://<your-server>:3002`, log in with Google OAuth, and create your first tenant.
+### Step 4: Deploy Overwatch
 
-### Example
+**`overwatch/docker-compose.yml`:**
 
-Suppose you're deploying **Acme SaaS** — a Node.js app with a PostgreSQL database, images on Docker Hub at `acmecorp/acme-saas`.
+```yaml
+services:
+  overwatch:
+    image: ghcr.io/marwain91/overwatch:latest
+    container_name: myapp-overwatch
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker:/root/.docker:ro
+      - ./overwatch.yaml:/app/overwatch.yaml:ro
+      - ./data/admin-users.json:/app/data/admin-users.json
+      - ./data/env-vars.json:/app/data/env-vars.json
+      - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
+      - ./data/audit.log:/app/data/audit.log
+      - ../tenants:/app/tenants
+      - ../tenant-template:/app/tenant-template:ro
+    networks:
+      - myapp-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.overwatch.rule=Host(`overwatch.example.com`)"
+      - "traefik.http.routers.overwatch.entrypoints=websecure"
+      - "traefik.http.routers.overwatch.tls=true"
+      - "traefik.http.routers.overwatch.tls.certresolver=letsencrypt"
+      - "traefik.http.services.overwatch.loadbalancer.server.port=3002"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-| Setting | Value |
-|---------|-------|
-| `project.prefix` | `acme` |
-| `database.type` | `postgres` |
-| `registry.type` | `dockerhub` |
-| `registry.repository` | `acmecorp/acme-saas` |
-| `services[0].name` | `app` |
-| `services[0].image_suffix` | `app` |
-| `networking.external_network` | `acme-network` |
+networks:
+  myapp-network:
+    external: true
+```
 
-Tenants will get containers named `acme-{tenantId}-app`, databases named `acme_{tenantId}`, and connect to the shared `acme-network`.
+### Step 5: Create tenant template
+
+The tenant template defines what containers each tenant gets. Overwatch uses this to generate per-tenant compose files. See [Tenant Template](#tenant-template) for all available variables.
+
+**`tenant-template/docker-compose.yml`:**
+
+```yaml
+services:
+  backend:
+    image: ${IMAGE_REGISTRY}/backend:${IMAGE_TAG}
+    container_name: ${PROJECT_PREFIX}-${TENANT_ID}-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      FRONTEND_URL: https://${TENANT_DOMAIN}
+    env_file:
+      - shared.env
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - ${SHARED_NETWORK}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${TENANT_ID}-api.rule=Host(`${TENANT_DOMAIN}`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.${TENANT_ID}-api.entrypoints=websecure"
+      - "traefik.http.routers.${TENANT_ID}-api.tls=true"
+      - "traefik.http.routers.${TENANT_ID}-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${TENANT_ID}-api.loadbalancer.server.port=3001"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+
+  frontend:
+    image: ${IMAGE_REGISTRY}/frontend:${IMAGE_TAG}
+    container_name: ${PROJECT_PREFIX}-${TENANT_ID}-frontend
+    restart: unless-stopped
+    networks:
+      - ${SHARED_NETWORK}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${TENANT_ID}-frontend.rule=Host(`${TENANT_DOMAIN}`)"
+      - "traefik.http.routers.${TENANT_ID}-frontend.entrypoints=websecure"
+      - "traefik.http.routers.${TENANT_ID}-frontend.tls=true"
+      - "traefik.http.routers.${TENANT_ID}-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.${TENANT_ID}-frontend.priority=1"
+      - "traefik.http.services.${TENANT_ID}-frontend.loadbalancer.server.port=80"
+
+  migrator:
+    image: ${IMAGE_REGISTRY}/backend:${IMAGE_TAG}
+    container_name: ${PROJECT_PREFIX}-${TENANT_ID}-migrator
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    command: ["npm", "run", "db:migrate"]
+    networks:
+      - ${SHARED_NETWORK}
+    restart: "no"
+
+networks:
+  ${SHARED_NETWORK}:
+    external: true
+
+volumes:
+  uploads:
+    name: ${PROJECT_PREFIX}-${TENANT_ID}-uploads
+```
+
+### Step 6: Start everything
+
+Boot order matters — infrastructure must be running before Overwatch starts:
+
+```bash
+cd /opt/myapp/deploy
+
+# 1. Create shared network (if not created by infrastructure compose)
+docker network create myapp-network || true
+
+# 2. Start infrastructure (Traefik + database)
+docker compose -f infrastructure/docker-compose.yml up -d
+
+# 3. Wait for database to be healthy
+sleep 10
+
+# 4. Start Overwatch
+docker compose -f overwatch/docker-compose.yml up -d
+```
+
+Access Overwatch at `https://overwatch.example.com`, log in with Google OAuth, and create your first tenant.
 
 ### Final Directory Structure
 
+After setting everything up and creating a few tenants:
+
 ```
 /opt/myapp/deploy/
-├── docker-compose.yml          # Overwatch + infrastructure
-├── overwatch.yaml              # Project configuration
-├── .env                        # Secrets (generated by npm run setup)
-├── tenant-template/
-│   └── docker-compose.yml      # Template for tenant containers
-├── tenants/                    # Created automatically per tenant
+├── infrastructure/
+│   ├── docker-compose.yml        # Traefik + MariaDB
+│   └── .env                      # CF_DNS_API_TOKEN, MYSQL_ROOT_PASSWORD
+├── overwatch/
+│   ├── docker-compose.yml        # Overwatch container
+│   ├── overwatch.yaml            # Project configuration
+│   ├── .env                      # Overwatch secrets
+│   └── data/
+│       ├── admin-users.json      # Admin user list
+│       ├── env-vars.json         # Global environment variables
+│       ├── tenant-env-overrides.json
+│       └── audit.log             # Audit log (JSON lines)
+├── tenants/                      # Auto-generated by Overwatch
 │   ├── tenant-a/
-│   │   ├── docker-compose.yml
-│   │   ├── .env                # Tenant-specific config
-│   │   └── shared.env          # Global + override env vars
+│   │   ├── docker-compose.yml    # Generated from template
+│   │   ├── .env                  # Tenant-specific config
+│   │   └── shared.env            # Global + override env vars
 │   └── tenant-b/
 │       ├── docker-compose.yml
 │       ├── .env
 │       └── shared.env
-├── data/
-│   ├── admin-users.json        # Admin user list
-│   ├── env-vars.json           # Global environment variables
-│   ├── tenant-env-overrides.json  # Per-tenant env var overrides
-│   └── audit.log               # Audit log (JSON lines)
-└── scripts/
-    ├── setup.ts                # Setup wizard
-    └── update.sh               # SSH update script
+└── tenant-template/
+    └── docker-compose.yml        # Template for new tenants
 ```
 
 ---
