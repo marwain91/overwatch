@@ -1,6 +1,6 @@
 {
   "name": "overwatch",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Universal Multi-Tenant Management Tool",
   "license": "MIT",
   "author": "marwain91",
@@ -33,7 +33,7 @@
     "setup:force": "tsx scripts/setup.ts --force"
   },
   "pkg": {
-    "assets": [],
+    "assets": ["../package.json"],
     "outputPath": "dist/bin"
   },
   "dependencies": {

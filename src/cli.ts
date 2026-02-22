@@ -2,6 +2,9 @@
 import { runInit } from './cli/init';
 import { runUpdate } from './cli/update';
 import { runStart, runStop, runRestart, runStatus } from './cli/lifecycle';
+import { runConfig } from './cli/config';
+import { runSelfUpdate } from './cli/self-update';
+import { VERSION } from './version';
 
 const command = process.argv[2];
 const args = process.argv.slice(3);
@@ -17,8 +20,16 @@ switch (command) {
     run(() => runInit());
     break;
 
+  case 'config':
+    run(runConfig);
+    break;
+
   case 'update':
     run(runUpdate);
+    break;
+
+  case 'self-update':
+    run(runSelfUpdate);
     break;
 
   case 'start':
@@ -37,21 +48,28 @@ switch (command) {
     run(() => runStatus());
     break;
 
+  case '--version':
+  case '-v':
+    console.log(VERSION);
+    break;
+
   case undefined:
   case '--help':
   case '-h':
     console.log('');
-    console.log('  \x1b[1mOverwatch CLI\x1b[0m');
+    console.log(`  \x1b[1mOverwatch CLI\x1b[0m v${VERSION}`);
     console.log('');
     console.log('  Usage: overwatch <command>');
     console.log('');
     console.log('  Commands:');
-    console.log('    init              Set up a new Overwatch deployment interactively');
-    console.log('    start             Start infrastructure + Overwatch');
-    console.log('    stop              Stop Overwatch + infrastructure');
-    console.log('    restart           Restart all services');
-    console.log('    status            Show service status');
-    console.log('    update [--check]  Pull latest image and restart (--check to only check)');
+    console.log('    init                    Set up a new Overwatch deployment interactively');
+    console.log('    start                   Start infrastructure + Overwatch');
+    console.log('    stop                    Stop Overwatch + infrastructure');
+    console.log('    restart                 Restart all services');
+    console.log('    status                  Show service status');
+    console.log('    config                  View, edit, validate, and explore configuration');
+    console.log('    update [--check]        Pull latest image and restart (--check to only check)');
+    console.log('    self-update [--check]   Update the CLI binary itself (--check to only check)');
     console.log('');
     break;
 

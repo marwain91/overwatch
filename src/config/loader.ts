@@ -49,6 +49,18 @@ export function resolveEnvValue(template: string): string {
 }
 
 /**
+ * Load the raw YAML config without Zod parsing or defaults.
+ * Useful for distinguishing explicitly set values from defaults.
+ */
+export function loadRawConfig(): Record<string, any> {
+  const configPath = process.env.OVERWATCH_CONFIG || path.join(process.cwd(), 'overwatch.yaml');
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`Configuration file not found: ${configPath}`);
+  }
+  return yaml.load(fs.readFileSync(configPath, 'utf-8')) as Record<string, any>;
+}
+
+/**
  * Clear the cached configuration (useful for testing)
  */
 export function clearConfigCache(): void {
