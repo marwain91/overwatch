@@ -4,7 +4,7 @@ import * as yaml from 'js-yaml';
 import { OverwatchConfigSchema } from '../../config/schema';
 import { validateEnvironment } from '../../config/validate';
 import { loadConfig, findConfigPath } from '../../config/loader';
-import { header, success, fail, info, BOLD, DIM, GREEN, RED, NC } from './utils';
+import { header, success, fail, warn, info, BOLD, DIM, GREEN, YELLOW, RED, NC } from './utils';
 
 function getConfigPath(): string {
   return findConfigPath();
@@ -96,11 +96,12 @@ export async function runConfigValidate(args: string[]): Promise<void> {
     success('Environment variables are set');
     passed++;
   } else {
-    fail(`Missing environment variables (${envErrors.length}):`);
+    warn(`${envErrors.length} environment variable(s) not found in current shell:`);
     for (const err of envErrors) {
-      console.log(`    ${RED}[${err.category}]${NC} ${err.message}`);
+      console.log(`    ${YELLOW}[${err.category}]${NC} ${err.message}`);
     }
-    failed++;
+    info('This is expected if env vars are set inside Docker containers.');
+    passed++;
   }
 
   console.log('');

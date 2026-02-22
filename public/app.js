@@ -7,6 +7,20 @@ let projectConfig = null;
 let envVarsLoaded = false;
 let activityLoaded = false;
 let monitoringLoaded = false;
+let adminsLoaded = false;
+
+// Pagination state
+let metricsPage = 1;
+let metricsPerPage = 12;
+let activityPage = 1;
+let activityPerPage = 20;
+let cachedAuditLogs = [];
+let healthPage = 1;
+let healthPerPage = 20;
+let cachedHealthChecks = [];
+let alertPage = 1;
+let alertPerPage = 20;
+let cachedAlerts = [];
 
 // WebSocket state
 let ws = null;
@@ -69,6 +83,10 @@ function switchTab(tabName) {
   }
   if (tabName === 'activity') {
     loadAuditLogs();
+  }
+  if (tabName === 'admins' && !adminsLoaded) {
+    adminsLoaded = true;
+    loadAdminUsers();
   }
 }
 
@@ -1480,11 +1498,35 @@ async function loadAuditLogs() {
   container.innerHTML = '<p class="loading">Loading activity...</p>';
 
   try {
-    const entries = await api('/audit-logs?limit=50');
-    renderAuditLogs(entries);
+    cachedAuditLogs = await api('/audit-logs?limit=200');
+    activityPage = 1;
+    renderFilteredActivity();
   } catch (error) {
     container.innerHTML = `<p class="error">Error: ${error.message}</p>`;
   }
+}
+
+function renderFilteredActivity() {
+  const search = (document.getElementById('activity-search')?.value || '').toLowerCase();
+  let filtered = cachedAuditLogs;
+  if (search) {
+    filtered = filtered.filter(e =>
+      (e.action && e.action.toLowerCase().includes(search)) ||
+      (e.user && e.user.toLowerCase().includes(search))
+    );
+  }
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / activityPerPage));
+  if (activityPage > totalPages) activityPage = totalPages;
+  const start = (activityPage - 1) * activityPerPage;
+  const paged = filtered.slice(start, start + activityPerPage);
+
+  renderAuditLogs(paged);
+
+  renderPagination('activity-pagination', activityPage, totalPages, (page) => {
+    activityPage = page;
+    renderFilteredActivity();
+  });
 }
 
 function renderAuditLogs(entries) {
@@ -1657,56 +1699,101 @@ function formatBytes(bytes) {
   return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
 }
 
+// Reusable Pagination
+function renderPagination(containerId, currentPage, totalPages, onPageChange) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  if (totalPages <= 1) {
+    container.classList.add('hidden');
+    container.innerHTML = '';
+    return;
+  }
+
+  container.classList.remove('hidden');
+  container.innerHTML = `
+    <button class="pagination-btn" ${currentPage <= 1 ? 'disabled' : ''} data-page="${currentPage - 1}">&lsaquo; Prev</button>
+    <span class="pagination-info">Page ${currentPage} of ${totalPages}</span>
+    <button class="pagination-btn" ${currentPage >= totalPages ? 'disabled' : ''} data-page="${currentPage + 1}">Next &rsaquo;</button>
+  `;
+
+  container.querySelectorAll('.pagination-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const page = parseInt(btn.dataset.page);
+      if (page >= 1 && page <= totalPages) onPageChange(page);
+    });
+  });
+}
+
 function renderMetrics(data) {
   const container = document.getElementById('metrics-tenant-grid');
   if (!data || (!data.tenants?.length && !data.containers?.length)) {
     container.innerHTML = '<p class="empty">No metrics available. Waiting for data...</p>';
+    renderPagination('metrics-pagination', 1, 1, () => {});
     return;
   }
 
-  container.innerHTML = data.tenants.map(tenant => {
-    const tenantContainers = data.containers.filter(c => c.tenantId === tenant.tenantId);
-    const memPercent = tenant.totalMemLimit > 0 ? (tenant.totalMem / tenant.totalMemLimit * 100).toFixed(1) : 0;
+  const search = (document.getElementById('metrics-search')?.value || '').toLowerCase();
+  let filtered = data.tenants;
+  if (search) {
+    filtered = filtered.filter(t => t.tenantId.toLowerCase().includes(search));
+  }
 
-    return `
-    <div class="metrics-tenant-card">
-      <div class="metrics-tenant-header">
-        <h3>${escapeHtml(tenant.tenantId)}</h3>
-        <span class="metrics-container-count">${tenant.containerCount} containers</span>
-      </div>
-      <div class="metrics-summary">
-        <div class="metric-bar-group">
-          <div class="metric-bar-label">
-            <span>CPU</span>
-            <span>${tenant.totalCpu.toFixed(1)}%</span>
+  const totalPages = Math.max(1, Math.ceil(filtered.length / metricsPerPage));
+  if (metricsPage > totalPages) metricsPage = totalPages;
+  const start = (metricsPage - 1) * metricsPerPage;
+  const paged = filtered.slice(start, start + metricsPerPage);
+
+  container.innerHTML = paged.length === 0
+    ? '<p class="empty">No tenants match your search.</p>'
+    : paged.map(tenant => {
+      const tenantContainers = data.containers.filter(c => c.tenantId === tenant.tenantId);
+      const memPercent = tenant.totalMemLimit > 0 ? (tenant.totalMem / tenant.totalMemLimit * 100).toFixed(1) : 0;
+
+      return `
+      <div class="metrics-tenant-card">
+        <div class="metrics-tenant-header">
+          <h3>${escapeHtml(tenant.tenantId)}</h3>
+          <span class="metrics-container-count">${tenant.containerCount} containers</span>
+        </div>
+        <div class="metrics-summary">
+          <div class="metric-bar-group">
+            <div class="metric-bar-label">
+              <span>CPU</span>
+              <span>${tenant.totalCpu.toFixed(1)}%</span>
+            </div>
+            <div class="metric-bar">
+              <div class="metric-bar-fill cpu" style="width: ${Math.min(tenant.totalCpu, 100)}%"></div>
+            </div>
           </div>
-          <div class="metric-bar">
-            <div class="metric-bar-fill cpu" style="width: ${Math.min(tenant.totalCpu, 100)}%"></div>
+          <div class="metric-bar-group">
+            <div class="metric-bar-label">
+              <span>Memory</span>
+              <span>${formatBytes(tenant.totalMem)} / ${formatBytes(tenant.totalMemLimit)}</span>
+            </div>
+            <div class="metric-bar">
+              <div class="metric-bar-fill memory" style="width: ${Math.min(memPercent, 100)}%"></div>
+            </div>
           </div>
         </div>
-        <div class="metric-bar-group">
-          <div class="metric-bar-label">
-            <span>Memory</span>
-            <span>${formatBytes(tenant.totalMem)} / ${formatBytes(tenant.totalMemLimit)}</span>
-          </div>
-          <div class="metric-bar">
-            <div class="metric-bar-fill memory" style="width: ${Math.min(memPercent, 100)}%"></div>
-          </div>
+        <div class="metrics-containers">
+          ${tenantContainers.map(c => `
+            <div class="metrics-container-row">
+              <span class="metrics-service-name">${escapeHtml(c.service)}</span>
+              <span class="metrics-cpu">${c.cpuPercent.toFixed(1)}%</span>
+              <span class="metrics-mem">${formatBytes(c.memUsage)}</span>
+              <span class="metrics-net">${icons.download} ${formatBytes(c.netRx)} / ${formatBytes(c.netTx)}</span>
+            </div>
+          `).join('')}
         </div>
       </div>
-      <div class="metrics-containers">
-        ${tenantContainers.map(c => `
-          <div class="metrics-container-row">
-            <span class="metrics-service-name">${escapeHtml(c.service)}</span>
-            <span class="metrics-cpu">${c.cpuPercent.toFixed(1)}%</span>
-            <span class="metrics-mem">${formatBytes(c.memUsage)}</span>
-            <span class="metrics-net">${icons.download} ${formatBytes(c.netRx)} / ${formatBytes(c.netTx)}</span>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-    `;
-  }).join('');
+      `;
+    }).join('');
+
+  renderPagination('metrics-pagination', metricsPage, totalPages, (page) => {
+    metricsPage = page;
+    renderMetrics(latestMetrics);
+  });
 }
 
 function updateTenantCardMetrics(data) {
@@ -1736,12 +1823,33 @@ function updateTenantCardMetrics(data) {
 async function loadHealthChecks() {
   const container = document.getElementById('health-checks-list');
   try {
-    const data = await api('/monitoring/health');
-    renderHealthChecks(data);
+    cachedHealthChecks = await api('/monitoring/health');
+    healthPage = 1;
+    renderFilteredHealthChecks();
   } catch (error) {
     if (error.message === 'Unauthorized') return;
     container.innerHTML = '<p class="empty">Health checks not configured.</p>';
   }
+}
+
+function renderFilteredHealthChecks() {
+  const search = (document.getElementById('health-search')?.value || '').toLowerCase();
+  let filtered = cachedHealthChecks || [];
+  if (search) {
+    filtered = filtered.filter(h => h.containerName && h.containerName.toLowerCase().includes(search));
+  }
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / healthPerPage));
+  if (healthPage > totalPages) healthPage = totalPages;
+  const start = (healthPage - 1) * healthPerPage;
+  const paged = filtered.slice(start, start + healthPerPage);
+
+  renderHealthChecks(paged);
+
+  renderPagination('health-pagination', healthPage, totalPages, (page) => {
+    healthPage = page;
+    renderFilteredHealthChecks();
+  });
 }
 
 function renderHealthChecks(data) {
@@ -1770,12 +1878,36 @@ function renderHealthChecks(data) {
 async function loadAlertHistory() {
   const container = document.getElementById('alert-history-list');
   try {
-    const data = await api('/monitoring/alerts?limit=50');
-    renderAlertHistory(data);
+    cachedAlerts = await api('/monitoring/alerts?limit=50');
+    alertPage = 1;
+    renderFilteredAlerts();
   } catch (error) {
     if (error.message === 'Unauthorized') return;
     container.innerHTML = '<p class="empty">No alerts recorded.</p>';
   }
+}
+
+function renderFilteredAlerts() {
+  const search = (document.getElementById('alert-search')?.value || '').toLowerCase();
+  let filtered = cachedAlerts || [];
+  if (search) {
+    filtered = filtered.filter(a =>
+      (a.ruleName && a.ruleName.toLowerCase().includes(search)) ||
+      (a.message && a.message.toLowerCase().includes(search))
+    );
+  }
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / alertPerPage));
+  if (alertPage > totalPages) alertPage = totalPages;
+  const start = (alertPage - 1) * alertPerPage;
+  const paged = filtered.slice(start, start + alertPerPage);
+
+  renderAlertHistory(paged);
+
+  renderPagination('alert-pagination', alertPage, totalPages, (page) => {
+    alertPage = page;
+    renderFilteredAlerts();
+  });
 }
 
 function renderAlertHistory(data) {
@@ -2000,12 +2132,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 
-  // Manage admins modal
-  document.getElementById('manage-admins-btn').addEventListener('click', () => {
-    showModal('manage-admins-modal');
-    loadAdminUsers();
-  });
-
   // Search & sort
   document.getElementById('tenant-search').addEventListener('input', renderFilteredTenants);
   document.getElementById('tenant-sort').addEventListener('change', renderFilteredTenants);
@@ -2130,6 +2256,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('refresh-metrics-btn').addEventListener('click', loadMetrics);
   document.getElementById('add-notification-btn').addEventListener('click', showAddNotificationModal);
   document.getElementById('notification-form').addEventListener('submit', saveNotification);
+
+  // Search inputs for pagination
+  document.getElementById('metrics-search').addEventListener('input', () => {
+    metricsPage = 1;
+    if (latestMetrics) renderMetrics(latestMetrics);
+  });
+  document.getElementById('activity-search').addEventListener('input', () => {
+    activityPage = 1;
+    renderFilteredActivity();
+  });
+  document.getElementById('health-search').addEventListener('input', () => {
+    healthPage = 1;
+    renderFilteredHealthChecks();
+  });
+  document.getElementById('alert-search').addEventListener('input', () => {
+    alertPage = 1;
+    renderFilteredAlerts();
+  });
 
   // Start polling as fallback (disabled when WS connects)
   startPollingFallback();

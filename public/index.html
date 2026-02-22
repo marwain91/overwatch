@@ -52,7 +52,6 @@
           <span id="refresh-indicator" class="refresh-indicator hidden" title="Refreshing..."></span>
           <span id="build-info" class="build-info"></span>
           <span id="health-status" class="status-badge">Checking...</span>
-          <button id="manage-admins-btn" class="btn btn-secondary btn-sm" title="Manage Admin Users">Admins</button>
           <div id="user-info" class="user-info">
             <img id="user-avatar" src="" alt="" class="user-avatar">
             <span id="user-name"></span>
@@ -64,9 +63,10 @@
       <main>
         <div class="tab-bar">
           <button class="tab-btn active" data-tab="tenants">Tenants</button>
-          <button class="tab-btn" data-tab="environment">Environment</button>
           <button class="tab-btn" data-tab="monitoring">Monitoring</button>
           <button class="tab-btn" data-tab="activity">Activity</button>
+          <button class="tab-btn" data-tab="environment">Environment</button>
+          <button class="tab-btn" data-tab="admins">Admins</button>
         </div>
 
         <div id="tab-tenants" class="tab-content">
@@ -123,9 +123,13 @@
               <h2>Recent Activity</h2>
               <button id="refresh-activity-btn" class="btn btn-secondary btn-sm">Refresh</button>
             </div>
+            <div class="activity-toolbar">
+              <input type="text" id="activity-search" placeholder="Search by action or user..." class="tenant-search-input">
+            </div>
             <div id="activity-list" class="activity-list">
               <p class="loading">Loading activity...</p>
             </div>
+            <div id="activity-pagination" class="pagination-controls hidden"></div>
           </section>
         </div>
 
@@ -138,27 +142,39 @@
                 <button id="refresh-metrics-btn" class="btn btn-secondary btn-sm">Refresh</button>
               </div>
             </div>
+            <div class="monitoring-toolbar">
+              <input type="text" id="metrics-search" placeholder="Search tenants..." class="tenant-search-input">
+            </div>
             <div id="metrics-tenant-grid" class="metrics-tenant-grid">
               <p class="loading">Loading metrics...</p>
             </div>
+            <div id="metrics-pagination" class="pagination-controls hidden"></div>
           </section>
 
           <section class="card">
             <div class="card-header">
               <h2>Health Checks</h2>
             </div>
+            <div class="monitoring-toolbar">
+              <input type="text" id="health-search" placeholder="Search containers..." class="tenant-search-input">
+            </div>
             <div id="health-checks-list" class="health-checks-list">
               <p class="loading">Loading health checks...</p>
             </div>
+            <div id="health-pagination" class="pagination-controls hidden"></div>
           </section>
 
           <section class="card">
             <div class="card-header">
               <h2>Alert History</h2>
             </div>
+            <div class="monitoring-toolbar">
+              <input type="text" id="alert-search" placeholder="Search by rule or message..." class="tenant-search-input">
+            </div>
             <div id="alert-history-list" class="alert-history-list">
               <p class="loading">Loading alerts...</p>
             </div>
+            <div id="alert-pagination" class="pagination-controls hidden"></div>
           </section>
 
           <section class="card">
@@ -182,6 +198,19 @@
             <p class="section-description">Global variables inherited by all tenants. Per-tenant overrides available via tenant settings.</p>
             <div id="env-vars-list" class="env-vars-list">
               <p class="loading">Loading environment variables...</p>
+            </div>
+          </section>
+        </div>
+
+        <div id="tab-admins" class="tab-content hidden">
+          <section class="card">
+            <div class="card-header">
+              <h2>Admin Users</h2>
+              <button id="add-admin-btn" class="btn btn-primary btn-sm">+ Add Admin</button>
+            </div>
+            <p class="section-description">Manage who can access this admin panel.</p>
+            <div id="admin-users-list" class="admin-users-list">
+              <p class="loading">Loading admin users...</p>
             </div>
           </section>
         </div>
@@ -541,24 +570,6 @@
       </div>
     </div>
 
-    <!-- Manage Admins Modal -->
-    <div id="manage-admins-modal" class="modal hidden">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2>Admin Access</h2>
-          <button class="close-btn" data-close-modal>&times;</button>
-        </div>
-        <div class="modal-body">
-          <p class="section-description">Manage who can access this admin panel.</p>
-          <div class="modal-toolbar-inline">
-            <button id="add-admin-btn" class="btn btn-primary btn-sm">+ Add Admin</button>
-          </div>
-          <div id="admin-users-list" class="admin-users-list">
-            <p class="loading">Loading admin users...</p>
-          </div>
-        </div>
-      </div>
-    </div>
     <!-- Notification Channel Modal -->
     <div id="notification-modal" class="modal hidden">
       <div class="modal-content">
