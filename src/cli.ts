@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { runInit } from './cli/init';
 import { runUpdate } from './cli/update';
-import { runStart, runStop, runRestart, runStatus } from './cli/lifecycle';
+import { runStart, runStop, runRestart, runRecreate, runStatus } from './cli/lifecycle';
 import { runConfig } from './cli/config';
 import { runSelfUpdate } from './cli/self-update';
 import { VERSION } from './version';
@@ -44,6 +44,10 @@ switch (command) {
     run(() => runRestart());
     break;
 
+  case 'recreate':
+    run(() => runRecreate());
+    break;
+
   case 'status':
     run(() => runStatus());
     break;
@@ -66,6 +70,7 @@ switch (command) {
     console.log('    start                   Start infrastructure + Overwatch');
     console.log('    stop                    Stop Overwatch + infrastructure');
     console.log('    restart                 Restart all services');
+    console.log('    recreate                Force-recreate Overwatch containers');
     console.log('    status                  Show service status');
     console.log('    config                  View, edit, validate, and explore configuration');
     console.log('    update [--check]        Pull latest image and restart (--check to only check)');

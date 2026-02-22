@@ -90,6 +90,16 @@ export async function runRestart(): Promise<void> {
   console.log(`\n${GREEN}All services restarted.${NC}`);
 }
 
+export async function runRecreate(): Promise<void> {
+  const base = findDeployDir();
+  const ow = path.join(base, 'overwatch');
+
+  console.log(`${GREEN}Recreating Overwatch containers...${NC}`);
+  compose(ow, 'up -d --force-recreate');
+
+  console.log(`\n${GREEN}Containers recreated.${NC}`);
+}
+
 // ─── Status Display ──────────────────────────────────────────────────────────
 
 interface ContainerInfo {

@@ -19,7 +19,7 @@ export async function runUpdate(args: string[]): Promise<void> {
   console.log('================');
   console.log('');
 
-  // Get current digest
+  // Get current local digest
   console.log('Checking current version...');
   let currentDigest: string;
   try {
@@ -28,6 +28,52 @@ export async function runUpdate(args: string[]): Promise<void> {
     currentDigest = 'none';
   }
   console.log(`Current: ${currentDigest}`);
+
+  if (checkOnly) {
+    // Fetch remote digest without pulling image layers
+    console.log('');
+    console.log('Checking remote registry...');
+    let remoteDigest = 'unknown';
+    try {
+      // docker buildx imagetools inspect prints "Digest: sha256:..." without pulling layers
+      const output = exec(`docker buildx imagetools inspect "${image}" 2>/dev/null`);
+      const match = output.match(/Digest:\s+(sha256:[a-f0-9]+)/);
+      if (match) {
+        const imageBase = image.split('@')[0].split(':')[0];
+        remoteDigest = `${imageBase}@${match[1]}`;
+      }
+    } catch {
+      try {
+        // Fallback: docker manifest inspect (requires experimental on older Docker)
+        const output = exec(`docker manifest inspect "${image}" 2>/dev/null`);
+        const parsed = JSON.parse(output);
+        const digest = parsed.config?.digest || parsed.manifests?.[0]?.digest;
+        if (digest) {
+          const imageBase = image.split('@')[0].split(':')[0];
+          remoteDigest = `${imageBase}@${digest}`;
+        }
+      } catch {
+        console.log('Could not check remote digest without pulling.');
+        console.log('Run without --check to pull and update.');
+        return;
+      }
+    }
+    console.log(`Remote:  ${remoteDigest}`);
+
+    // Compare the sha256 hash portion only
+    const localHash = currentDigest.match(/sha256:[a-f0-9]+/)?.[0] || currentDigest;
+    const remoteHash = remoteDigest.match(/sha256:[a-f0-9]+/)?.[0] || remoteDigest;
+
+    if (localHash === remoteHash) {
+      console.log('');
+      console.log(`${GREEN}Already up to date!${NC}`);
+    } else {
+      console.log('');
+      console.log(`${YELLOW}Update available!${NC}`);
+      console.log('Run without --check to apply the update.');
+    }
+    return;
+  }
 
   // Pull latest
   console.log('');
@@ -52,16 +98,9 @@ export async function runUpdate(args: string[]): Promise<void> {
 
   console.log('');
   console.log(`${YELLOW}Update available!${NC}`);
-
-  if (checkOnly) {
-    console.log('Run without --check to apply the update.');
-    return;
-  }
-
-  // Apply
   console.log('');
   console.log('Applying update...');
-  execSync(`docker compose up -d "${serviceName}"`, { stdio: 'inherit', cwd: composeDir });
+  execSync(`docker compose up -d --force-recreate "${serviceName}"`, { stdio: 'inherit', cwd: composeDir });
 
   console.log('');
   console.log(`${GREEN}Update complete!${NC}`);
