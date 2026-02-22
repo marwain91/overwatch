@@ -171,7 +171,7 @@ function header(title: string): void {
   console.log(`${CYAN}━━━ ${title} ${bar}${NC}`);
 }
 
-function loadProjectConfig(): { prefix: string; serviceNames: string[] } | null {
+function loadProjectConfig(): { prefix: string; serviceNames: string[]; initContainerNames: string[] } | null {
   try {
     const configPath = findConfigPath();
     const raw = yaml.load(fs.readFileSync(configPath, 'utf-8')) as any;
@@ -180,19 +180,28 @@ function loadProjectConfig(): { prefix: string; serviceNames: string[] } | null 
     const serviceNames = services
       .filter(s => !s.is_init_container)
       .map(s => s.name);
-    return prefix ? { prefix, serviceNames } : null;
+    const initContainerNames = services
+      .filter(s => s.is_init_container)
+      .map(s => s.name);
+    return prefix ? { prefix, serviceNames, initContainerNames } : null;
   } catch {
     return null;
   }
 }
 
-function extractTenantId(containerName: string, prefix: string, serviceNames: string[]): string | null {
+function extractTenantId(containerName: string, prefix: string, serviceNames: string[], initContainerNames: string[]): { tenantId: string; isInit: boolean } | null {
   const withoutPrefix = containerName.slice(prefix.length + 1); // strip "prefix-"
   for (const svc of serviceNames) {
     // Match "-service" or "-service-N" (replica) at the end
     const pattern = new RegExp(`-${svc}(?:-\\d+)?$`);
     if (pattern.test(withoutPrefix)) {
-      return withoutPrefix.replace(pattern, '');
+      return { tenantId: withoutPrefix.replace(pattern, ''), isInit: false };
+    }
+  }
+  for (const svc of initContainerNames) {
+    const pattern = new RegExp(`-${svc}(?:-\\d+)?$`);
+    if (pattern.test(withoutPrefix)) {
+      return { tenantId: withoutPrefix.replace(pattern, ''), isInit: true };
     }
   }
   return null;
@@ -211,7 +220,7 @@ export async function runStatus(): Promise<void> {
     return;
   }
 
-  const { prefix, serviceNames } = config;
+  const { prefix, serviceNames, initContainerNames } = config;
   const allContainers = parseContainers(prefix);
 
   if (allContainers.length === 0) {
@@ -236,11 +245,12 @@ export async function runStatus(): Promise<void> {
       continue;
     }
 
-    const tenantId = extractTenantId(c.name, prefix, serviceNames);
-    if (tenantId) {
-      const list = tenantContainerMap.get(tenantId) || [];
+    const result = extractTenantId(c.name, prefix, serviceNames, initContainerNames);
+    if (result) {
+      if (result.isInit) continue; // Skip init containers (migrators) from display
+      const list = tenantContainerMap.get(result.tenantId) || [];
       list.push(c);
-      tenantContainerMap.set(tenantId, list);
+      tenantContainerMap.set(result.tenantId, list);
     } else {
       infraContainers.push(c);
     }

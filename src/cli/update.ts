@@ -1,4 +1,7 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { execSync } from 'child_process';
+import { findConfigPath } from '../config/loader';
 
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
@@ -8,10 +11,37 @@ function exec(cmd: string): string {
   return execSync(cmd, { stdio: 'pipe', encoding: 'utf-8' }).trim();
 }
 
+function findOverwatchDir(): string {
+  if (process.env.COMPOSE_DIR) return process.env.COMPOSE_DIR;
+
+  const cwd = process.cwd();
+  // If cwd has docker-compose.yml and looks like the overwatch dir
+  if (fs.existsSync(path.join(cwd, 'docker-compose.yml'))) {
+    return cwd;
+  }
+  // If cwd is the deploy root with overwatch/ subdir
+  if (fs.existsSync(path.join(cwd, 'overwatch', 'docker-compose.yml'))) {
+    return path.join(cwd, 'overwatch');
+  }
+
+  // Derive from config file: config is at {deploy}/overwatch/overwatch.yaml
+  try {
+    const configPath = findConfigPath();
+    const overwatchDir = path.dirname(configPath);
+    if (fs.existsSync(path.join(overwatchDir, 'docker-compose.yml'))) {
+      return overwatchDir;
+    }
+  } catch {}
+
+  throw new Error(
+    'Cannot find overwatch compose directory. Run from the deploy root or set COMPOSE_DIR.',
+  );
+}
+
 export async function runUpdate(args: string[]): Promise<void> {
   const checkOnly = args.includes('--check');
 
-  const composeDir = process.env.COMPOSE_DIR || process.cwd();
+  const composeDir = findOverwatchDir();
   const serviceName = process.env.SERVICE_NAME || 'overwatch';
   const image = process.env.IMAGE || 'ghcr.io/marwain91/overwatch:latest';
 
