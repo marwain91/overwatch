@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import inquirer from 'inquirer';
-import { loadConfig, loadRawConfig, clearConfigCache } from '../../config/loader';
+import { loadConfig, loadRawConfig, clearConfigCache, findConfigPath } from '../../config/loader';
 import { OverwatchConfigSchema } from '../../config/schema';
 import { header, success, warn, fail, info, BOLD, DIM, CYAN, GREEN, RED, NC } from './utils';
 
@@ -23,7 +23,7 @@ const NON_EDITABLE_SECTIONS = ['services', 'alert_rules'] as const;
 type EditableSection = typeof EDITABLE_SECTIONS[number];
 
 function getConfigPath(): string {
-  return process.env.OVERWATCH_CONFIG || path.join(process.cwd(), 'overwatch.yaml');
+  return findConfigPath();
 }
 
 function flattenObject(obj: Record<string, unknown>, prefix = ''): Array<{ key: string; value: unknown }> {

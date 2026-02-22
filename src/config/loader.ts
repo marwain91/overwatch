@@ -6,20 +6,61 @@ import { OverwatchConfigSchema, OverwatchConfig } from './schema';
 let cachedConfig: OverwatchConfig | null = null;
 
 /**
+ * Find the overwatch.yaml config file by searching common locations.
+ * Priority: OVERWATCH_CONFIG env > cwd > cwd/overwatch/ > parent dir > /opt/{name}/deploy/overwatch/
+ */
+export function findConfigPath(): string {
+  // 1. Explicit env var
+  if (process.env.OVERWATCH_CONFIG) {
+    return process.env.OVERWATCH_CONFIG;
+  }
+
+  const cwd = process.cwd();
+  const candidates = [
+    // 2. Direct in cwd (running from inside overwatch/ dir)
+    path.join(cwd, 'overwatch.yaml'),
+    // 3. In overwatch/ subdir (running from deploy root)
+    path.join(cwd, 'overwatch', 'overwatch.yaml'),
+    // 4. Parent dir (running from a sibling dir)
+    path.join(cwd, '..', 'overwatch', 'overwatch.yaml'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  // 5. Scan /opt/*/deploy/overwatch/ (common init default)
+  try {
+    const optDirs = fs.readdirSync('/opt');
+    for (const dir of optDirs) {
+      const candidate = path.join('/opt', dir, 'deploy', 'overwatch', 'overwatch.yaml');
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  } catch {
+    // /opt doesn't exist or isn't readable
+  }
+
+  throw new Error(
+    'Configuration file not found.\n' +
+    '  Searched: ./overwatch.yaml, ./overwatch/overwatch.yaml, /opt/*/deploy/overwatch/overwatch.yaml\n' +
+    '  Set OVERWATCH_CONFIG env var to specify the path, or run from the deploy directory.',
+  );
+}
+
+/**
  * Load and validate the Overwatch configuration from YAML file.
- * The config file path can be set via OVERWATCH_CONFIG env var,
- * defaults to ./overwatch.yaml
+ * Searches common locations for overwatch.yaml (see findConfigPath).
  */
 export function loadConfig(): OverwatchConfig {
   if (cachedConfig) {
     return cachedConfig;
   }
 
-  const configPath = process.env.OVERWATCH_CONFIG || path.join(process.cwd(), 'overwatch.yaml');
-
-  if (!fs.existsSync(configPath)) {
-    throw new Error(`Configuration file not found: ${configPath}`);
-  }
+  const configPath = findConfigPath();
 
   const fileContent = fs.readFileSync(configPath, 'utf-8');
   const rawConfig = yaml.load(fileContent);
@@ -53,10 +94,7 @@ export function resolveEnvValue(template: string): string {
  * Useful for distinguishing explicitly set values from defaults.
  */
 export function loadRawConfig(): Record<string, any> {
-  const configPath = process.env.OVERWATCH_CONFIG || path.join(process.cwd(), 'overwatch.yaml');
-  if (!fs.existsSync(configPath)) {
-    throw new Error(`Configuration file not found: ${configPath}`);
-  }
+  const configPath = findConfigPath();
   return yaml.load(fs.readFileSync(configPath, 'utf-8')) as Record<string, any>;
 }
 

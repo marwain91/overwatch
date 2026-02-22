@@ -71,6 +71,10 @@ switch (command) {
     console.log('    update [--check]        Pull latest image and restart (--check to only check)');
     console.log('    self-update [--check]   Update the CLI binary itself (--check to only check)');
     console.log('');
+    console.log('  Environment:');
+    console.log('    OVERWATCH_CONFIG        Path to overwatch.yaml (auto-detected if not set)');
+    console.log('    DEPLOY_DIR              Path to deploy root (auto-detected if not set)');
+    console.log('');
     break;
 
   default:

@@ -3,11 +3,11 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { OverwatchConfigSchema } from '../../config/schema';
 import { validateEnvironment } from '../../config/validate';
-import { loadConfig } from '../../config/loader';
+import { loadConfig, findConfigPath } from '../../config/loader';
 import { header, success, fail, info, BOLD, DIM, GREEN, RED, NC } from './utils';
 
 function getConfigPath(): string {
-  return process.env.OVERWATCH_CONFIG || path.join(process.cwd(), 'overwatch.yaml');
+  return findConfigPath();
 }
 
 function deepDiff(
