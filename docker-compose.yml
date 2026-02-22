@@ -51,6 +51,9 @@ services:
       - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
       # Mount audit log (persisted)
       - ./data/audit.log:/app/data/audit.log
+      # Mount monitoring data (persisted)
+      - ./data/alert-history.jsonl:/app/data/alert-history.jsonl
+      - ./data/notification-channels.json:/app/data/notification-channels.json
       # Mount tenants directory (path inside container matches default in overwatch.yaml)
       - ./tenants:/app/tenants
     networks:

@@ -31,7 +31,32 @@ export const RegistryConfigSchema = z.object({
 export const HealthCheckSchema = z.object({
   type: z.enum(['http', 'tcp']).default('http'),
   path: z.string().optional(),
+  port: z.number().optional(),
   interval: z.string().default('30s'),
+});
+
+// Monitoring configuration
+export const MonitoringConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  metrics_interval: z.number().default(15),
+  metrics_retention: z.number().default(3600),
+});
+
+// Alert rule condition
+export const AlertConditionSchema = z.object({
+  type: z.enum(['container_down', 'cpu_threshold', 'memory_threshold', 'health_check_failed']),
+  duration: z.string().optional(),
+  threshold: z.number().optional(),
+  consecutive_failures: z.number().optional(),
+});
+
+// Alert rule configuration
+export const AlertRuleSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  condition: AlertConditionSchema,
+  cooldown: z.string().default('15m'),
+  severity: z.enum(['info', 'warning', 'critical']).default('warning'),
 });
 
 // Backup path configuration
@@ -127,6 +152,8 @@ export const OverwatchConfigSchema = z.object({
   credentials: CredentialsSchema.optional(),
   networking: NetworkingSchema.optional(),
   admin_access: AdminAccessSchema.optional(),
+  monitoring: MonitoringConfigSchema.optional(),
+  alert_rules: z.array(AlertRuleSchema).optional(),
   data_dir: z.string().optional(),
 });
 

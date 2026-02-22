@@ -15,6 +15,12 @@ import envVarsRouter from './routes/envVars';
 import auditLogsRouter from './routes/auditLogs';
 import { regenerateAllSharedEnvFiles } from './services/envVars';
 import { startBackupScheduler, stopBackupScheduler } from './services/scheduler';
+import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
+import { startDockerEventListener, stopDockerEventListener } from './services/dockerEvents';
+import { startMetricsCollector, stopMetricsCollector } from './services/metricsCollector';
+import { startHealthChecker, stopHealthChecker } from './services/healthChecker';
+import { startAlertEngine, stopAlertEngine } from './services/alertEngine';
+import monitoringRouter from './routes/monitoring';
 
 // Load environment variables
 dotenv.config();
@@ -68,6 +74,7 @@ app.use('/api/status', authMiddleware, apiLimiter, statusRouter);
 app.use('/api/backups', authMiddleware, apiLimiter, auditLog, backupsRouter);
 app.use('/api/env-vars', authMiddleware, apiLimiter, auditLog, envVarsRouter);
 app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
+app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
 
 // Serve frontend for all other routes
 app.get('*', (req, res) => {
@@ -112,6 +119,19 @@ async function start() {
     console.log(`Registry: ${config.registry.type} @ ${config.registry.url}`);
   });
 
+  // Start WebSocket server
+  createWebSocketServer(server);
+
+  // Start monitoring services if enabled
+  const monitoringEnabled = config.monitoring?.enabled !== false;
+  if (monitoringEnabled) {
+    startDockerEventListener();
+    const metricsInterval = config.monitoring?.metrics_interval || 15;
+    startMetricsCollector(metricsInterval);
+    startHealthChecker();
+    startAlertEngine();
+  }
+
   // Graceful shutdown
   let shuttingDown = false;
   const shutdown = (signal: string) => {
@@ -120,6 +140,11 @@ async function start() {
     console.log(`\n${signal} received — shutting down gracefully...`);
 
     stopBackupScheduler();
+    stopAlertEngine();
+    stopHealthChecker();
+    stopMetricsCollector();
+    stopDockerEventListener();
+    stopWebSocketServer();
 
     // Stop accepting new connections
     server.close(() => {

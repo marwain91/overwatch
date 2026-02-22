@@ -65,6 +65,7 @@
         <div class="tab-bar">
           <button class="tab-btn active" data-tab="tenants">Tenants</button>
           <button class="tab-btn" data-tab="environment">Environment</button>
+          <button class="tab-btn" data-tab="monitoring">Monitoring</button>
           <button class="tab-btn" data-tab="activity">Activity</button>
         </div>
 
@@ -124,6 +125,49 @@
             </div>
             <div id="activity-list" class="activity-list">
               <p class="loading">Loading activity...</p>
+            </div>
+          </section>
+        </div>
+
+        <div id="tab-monitoring" class="tab-content hidden">
+          <section class="card">
+            <div class="card-header">
+              <h2>Resource Metrics</h2>
+              <div class="card-header-actions">
+                <span id="ws-status" class="ws-status disconnected">WS: Disconnected</span>
+                <button id="refresh-metrics-btn" class="btn btn-secondary btn-sm">Refresh</button>
+              </div>
+            </div>
+            <div id="metrics-tenant-grid" class="metrics-tenant-grid">
+              <p class="loading">Loading metrics...</p>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-header">
+              <h2>Health Checks</h2>
+            </div>
+            <div id="health-checks-list" class="health-checks-list">
+              <p class="loading">Loading health checks...</p>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-header">
+              <h2>Alert History</h2>
+            </div>
+            <div id="alert-history-list" class="alert-history-list">
+              <p class="loading">Loading alerts...</p>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-header">
+              <h2>Notification Channels</h2>
+              <button id="add-notification-btn" class="btn btn-primary btn-sm">+ Add Webhook</button>
+            </div>
+            <div id="notification-channels-list" class="notification-channels-list">
+              <p class="loading">Loading channels...</p>
             </div>
           </section>
         </div>
@@ -515,6 +559,55 @@
         </div>
       </div>
     </div>
+    <!-- Notification Channel Modal -->
+    <div id="notification-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="notification-modal-title">Add Webhook</h2>
+          <button class="close-btn" data-close-modal>&times;</button>
+        </div>
+        <form id="notification-form">
+          <input type="hidden" id="notification-id">
+          <div class="form-group">
+            <label for="notification-name">Name</label>
+            <input type="text" id="notification-name" placeholder="e.g., Slack alerts" required>
+          </div>
+          <div class="form-group">
+            <label for="notification-url">Webhook URL</label>
+            <input type="text" id="notification-url" placeholder="https://hooks.example.com/..." required>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="notification-enabled" checked>
+              Enabled
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+            <button type="submit" class="btn btn-primary">Save</button>
+          </div>
+          <p id="notification-error" class="error"></p>
+        </form>
+      </div>
+    </div>
+
+    <!-- Delete Notification Channel Modal -->
+    <div id="delete-notification-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Delete Notification Channel</h2>
+          <button class="close-btn" data-close-modal>&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>Are you sure you want to delete <strong id="delete-notification-name"></strong>?</p>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" data-close-modal>Cancel</button>
+            <button type="button" id="confirm-delete-notification-btn" class="btn btn-danger">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Toast Notifications -->
     <div id="toast-container" class="toast-container"></div>
   </div>

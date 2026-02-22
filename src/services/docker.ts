@@ -7,6 +7,7 @@ import { loadConfig, getContainerPrefix, getServiceNames, getRequiredServices, g
 
 const execAsync = promisify(exec);
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
+export { docker };
 
 export interface ContainerInfo {
   id: string;

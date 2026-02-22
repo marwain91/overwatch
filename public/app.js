@@ -6,6 +6,15 @@ let googleClientId = '';
 let projectConfig = null;
 let envVarsLoaded = false;
 let activityLoaded = false;
+let monitoringLoaded = false;
+
+// WebSocket state
+let ws = null;
+let wsReconnectTimer = null;
+let wsReconnectDelay = 1000;
+let wsConnected = false;
+let pollingInterval = null;
+let latestMetrics = null;
 
 // Toast Notifications
 const toastIcons = {
@@ -53,6 +62,10 @@ function switchTab(tabName) {
   if (tabName === 'environment' && !envVarsLoaded) {
     envVarsLoaded = true;
     loadEnvVars();
+  }
+  if (tabName === 'monitoring' && !monitoringLoaded) {
+    monitoringLoaded = true;
+    loadMonitoringData();
   }
   if (tabName === 'activity') {
     loadAuditLogs();
@@ -399,6 +412,8 @@ function logout() {
   currentUser = null;
   localStorage.removeItem('overwatch_admin_token');
   localStorage.removeItem('overwatch_admin_user');
+  disconnectWebSocket();
+  monitoringLoaded = false;
   showScreen('login');
 }
 
@@ -439,6 +454,7 @@ async function handleGoogleSignIn(response) {
     await loadProjectConfig();
     loadDashboard();
     loadBackupStatus();
+    connectWebSocket();
   } catch (error) {
     document.getElementById('login-error').textContent = error.message;
   }
@@ -1497,6 +1513,414 @@ function renderAuditLogs(entries) {
   }).join('');
 }
 
+// WebSocket Client
+function connectWebSocket() {
+  if (!authToken || ws) return;
+
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${location.host}/ws?token=${encodeURIComponent(authToken)}`;
+
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch {
+    return;
+  }
+
+  ws.onopen = () => {
+    wsConnected = true;
+    wsReconnectDelay = 1000;
+    updateWSStatus(true);
+    // Disable polling when WS is active
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+      pollingInterval = null;
+    }
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      handleWSMessage(msg);
+    } catch {}
+  };
+
+  ws.onclose = () => {
+    ws = null;
+    wsConnected = false;
+    updateWSStatus(false);
+    startPollingFallback();
+    scheduleWSReconnect();
+  };
+
+  ws.onerror = () => {
+    // onclose will fire after this
+  };
+}
+
+function disconnectWebSocket() {
+  if (wsReconnectTimer) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+  if (ws) {
+    ws.close();
+    ws = null;
+  }
+  wsConnected = false;
+}
+
+function scheduleWSReconnect() {
+  if (wsReconnectTimer) return;
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    if (authToken) connectWebSocket();
+  }, wsReconnectDelay);
+  wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
+}
+
+function startPollingFallback() {
+  if (pollingInterval) return;
+  pollingInterval = setInterval(() => {
+    if (authToken && !document.querySelector('.modal:not(.hidden)')) {
+      loadDashboard(true);
+    }
+  }, 30000);
+}
+
+function updateWSStatus(connected) {
+  const el = document.getElementById('ws-status');
+  if (!el) return;
+  if (connected) {
+    el.textContent = 'WS: Connected';
+    el.className = 'ws-status connected';
+  } else {
+    el.textContent = 'WS: Disconnected';
+    el.className = 'ws-status disconnected';
+  }
+}
+
+function handleWSMessage(msg) {
+  switch (msg.type) {
+    case 'container:event':
+      // Refresh dashboard on container events
+      loadDashboard(true);
+      break;
+    case 'metrics:snapshot':
+      latestMetrics = msg.data;
+      if (!document.getElementById('tab-monitoring').classList.contains('hidden')) {
+        renderMetrics(msg.data);
+      }
+      updateTenantCardMetrics(msg.data);
+      break;
+    case 'health:change':
+      if (!document.getElementById('tab-monitoring').classList.contains('hidden')) {
+        loadHealthChecks();
+      }
+      break;
+    case 'alert:fired':
+    case 'alert:resolved':
+      if (!document.getElementById('tab-monitoring').classList.contains('hidden')) {
+        loadAlertHistory();
+      }
+      const alertType = msg.type === 'alert:fired' ? 'warning' : 'success';
+      const alertPrefix = msg.type === 'alert:fired' ? 'Alert' : 'Resolved';
+      showToast(`${alertPrefix}: ${msg.data.message || msg.data.ruleName}`, alertType);
+      break;
+  }
+}
+
+// Monitoring Tab
+async function loadMonitoringData() {
+  await Promise.all([
+    loadMetrics(),
+    loadHealthChecks(),
+    loadAlertHistory(),
+    loadNotificationChannels(),
+  ]);
+}
+
+async function loadMetrics() {
+  try {
+    const data = await api('/monitoring/metrics');
+    latestMetrics = data;
+    renderMetrics(data);
+  } catch (error) {
+    document.getElementById('metrics-tenant-grid').innerHTML =
+      `<p class="error">Error: ${error.message}</p>`;
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+}
+
+function renderMetrics(data) {
+  const container = document.getElementById('metrics-tenant-grid');
+  if (!data || (!data.tenants?.length && !data.containers?.length)) {
+    container.innerHTML = '<p class="empty">No metrics available. Waiting for data...</p>';
+    return;
+  }
+
+  container.innerHTML = data.tenants.map(tenant => {
+    const tenantContainers = data.containers.filter(c => c.tenantId === tenant.tenantId);
+    const memPercent = tenant.totalMemLimit > 0 ? (tenant.totalMem / tenant.totalMemLimit * 100).toFixed(1) : 0;
+
+    return `
+    <div class="metrics-tenant-card">
+      <div class="metrics-tenant-header">
+        <h3>${escapeHtml(tenant.tenantId)}</h3>
+        <span class="metrics-container-count">${tenant.containerCount} containers</span>
+      </div>
+      <div class="metrics-summary">
+        <div class="metric-bar-group">
+          <div class="metric-bar-label">
+            <span>CPU</span>
+            <span>${tenant.totalCpu.toFixed(1)}%</span>
+          </div>
+          <div class="metric-bar">
+            <div class="metric-bar-fill cpu" style="width: ${Math.min(tenant.totalCpu, 100)}%"></div>
+          </div>
+        </div>
+        <div class="metric-bar-group">
+          <div class="metric-bar-label">
+            <span>Memory</span>
+            <span>${formatBytes(tenant.totalMem)} / ${formatBytes(tenant.totalMemLimit)}</span>
+          </div>
+          <div class="metric-bar">
+            <div class="metric-bar-fill memory" style="width: ${Math.min(memPercent, 100)}%"></div>
+          </div>
+        </div>
+      </div>
+      <div class="metrics-containers">
+        ${tenantContainers.map(c => `
+          <div class="metrics-container-row">
+            <span class="metrics-service-name">${escapeHtml(c.service)}</span>
+            <span class="metrics-cpu">${c.cpuPercent.toFixed(1)}%</span>
+            <span class="metrics-mem">${formatBytes(c.memUsage)}</span>
+            <span class="metrics-net">${icons.download} ${formatBytes(c.netRx)} / ${formatBytes(c.netTx)}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    `;
+  }).join('');
+}
+
+function updateTenantCardMetrics(data) {
+  if (!data?.tenants) return;
+  for (const tenant of data.tenants) {
+    const card = document.querySelector(`.tenant-card[data-tenant-id="${tenant.tenantId}"]`);
+    if (!card) continue;
+
+    // Add or update inline metrics
+    let metricsEl = card.querySelector('.tenant-inline-metrics');
+    if (!metricsEl) {
+      metricsEl = document.createElement('div');
+      metricsEl.className = 'tenant-inline-metrics';
+      const metaEl = card.querySelector('.tenant-meta');
+      if (metaEl) metaEl.appendChild(metricsEl);
+    }
+
+    const memPercent = tenant.totalMemLimit > 0 ? (tenant.totalMem / tenant.totalMemLimit * 100).toFixed(0) : 0;
+    metricsEl.innerHTML = `
+      <span class="inline-metric cpu" title="CPU usage">${tenant.totalCpu.toFixed(1)}%</span>
+      <span class="inline-metric mem" title="Memory usage">${memPercent}%</span>
+    `;
+  }
+}
+
+// Health Checks
+async function loadHealthChecks() {
+  const container = document.getElementById('health-checks-list');
+  try {
+    const data = await api('/monitoring/health');
+    renderHealthChecks(data);
+  } catch (error) {
+    if (error.message === 'Unauthorized') return;
+    container.innerHTML = '<p class="empty">Health checks not configured.</p>';
+  }
+}
+
+function renderHealthChecks(data) {
+  const container = document.getElementById('health-checks-list');
+  if (!data || data.length === 0) {
+    container.innerHTML = '<p class="empty">No health check data available.</p>';
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="health-checks-grid">
+      ${data.map(h => `
+        <div class="health-check-card ${h.state}">
+          <div class="health-check-info">
+            <span class="health-check-name">${escapeHtml(h.containerName)}</span>
+            <span class="health-check-meta">Last check: ${h.lastCheck ? new Date(h.lastCheck).toLocaleTimeString() : 'never'}</span>
+          </div>
+          <span class="health-check-state ${h.state}">${h.state}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+// Alert History
+async function loadAlertHistory() {
+  const container = document.getElementById('alert-history-list');
+  try {
+    const data = await api('/monitoring/alerts?limit=50');
+    renderAlertHistory(data);
+  } catch (error) {
+    if (error.message === 'Unauthorized') return;
+    container.innerHTML = '<p class="empty">No alerts recorded.</p>';
+  }
+}
+
+function renderAlertHistory(data) {
+  const container = document.getElementById('alert-history-list');
+  if (!data || data.length === 0) {
+    container.innerHTML = '<p class="empty">No alerts recorded.</p>';
+    return;
+  }
+
+  container.innerHTML = data.map(alert => {
+    const firedAt = new Date(alert.firedAt).toLocaleString();
+    const resolved = alert.resolvedAt ? `Resolved: ${new Date(alert.resolvedAt).toLocaleString()}` : 'Active';
+    const severityClass = alert.severity === 'critical' ? 'error' : alert.severity === 'warning' ? 'warning' : 'info';
+    return `
+      <div class="alert-card">
+        <div class="alert-info">
+          <span class="alert-name">${escapeHtml(alert.ruleName)}</span>
+          <span class="alert-message">${escapeHtml(alert.message)}</span>
+          <span class="alert-meta">${firedAt} | ${resolved}</span>
+        </div>
+        <span class="alert-severity ${severityClass}">${alert.severity}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+// Notification Channels
+async function loadNotificationChannels() {
+  const container = document.getElementById('notification-channels-list');
+  try {
+    const data = await api('/monitoring/notifications');
+    renderNotificationChannels(data);
+  } catch (error) {
+    if (error.message === 'Unauthorized') return;
+    container.innerHTML = '<p class="empty">No notification channels configured.</p>';
+  }
+}
+
+function renderNotificationChannels(data) {
+  const container = document.getElementById('notification-channels-list');
+  if (!data || data.length === 0) {
+    container.innerHTML = '<p class="empty">No notification channels configured. Add a webhook to receive alerts.</p>';
+    return;
+  }
+
+  container.innerHTML = data.map(ch => `
+    <div class="notification-card">
+      <div class="notification-info">
+        <span class="notification-name">${escapeHtml(ch.name)}</span>
+        <span class="notification-url">${escapeHtml(ch.config?.url || '')}</span>
+        <span class="notification-status ${ch.enabled ? 'enabled' : 'disabled'}">${ch.enabled ? 'Enabled' : 'Disabled'}</span>
+      </div>
+      <div class="notification-actions">
+        <button class="btn btn-secondary btn-xs" onclick="testNotification('${ch.id}')">Test</button>
+        <button class="btn btn-secondary btn-xs" onclick="showEditNotificationModal('${ch.id}', '${escapeAttr(ch.name)}', '${escapeAttr(ch.config?.url || '')}', ${ch.enabled})">Edit</button>
+        <button class="btn btn-danger btn-xs" onclick="showDeleteNotificationModal('${ch.id}', '${escapeAttr(ch.name)}')">Delete</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function showAddNotificationModal() {
+  document.getElementById('notification-modal-title').textContent = 'Add Webhook';
+  document.getElementById('notification-id').value = '';
+  document.getElementById('notification-name').value = '';
+  document.getElementById('notification-url').value = '';
+  document.getElementById('notification-enabled').checked = true;
+  document.getElementById('notification-error').textContent = '';
+  resetModalButtons('notification-modal');
+  showModal('notification-modal');
+}
+
+function showEditNotificationModal(id, name, url, enabled) {
+  document.getElementById('notification-modal-title').textContent = 'Edit Webhook';
+  document.getElementById('notification-id').value = id;
+  document.getElementById('notification-name').value = name;
+  document.getElementById('notification-url').value = url;
+  document.getElementById('notification-enabled').checked = enabled;
+  document.getElementById('notification-error').textContent = '';
+  resetModalButtons('notification-modal');
+  showModal('notification-modal');
+}
+
+async function saveNotification(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type="submit"]');
+  const id = document.getElementById('notification-id').value;
+  const name = document.getElementById('notification-name').value.trim();
+  const url = document.getElementById('notification-url').value.trim();
+  const enabled = document.getElementById('notification-enabled').checked;
+
+  setButtonLoading(btn, true, 'Saving...');
+
+  try {
+    if (id) {
+      await api(`/monitoring/notifications/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name, type: 'webhook', enabled, config: { url } }),
+      });
+    } else {
+      await api('/monitoring/notifications', {
+        method: 'POST',
+        body: JSON.stringify({ name, type: 'webhook', enabled, config: { url } }),
+      });
+    }
+    hideModal('notification-modal');
+    showToast(`Notification channel ${id ? 'updated' : 'added'}`, 'success');
+    loadNotificationChannels();
+  } catch (error) {
+    setButtonLoading(btn, false, 'Save');
+    document.getElementById('notification-error').textContent = error.message;
+  }
+}
+
+function showDeleteNotificationModal(id, name) {
+  document.getElementById('delete-notification-name').textContent = name;
+  document.getElementById('confirm-delete-notification-btn').onclick = () => deleteNotification(id);
+  resetModalButtons('delete-notification-modal');
+  showModal('delete-notification-modal');
+}
+
+async function deleteNotification(id) {
+  const btn = document.getElementById('confirm-delete-notification-btn');
+  setButtonLoading(btn, true, 'Deleting...');
+
+  try {
+    await api(`/monitoring/notifications/${id}`, { method: 'DELETE' });
+    hideModal('delete-notification-modal');
+    showToast('Notification channel deleted', 'success');
+    loadNotificationChannels();
+  } catch (error) {
+    setButtonLoading(btn, false, 'Delete');
+    showToast(`Failed to delete: ${error.message}`, 'error');
+  }
+}
+
+async function testNotification(id) {
+  try {
+    await api(`/monitoring/notifications/${id}/test`, { method: 'POST' });
+    showToast('Test notification sent', 'success');
+  } catch (error) {
+    showToast(`Test failed: ${error.message}`, 'error');
+  }
+}
+
 // Bulk Tenant Actions
 async function stopAllTenants(btn) {
   guardAction('stop-all', async () => {
@@ -1561,6 +1985,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       await loadProjectConfig();
       loadDashboard();
       loadBackupStatus();
+      connectWebSocket();
     } catch (error) {
       logout();
     }
@@ -1701,9 +2126,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('restore-backup-form').addEventListener('submit', restoreBackup);
   document.getElementById('create-from-backup-form').addEventListener('submit', createTenantFromBackup);
 
-  setInterval(() => {
-    if (authToken && !document.querySelector('.modal:not(.hidden)')) {
-      loadDashboard(true);
-    }
-  }, 30000);
+  // Monitoring tab
+  document.getElementById('refresh-metrics-btn').addEventListener('click', loadMetrics);
+  document.getElementById('add-notification-btn').addEventListener('click', showAddNotificationModal);
+  document.getElementById('notification-form').addEventListener('submit', saveNotification);
+
+  // Start polling as fallback (disabled when WS connects)
+  startPollingFallback();
 });
