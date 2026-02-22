@@ -13,7 +13,7 @@ const BOLD = '\x1b[1m';
 const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
 
-function findDeployDir(): string {
+export function findDeployDir(): string {
   // Check DEPLOY_DIR env first
   if (process.env.DEPLOY_DIR) return process.env.DEPLOY_DIR;
 
