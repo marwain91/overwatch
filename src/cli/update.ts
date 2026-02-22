@@ -14,6 +14,14 @@ function exec(cmd: string): string {
 function findOverwatchDir(): string {
   if (process.env.COMPOSE_DIR) return process.env.COMPOSE_DIR;
 
+  // DEPLOY_DIR points to the deploy root containing overwatch/ subdir
+  if (process.env.DEPLOY_DIR) {
+    const dir = path.join(process.env.DEPLOY_DIR, 'overwatch');
+    if (fs.existsSync(path.join(dir, 'docker-compose.yml'))) {
+      return dir;
+    }
+  }
+
   const cwd = process.cwd();
   // If cwd has docker-compose.yml and looks like the overwatch dir
   if (fs.existsSync(path.join(cwd, 'docker-compose.yml'))) {
@@ -34,7 +42,7 @@ function findOverwatchDir(): string {
   } catch {}
 
   throw new Error(
-    'Cannot find overwatch compose directory. Run from the deploy root or set COMPOSE_DIR.',
+    'Cannot find overwatch compose directory. Run from the deploy root or set DEPLOY_DIR.',
   );
 }
 
