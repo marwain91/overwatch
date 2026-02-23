@@ -1,11 +1,13 @@
 import { Link } from 'react-router-dom';
-import { useApps } from '../hooks/useApps';
+import { useApps, useBackupSummaries } from '../hooks/useApps';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { formatRelativeTime } from '../lib/format';
 import type { SystemHealth } from '../lib/types';
 
 export function AppListPage() {
   const { data: apps, isLoading } = useApps();
+  const { data: backupSummaries } = useBackupSummaries();
   const { data: health } = useQuery({
     queryKey: ['system-health'],
     queryFn: () => api.get<SystemHealth>('/status/health'),
@@ -32,7 +34,7 @@ export function AppListPage() {
           <StatusCard label="Database" value={health.database} ok={health.database === 'connected'} />
           <StatusCard label="Containers" value={`${health.runningContainers}/${health.containers}`} ok={health.runningContainers === health.containers} />
           <StatusCard label="Apps" value={String(health.apps ?? apps?.length ?? 0)} ok />
-          <StatusCard label="Running" value={health.runningContainers > 0 ? 'Yes' : 'No'} ok={health.runningContainers > 0} />
+          <StatusCard label="Backups" value={apps?.some(a => a.backup?.enabled) ? 'Enabled' : 'Disabled'} ok={!!apps?.some(a => a.backup?.enabled)} />
         </div>
       )}
 
@@ -64,7 +66,13 @@ export function AppListPage() {
                 <span className="badge badge-gray">{app.services.length} services</span>
                 <span className="badge badge-gray">{app.registry.type}</span>
                 <span className="badge badge-gray">{app.domain_template}</span>
+                {app.backup?.enabled && <span className="badge badge-green">Backups</span>}
               </div>
+              {backupSummaries?.[app.id]?.lastBackup && (
+                <p className="mt-2 text-xs text-content-faint">
+                  Last backup: {formatRelativeTime(backupSummaries[app.id].lastBackup!)} ({backupSummaries[app.id].totalSnapshots} snapshots)
+                </p>
+              )}
             </Link>
           ))}
         </div>

@@ -185,6 +185,15 @@ export interface BackupStatus {
   lockInfo?: { pid?: number; host?: string; user?: string; createdAt?: string; age?: string };
 }
 
+export interface BackupSummary {
+  configured: boolean;
+  initialized: boolean;
+  schedule: string | null;
+  lastBackup: string | null;
+  totalSnapshots: number;
+  isLocked?: boolean;
+}
+
 // Auth
 export interface AuthUser {
   email: string;

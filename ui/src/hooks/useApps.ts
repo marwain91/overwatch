@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import type { AppDefinition } from '../lib/types';
+import type { AppDefinition, BackupSummary } from '../lib/types';
 
 export function useApps() {
   return useQuery({
@@ -59,5 +59,22 @@ export function useDeleteApp() {
 export function useTestRegistry(appId: string) {
   return useMutation({
     mutationFn: () => api.post<{ success: boolean }>(`/apps/${appId}/registry/test`),
+  });
+}
+
+export function useBackupSummaries() {
+  return useQuery({
+    queryKey: ['backup-summaries'],
+    queryFn: () => api.get<Record<string, BackupSummary>>('/status/backup-summaries'),
+    staleTime: 60_000,
+  });
+}
+
+export function useBackupSummary(appId: string) {
+  return useQuery({
+    queryKey: ['backup-summary', appId],
+    queryFn: () => api.get<BackupSummary>(`/apps/${appId}/backups/summary`),
+    enabled: !!appId,
+    staleTime: 60_000,
   });
 }

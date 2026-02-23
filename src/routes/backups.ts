@@ -10,6 +10,7 @@ import {
   deleteSnapshot,
   pruneBackups,
 } from '../services/backup';
+import { getApp } from '../services/app';
 import { createTenant } from '../services/tenant';
 import { getTenantInfo } from '../services/docker';
 import { asyncHandler } from '../utils/asyncHandler';
@@ -24,6 +25,35 @@ function isValidSnapshotId(id: string): boolean {
 function isValidTenantId(id: string): boolean {
   return id.length <= 63 && /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(id);
 }
+
+// Get backup summary (status + latest snapshot info)
+router.get('/summary', asyncHandler(async (req, res) => {
+  const { appId } = req.params;
+  const app = await getApp(appId);
+  if (!app) {
+    return res.status(404).json({ error: 'App not found' });
+  }
+
+  const info = await getBackupInfo(appId);
+
+  let lastBackup: string | null = null;
+  let totalSnapshots = 0;
+
+  if (info.configured && info.initialized) {
+    const snapshots = await listSnapshots(appId);
+    totalSnapshots = snapshots.length;
+    if (snapshots.length > 0) {
+      lastBackup = snapshots[0].time; // already sorted desc
+    }
+  }
+
+  res.json({
+    ...info,
+    schedule: app.backup?.schedule || null,
+    lastBackup,
+    totalSnapshots,
+  });
+}));
 
 // Get backup configuration status for an app
 router.get('/status', asyncHandler(async (req, res) => {

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp } from '../hooks/useApps';
@@ -134,8 +134,20 @@ function TenantCard({
 }) {
   const action = useTenantAction(appId);
   const accessToken = useAccessToken(appId);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [menuOpen]);
 
   const handleAction = (a: 'start' | 'stop' | 'restart') => {
+    setMenuOpen(false);
     action.mutate(
       { tenantId: tenant.tenantId, action: a },
       { onError: (err) => toast.error(err.message) },
@@ -143,6 +155,7 @@ function TenantCard({
   };
 
   const handleAccess = () => {
+    setMenuOpen(false);
     accessToken.mutate(tenant.tenantId, {
       onSuccess: (data) => window.open(data.accessUrl, '_blank'),
       onError: (err) => toast.error(err.message),
@@ -162,7 +175,7 @@ function TenantCard({
         </div>
         <div className="mt-1 flex gap-4 text-xs text-content-faint">
           <span>{tenant.domain}</span>
-          <span>v{tenant.version}</span>
+          <span>{tenant.version}</span>
           <span>{tenant.runningContainers}/{tenant.totalContainers} containers</span>
           {metrics && (
             <>
@@ -173,38 +186,42 @@ function TenantCard({
         </div>
       </div>
 
-      {/* Actions */}
-      <div className="flex gap-1.5">
-        {tenant.healthy ? (
-          <>
-            <button className="btn btn-ghost btn-icon btn-sm" onClick={handleAccess} title="Access">
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
-            </button>
-            <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleAction('restart')} title="Restart">
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10" /></svg>
-            </button>
-            <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleAction('stop')} title="Stop">
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><rect x="6" y="6" width="12" height="12" /></svg>
-            </button>
-          </>
-        ) : (
-          <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleAction('start')} title="Start">
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><polygon points="5 3 19 12 5 21 5 3" /></svg>
-          </button>
+      {/* Context menu */}
+      <div className="relative" ref={menuRef}>
+        <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setMenuOpen(!menuOpen)}>
+          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="5" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="12" cy="19" r="1" /></svg>
+        </button>
+        {menuOpen && (
+          <div className="absolute right-0 z-50 mt-1 w-44 rounded-lg border border-border bg-surface-raised py-1 shadow-lg">
+            {tenant.healthy ? (
+              <>
+                <MenuItem onClick={handleAccess}>Open App</MenuItem>
+                <MenuItem onClick={() => handleAction('restart')}>Restart</MenuItem>
+                <MenuItem onClick={() => handleAction('stop')}>Stop</MenuItem>
+              </>
+            ) : (
+              <MenuItem onClick={() => handleAction('start')}>Start</MenuItem>
+            )}
+            <div className="my-1 border-t border-border" />
+            <MenuItem onClick={() => { setMenuOpen(false); onUpdate(); }}>Update Version</MenuItem>
+            <MenuItem onClick={() => { setMenuOpen(false); onEnvVars(); }}>Environment</MenuItem>
+            <MenuItem onClick={() => { setMenuOpen(false); onBackups(); }}>Backups</MenuItem>
+            <div className="my-1 border-t border-border" />
+            <MenuItem onClick={() => { setMenuOpen(false); onDelete(); }} className="text-red-400 hover:text-red-300">Delete</MenuItem>
+          </div>
         )}
-        <button className="btn btn-ghost btn-icon btn-sm" onClick={onBackups} title="Backups">
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" /><polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" /></svg>
-        </button>
-        <button className="btn btn-ghost btn-icon btn-sm" onClick={onEnvVars} title="Env Vars">
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><circle cx="12" cy="12" r="4" /><path d="M12 3v1m0 16v1m-8-9H3m18 0h-1m-2.636-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707" /></svg>
-        </button>
-        <button className="btn btn-ghost btn-icon btn-sm" onClick={onUpdate} title="Update">
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
-        </button>
-        <button className="btn btn-ghost btn-icon btn-sm text-red-400 hover:text-red-300" onClick={onDelete} title="Delete">
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" /></svg>
-        </button>
       </div>
     </div>
+  );
+}
+
+function MenuItem({ children, onClick, className }: { children: React.ReactNode; onClick: () => void; className?: string }) {
+  return (
+    <button
+      className={cn('w-full px-3 py-1.5 text-left text-sm text-content-secondary hover:bg-surface-subtle', className)}
+      onClick={onClick}
+    >
+      {children}
+    </button>
   );
 }

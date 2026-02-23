@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { useApp, useUpdateApp, useDeleteApp } from '../hooks/useApps';
+import { useApp, useUpdateApp, useDeleteApp, useBackupSummary } from '../hooks/useApps';
+import { formatRelativeTime } from '../lib/format';
 import type { AppService, AppRegistry, AppBackup, AppAdminAccess } from '../lib/types';
 
 export function AppSettingsPage() {
   const { appId } = useParams<{ appId: string }>();
   const navigate = useNavigate();
   const { data: app, isLoading } = useApp(appId!);
+  const { data: backupSummary } = useBackupSummary(appId!);
   const updateApp = useUpdateApp(appId!);
   const deleteApp = useDeleteApp();
 
@@ -178,6 +180,42 @@ export function AppSettingsPage() {
           </button>
         </div>
       </div>
+
+      {/* Backup Status */}
+      {app.backup?.enabled && backupSummary && (
+        <div className="card mb-4">
+          <h2 className="mb-4 text-lg font-semibold text-content-secondary">Backups</h2>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div>
+              <p className="text-xs text-content-faint">Status</p>
+              <p className={`mt-1 text-sm font-medium ${backupSummary.initialized ? 'text-green-400' : backupSummary.configured ? 'text-yellow-400' : 'text-red-400'}`}>
+                {backupSummary.initialized ? 'Active' : backupSummary.configured ? 'Not initialized' : 'Not configured'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-content-faint">Schedule</p>
+              <p className="mt-1 text-sm font-medium text-content-secondary">
+                {backupSummary.schedule || 'Manual only'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-content-faint">Last Backup</p>
+              <p className="mt-1 text-sm font-medium text-content-secondary">
+                {backupSummary.lastBackup ? formatRelativeTime(backupSummary.lastBackup) : 'Never'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-content-faint">Total Snapshots</p>
+              <p className="mt-1 text-sm font-medium text-content-secondary">
+                {backupSummary.totalSnapshots}
+              </p>
+            </div>
+          </div>
+          {backupSummary.isLocked && (
+            <p className="mt-3 text-xs text-yellow-400">Repository is currently locked by another operation.</p>
+          )}
+        </div>
+      )}
 
       {/* Danger Zone */}
       <div className="card border-red-900/50">

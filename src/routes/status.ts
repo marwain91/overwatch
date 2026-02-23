@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { loadConfig } from '../config';
-import { listContainers, getContainerLogs, restartContainer, listTenants } from '../services/docker';
+import { listContainers, getContainerLogs, restartContainer, listTenants, extractContainerInfo } from '../services/docker';
 import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
+import { getBackupInfo, listSnapshots } from '../services/backup';
 import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
@@ -49,11 +50,23 @@ router.get('/health', asyncHandler(async (req, res) => {
   const databases = await db.listDatabases();
   const apps = await listApps();
 
-  const runningContainers = containers.filter(c => c.state === 'running');
+  // Build set of init container service names to exclude from counts
+  const initServices = new Set<string>();
+  for (const app of apps) {
+    for (const svc of app.services) {
+      if (svc.is_init_container) initServices.add(svc.name);
+    }
+  }
+
+  const nonInitContainers = containers.filter(c => {
+    const info = extractContainerInfo(c.name);
+    return !info || !initServices.has(info.service);
+  });
+  const runningContainers = nonInitContainers.filter(c => c.state === 'running');
 
   res.json({
     database: dbConnected ? 'connected' : 'disconnected',
-    containers: containers.length,
+    containers: nonInitContainers.length,
     runningContainers: runningContainers.length,
     databases: databases.length,
     apps: apps.length,
@@ -86,6 +99,45 @@ router.get('/config', asyncHandler(async (req, res) => {
       type: config.database.type,
     },
   });
+}));
+
+// Get backup summaries for all apps
+router.get('/backup-summaries', asyncHandler(async (req, res) => {
+  const apps = await listApps();
+  const summaries: Record<string, { configured: boolean; initialized: boolean; schedule: string | null; lastBackup: string | null; totalSnapshots: number }> = {};
+
+  for (const app of apps) {
+    if (!app.backup?.enabled) {
+      summaries[app.id] = { configured: false, initialized: false, schedule: null, lastBackup: null, totalSnapshots: 0 };
+      continue;
+    }
+
+    const info = await getBackupInfo(app.id);
+    let lastBackup: string | null = null;
+    let totalSnapshots = 0;
+
+    if (info.configured && info.initialized) {
+      try {
+        const snapshots = await listSnapshots(app.id);
+        totalSnapshots = snapshots.length;
+        if (snapshots.length > 0) {
+          lastBackup = snapshots[0].time;
+        }
+      } catch {
+        // Skip on error
+      }
+    }
+
+    summaries[app.id] = {
+      configured: info.configured,
+      initialized: info.initialized,
+      schedule: app.backup.schedule || null,
+      lastBackup,
+      totalSnapshots,
+    };
+  }
+
+  res.json(summaries);
 }));
 
 // Get all tenants across all apps (global view)

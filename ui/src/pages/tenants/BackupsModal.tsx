@@ -18,7 +18,7 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
   }
 
   return (
-    <Modal title={`Backups: ${tenantId}`} onClose={onClose}>
+    <Modal title={`Backups: ${tenantId}`} size="xl" maxHeight onClose={onClose}>
       <div className="mb-4 flex justify-end">
         <button
           className="btn btn-primary btn-sm"
@@ -35,7 +35,7 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
       {isLoading ? (
         <div className="flex justify-center py-8"><span className="spinner" /></div>
       ) : backups && backups.length > 0 ? (
-        <div className="max-h-80 space-y-2 overflow-y-auto">
+        <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
           {backups.map((b) => (
             <div key={b.id} className="flex items-center justify-between rounded border border-border-subtle bg-surface-muted px-3 py-2">
               <div>

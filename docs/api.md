@@ -78,6 +78,7 @@ All backup endpoints are scoped to an app: `/api/apps/:appId/backups`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| `GET` | `/api/apps/:appId/backups/summary` | Backup summary (status, schedule, last backup, snapshot count) |
 | `GET` | `/api/apps/:appId/backups/status` | Backup system status |
 | `POST` | `/api/apps/:appId/backups/init` | Initialize backup repository |
 | `POST` | `/api/apps/:appId/backups/unlock` | Unlock stale repository locks |
@@ -114,6 +115,7 @@ All env var endpoints are scoped to an app: `/api/apps/:appId/env-vars`.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/status/health` | System health overview |
+| `GET` | `/api/status/backup-summaries` | Backup summaries for all apps |
 | `GET` | `/api/status/config` | Get project configuration |
 | `GET` | `/api/status/tenants` | List all tenants across all apps |
 | `GET` | `/api/status/containers` | List managed containers |
