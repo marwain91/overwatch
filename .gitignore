@@ -39,3 +39,6 @@ tenants/
 
 # Backup temp files
 backup-temp/
+
+# Tests
+test/
