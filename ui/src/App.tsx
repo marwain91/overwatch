@@ -9,6 +9,7 @@ import { TenantsPage } from './pages/TenantsPage';
 import { MonitoringPage } from './pages/MonitoringPage';
 import { ActivityPage } from './pages/ActivityPage';
 import { EnvironmentPage } from './pages/EnvironmentPage';
+import { BackupsPage } from './pages/BackupsPage';
 import { AdminsPage } from './pages/AdminsPage';
 
 export default function App() {
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="apps/:appId/tenants" element={<TenantsPage />} />
         <Route path="apps/:appId/monitoring" element={<MonitoringPage />} />
         <Route path="apps/:appId/activity" element={<ActivityPage />} />
+        <Route path="apps/:appId/backups" element={<BackupsPage />} />
         <Route path="apps/:appId/environment" element={<EnvironmentPage />} />
         <Route path="admins" element={<AdminsPage />} />
       </Route>

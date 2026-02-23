@@ -71,6 +71,14 @@ export function useBackupStatus(appId: string) {
   });
 }
 
+export function useAllBackups(appId: string) {
+  return useQuery({
+    queryKey: ['backups', appId],
+    queryFn: () => api.get<BackupSnapshot[]>(`/apps/${appId}/backups`),
+    enabled: !!appId,
+  });
+}
+
 export function useTenantBackups(appId: string, tenantId: string | null) {
   return useQuery({
     queryKey: ['backups', appId, tenantId],
@@ -85,6 +93,8 @@ export function useCreateBackup(appId: string) {
     mutationFn: (tenantId: string) => api.post(`/apps/${appId}/backups`, { tenantId }),
     onSuccess: (_, tenantId) => {
       qc.invalidateQueries({ queryKey: ['backups', appId, tenantId] });
+      qc.invalidateQueries({ queryKey: ['backups', appId], exact: true });
+      qc.invalidateQueries({ queryKey: ['backup-summary', appId] });
     },
   });
 }
@@ -106,6 +116,7 @@ export function useDeleteBackup(appId: string) {
     mutationFn: (snapshotId: string) => api.delete(`/apps/${appId}/backups/${snapshotId}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['backups', appId] });
+      qc.invalidateQueries({ queryKey: ['backup-summary', appId] });
     },
   });
 }

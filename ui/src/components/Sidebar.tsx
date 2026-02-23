@@ -103,6 +103,9 @@ export function Sidebar() {
                     <NavLink to={`/apps/${app.id}/monitoring`} className={navItemClass}>
                       Monitoring
                     </NavLink>
+                    <NavLink to={`/apps/${app.id}/backups`} className={navItemClass}>
+                      Backups
+                    </NavLink>
                     <NavLink to={`/apps/${app.id}/environment`} className={navItemClass}>
                       Environment
                     </NavLink>

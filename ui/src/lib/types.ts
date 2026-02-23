@@ -177,6 +177,7 @@ export interface BackupSnapshot {
   shortId: string;
   time: string;
   tags: Record<string, string>;
+  tenantId?: string;
 }
 
 export interface BackupStatus {
