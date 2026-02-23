@@ -1,11 +1,13 @@
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
-import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors } from './config';
-import { loginToRegistry } from './adapters/registry';
+import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors, clearConfigCache } from './config';
+import { loginToAllRegistries } from './adapters/registry';
+import { listApps } from './services/app';
 import { authMiddleware } from './middleware/auth';
 import { rateLimit } from './middleware/rateLimit';
 import { auditLog } from './middleware/audit';
+import appsRouter from './routes/apps';
 import tenantsRouter from './routes/tenants';
 import statusRouter from './routes/status';
 import authRouter from './routes/auth';
@@ -13,88 +15,124 @@ import adminUsersRouter from './routes/adminUsers';
 import backupsRouter from './routes/backups';
 import envVarsRouter from './routes/envVars';
 import auditLogsRouter from './routes/auditLogs';
+import monitoringRouter from './routes/monitoring';
 import { regenerateAllSharedEnvFiles } from './services/envVars';
-import { startBackupScheduler, stopBackupScheduler } from './services/scheduler';
+import { startAllBackupSchedulers, stopBackupScheduler } from './services/scheduler';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
 import { startDockerEventListener, stopDockerEventListener } from './services/dockerEvents';
 import { startMetricsCollector, stopMetricsCollector } from './services/metricsCollector';
 import { startHealthChecker, stopHealthChecker } from './services/healthChecker';
 import { startAlertEngine, stopAlertEngine } from './services/alertEngine';
-import monitoringRouter from './routes/monitoring';
+import { startRetention, stopRetention } from './services/retention';
+import { isLegacyFormat, runMigration } from './services/migration';
 
 // Load environment variables
 dotenv.config();
 
-// Validate configuration early
-let config: OverwatchConfig;
-try {
-  config = loadConfig();
-  console.log(`Overwatch configured for project: ${config.project.name}`);
-} catch (error: any) {
-  console.error('Configuration error:', error.message);
-  process.exit(1);
-}
-
-// Validate all required environment variables based on config
-const validationErrors = validateEnvironment(config);
-if (validationErrors.length > 0) {
-  console.error(formatValidationErrors(validationErrors));
-  process.exit(1);
-}
-
-const app = express();
-const PORT = process.env.PORT || 3002;
-
-// Middleware
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '../public')));
-
-// Rate limiting
-const apiLimiter = rateLimit({ windowMs: 60_000, maxRequests: 100 });
-const authLimiter = rateLimit({ windowMs: 60_000, maxRequests: 10, message: 'Too many login attempts, please try again later' });
-
-// Health check (no auth)
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    project: config.project.name,
-    timestamp: new Date().toISOString(),
-    buildTime: process.env.BUILD_TIME || 'dev',
-    buildCommit: process.env.BUILD_COMMIT || 'dev',
-  });
-});
-
-// Auth routes (no auth required, stricter rate limit)
-app.use('/api/auth', authLimiter, authRouter);
-
-// API routes (with auth, rate limiting, and audit logging)
-app.use('/api/tenants', authMiddleware, apiLimiter, auditLog, tenantsRouter);
-app.use('/api/admin-users', authMiddleware, apiLimiter, auditLog, adminUsersRouter);
-app.use('/api/status', authMiddleware, apiLimiter, statusRouter);
-app.use('/api/backups', authMiddleware, apiLimiter, auditLog, backupsRouter);
-app.use('/api/env-vars', authMiddleware, apiLimiter, auditLog, envVarsRouter);
-app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
-app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
-
-// Serve frontend for all other routes
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
-});
-
-// Global error handler — catches errors forwarded by asyncHandler
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(`Error in ${req.method} ${req.path}:`, err);
-  const status = err.status || err.statusCode || 500;
-  res.status(status).json({ error: err.message || 'Internal server error' });
-});
-
 // Initialize and start server
 async function start() {
-  // Login to container registry for pulling tenant images
+  // Run migration if legacy format detected (before loading config)
+  if (isLegacyFormat()) {
+    console.log('Legacy configuration detected. Running migration...');
+    try {
+      await runMigration();
+      clearConfigCache();
+      console.log('Migration completed successfully.');
+    } catch (error: any) {
+      console.error('Migration failed:', error.message);
+      console.error('Continuing with existing config...');
+    }
+  }
+
+  // Validate configuration
+  let config: OverwatchConfig;
   try {
-    await loginToRegistry();
+    config = loadConfig();
+    console.log(`Overwatch configured for project: ${config.project.name}`);
+  } catch (error: any) {
+    console.error('Configuration error:', error.message);
+    process.exit(1);
+  }
+
+  // Validate all required environment variables based on config
+  const validationErrors = validateEnvironment(config);
+  if (validationErrors.length > 0) {
+    console.error(formatValidationErrors(validationErrors));
+    process.exit(1);
+  }
+
+  const app = express();
+  const PORT = process.env.PORT || 3002;
+
+  // Middleware
+  app.use(express.json());
+
+  // Serve React UI from ui/dist/ (falls back to public/ if ui/dist doesn't exist)
+  const uiDistPath = path.join(__dirname, '../ui/dist');
+  const publicPath = path.join(__dirname, '../public');
+  const fs = require('fs');
+  const staticPath = fs.existsSync(uiDistPath) ? uiDistPath : publicPath;
+  app.use(express.static(staticPath));
+
+  // Rate limiting
+  const apiLimiter = rateLimit({ windowMs: 60_000, maxRequests: 100 });
+  const authLimiter = rateLimit({ windowMs: 60_000, maxRequests: 10, message: 'Too many login attempts, please try again later' });
+
+  // Health check (no auth)
+  app.get('/health', (_req, res) => {
+    res.json({
+      status: 'ok',
+      project: config.project.name,
+      timestamp: new Date().toISOString(),
+      buildTime: process.env.BUILD_TIME || 'dev',
+      buildCommit: process.env.BUILD_COMMIT || 'dev',
+    });
+  });
+
+  // Auth routes (no auth required, stricter rate limit)
+  app.use('/api/auth', authLimiter, authRouter);
+
+  // App routes (with auth)
+  app.use('/api/apps', authMiddleware, apiLimiter, auditLog, appsRouter);
+
+  // App-scoped routes
+  app.use('/api/apps/:appId/tenants', authMiddleware, apiLimiter, auditLog, tenantsRouter);
+  app.use('/api/apps/:appId/env-vars', authMiddleware, apiLimiter, auditLog, envVarsRouter);
+  app.use('/api/apps/:appId/backups', authMiddleware, apiLimiter, auditLog, backupsRouter);
+
+  // Global routes
+  app.use('/api/admin-users', authMiddleware, apiLimiter, auditLog, adminUsersRouter);
+  app.use('/api/status', authMiddleware, apiLimiter, statusRouter);
+  app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
+  app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
+
+  // Serve frontend for all other routes (SPA fallback)
+  app.get('*', (_req, res) => {
+    const indexPath = path.join(staticPath, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.status(404).json({ error: 'Frontend not found' });
+    }
+  });
+
+  // Global error handler
+  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error(`Error in ${req.method} ${req.path}:`, err);
+    const status = err.status || err.statusCode || 500;
+    res.status(status).json({ error: err.message || 'Internal server error' });
+  });
+
+  // Login to container registries for all apps
+  try {
+    const apps = await listApps();
+    if (apps.length > 0) {
+      await loginToAllRegistries(apps);
+    } else {
+      console.log('No apps configured yet. Registry login skipped.');
+    }
   } catch (error) {
-    console.error('Warning: Registry login failed, tenant creation may not work:', error);
+    console.error('Warning: Registry login failed:', error);
   }
 
   // Generate shared.env files for all existing tenants
@@ -107,16 +145,17 @@ async function start() {
     console.error('Warning: Failed to generate shared.env files:', error);
   }
 
-  // Start backup scheduler if configured
-  if (config.backup?.enabled && config.backup?.schedule) {
-    startBackupScheduler(config.backup.schedule);
+  // Start per-app backup schedulers
+  try {
+    await startAllBackupSchedulers();
+  } catch (error) {
+    console.error('Warning: Failed to start backup schedulers:', error);
   }
 
   const server = app.listen(PORT, () => {
     console.log(`Overwatch running on port ${PORT}`);
     console.log(`Managing project: ${config.project.name}`);
     console.log(`Database: ${config.database.type} @ ${config.database.host}`);
-    console.log(`Registry: ${config.registry.type} @ ${config.registry.url}`);
   });
 
   // Start WebSocket server
@@ -132,6 +171,9 @@ async function start() {
     startAlertEngine();
   }
 
+  // Start log retention pruner
+  startRetention();
+
   // Graceful shutdown
   let shuttingDown = false;
   const shutdown = (signal: string) => {
@@ -139,6 +181,7 @@ async function start() {
     shuttingDown = true;
     console.log(`\n${signal} received — shutting down gracefully...`);
 
+    stopRetention();
     stopBackupScheduler();
     stopAlertEngine();
     stopHealthChecker();
@@ -146,13 +189,11 @@ async function start() {
     stopDockerEventListener();
     stopWebSocketServer();
 
-    // Stop accepting new connections
     server.close(() => {
       console.log('All connections closed. Exiting.');
       process.exit(0);
     });
 
-    // Force exit after timeout if connections don't drain
     setTimeout(() => {
       console.error('Shutdown timed out after 30s — forcing exit.');
       process.exit(1);
