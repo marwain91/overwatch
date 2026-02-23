@@ -65,7 +65,15 @@ async function start() {
   const PORT = process.env.PORT || 3002;
 
   // Middleware
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
+
+  // CORS — restrict to same origin (SPA served from same host)
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
 
   // Serve React UI from ui/dist/ (falls back to public/ if ui/dist doesn't exist)
   const uiDistPath = path.join(__dirname, '../ui/dist');
@@ -92,13 +100,22 @@ async function start() {
   // Auth routes (no auth required, stricter rate limit)
   app.use('/api/auth', authLimiter, authRouter);
 
-  // App routes (with auth)
+  // App routes (with auth + appId validation for :appId sub-routes)
   app.use('/api/apps', authMiddleware, apiLimiter, auditLog, appsRouter);
 
+  // Validate appId format for all app-scoped routes
+  const validateAppId: express.RequestHandler = (req, res, next) => {
+    const { appId } = req.params;
+    if (appId && !/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(appId)) {
+      return res.status(400).json({ error: 'Invalid app ID format' });
+    }
+    next();
+  };
+
   // App-scoped routes
-  app.use('/api/apps/:appId/tenants', authMiddleware, apiLimiter, auditLog, tenantsRouter);
-  app.use('/api/apps/:appId/env-vars', authMiddleware, apiLimiter, auditLog, envVarsRouter);
-  app.use('/api/apps/:appId/backups', authMiddleware, apiLimiter, auditLog, backupsRouter);
+  app.use('/api/apps/:appId/tenants', authMiddleware, validateAppId, apiLimiter, auditLog, tenantsRouter);
+  app.use('/api/apps/:appId/env-vars', authMiddleware, validateAppId, apiLimiter, auditLog, envVarsRouter);
+  app.use('/api/apps/:appId/backups', authMiddleware, validateAppId, apiLimiter, auditLog, backupsRouter);
 
   // Global routes
   app.use('/api/admin-users', authMiddleware, apiLimiter, auditLog, adminUsersRouter);
@@ -116,11 +133,13 @@ async function start() {
     }
   });
 
-  // Global error handler
+  // Global error handler — log full error server-side, return sanitized message to client
   app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(`Error in ${req.method} ${req.path}:`, err);
     const status = err.status || err.statusCode || 500;
-    res.status(status).json({ error: err.message || 'Internal server error' });
+    // Only expose error messages for client errors (4xx); use generic message for server errors (5xx)
+    const message = status < 500 ? (err.message || 'Bad request') : 'Internal server error';
+    res.status(status).json({ error: message });
   });
 
   // Login to container registries for all apps

@@ -2,13 +2,9 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { findConfigPath } from '../config/loader';
 import { LegacyOverwatchConfigSchema, LegacyOverwatchConfig } from '../config/schema';
 import { AppDefinition } from '../models/app';
-
-const execAsync = promisify(exec);
 
 const MIGRATION_MARKER = '.migration-v2-complete';
 
@@ -168,7 +164,7 @@ export async function runMigration(): Promise<void> {
       const newPath = path.join(newTenantsDir, tenantId);
 
       // Copy tenant directory
-      await execAsync(`cp -r "${oldPath}" "${newPath}"`);
+      await fs.cp(oldPath, newPath, { recursive: true });
 
       // Update .env with APP_ID
       const envPath = path.join(newPath, '.env');

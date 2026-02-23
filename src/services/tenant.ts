@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { loadConfig, getDatabasePrefix, getAppsDir } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
@@ -10,7 +10,7 @@ import { getApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { AppDefinition } from '../models/app';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface CreateTenantInput {
   appId: string;
@@ -32,7 +32,7 @@ function generatePassword(length: number): string {
 }
 
 function validateTenantId(tenantId: string): boolean {
-  return /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(tenantId);
+  return tenantId.length <= 63 && /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(tenantId);
 }
 
 /**
@@ -107,7 +107,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), composeContent);
 
     // Start tenant
-    await execAsync(`docker compose -f ${tenantPath}/docker-compose.yml up -d`);
+    await execFileAsync('docker', ['compose', '-f', path.join(tenantPath, 'docker-compose.yml'), 'up', '-d']);
   } catch (error) {
     // Cleanup on failure - remove directory and database
     await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
@@ -143,7 +143,7 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
 
   // Stop containers
   try {
-    await execAsync(`docker compose -f ${tenantPath}/docker-compose.yml down -v`);
+    await execFileAsync('docker', ['compose', '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
   } catch {
     // Ignore errors
   }
@@ -209,8 +209,8 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
 
   // Pull new images and restart - restore old files on failure
   try {
-    await execAsync(`docker compose -f ${composePath} pull`);
-    await execAsync(`docker compose -f ${composePath} up -d --force-recreate`);
+    await execFileAsync('docker', ['compose', '-f', composePath, 'pull']);
+    await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
   } catch (error) {
     await fs.writeFile(envPath, originalEnvContent);
     await fs.writeFile(composePath, originalComposeContent);

@@ -13,6 +13,15 @@ import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router({ mergeParams: true });
 
+// Validate tenantId format on routes that use it
+const validateTenantId: import('express').RequestHandler = (req, res, next) => {
+  const { tenantId } = req.params;
+  if (tenantId && (tenantId.length > 63 || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(tenantId))) {
+    return res.status(400).json({ error: 'Invalid tenant ID format' });
+  }
+  next();
+};
+
 // List global env vars for an app (sensitive values masked)
 router.get('/', asyncHandler(async (req: Request, res: Response) => {
   const { appId } = req.params;
@@ -67,7 +76,7 @@ router.delete('/:key', asyncHandler(async (req: Request, res: Response) => {
 }));
 
 // Get effective env vars for a tenant (merged view)
-router.get('/tenants/:tenantId', asyncHandler(async (req: Request, res: Response) => {
+router.get('/tenants/:tenantId', validateTenantId, asyncHandler(async (req: Request, res: Response) => {
   const { appId, tenantId } = req.params;
   const effective = await getEffectiveEnvVars(appId, tenantId);
   const masked = effective.map(v => ({
@@ -78,7 +87,7 @@ router.get('/tenants/:tenantId', asyncHandler(async (req: Request, res: Response
 }));
 
 // Set a tenant override
-router.post('/tenants/:tenantId/overrides', asyncHandler(async (req: Request, res: Response) => {
+router.post('/tenants/:tenantId/overrides', validateTenantId, asyncHandler(async (req: Request, res: Response) => {
   const { appId, tenantId } = req.params;
   const { key, value, sensitive } = req.body;
 
@@ -93,7 +102,7 @@ router.post('/tenants/:tenantId/overrides', asyncHandler(async (req: Request, re
 }));
 
 // Delete a tenant override
-router.delete('/tenants/:tenantId/overrides/:key', asyncHandler(async (req: Request, res: Response) => {
+router.delete('/tenants/:tenantId/overrides/:key', validateTenantId, asyncHandler(async (req: Request, res: Response) => {
   const { appId, tenantId, key } = req.params;
   await deleteTenantOverride(appId, tenantId, key);
   await generateSharedEnvFile(appId, tenantId);

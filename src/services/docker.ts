@@ -1,12 +1,12 @@
 import Docker from 'dockerode';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { loadConfig, getContainerPrefix, getAppsDir } from '../config';
 import { listApps } from './app';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 export { docker };
 
@@ -229,18 +229,18 @@ export async function getTenantInfo(appId: string, tenantId: string): Promise<{ 
 }
 
 export async function startTenant(appId: string, tenantId: string): Promise<void> {
-  const tenantPath = path.join(getAppsDir(), appId, 'tenants', tenantId);
-  await execAsync(`docker compose -f ${tenantPath}/docker-compose.yml up -d`);
+  const composePath = path.join(getAppsDir(), appId, 'tenants', tenantId, 'docker-compose.yml');
+  await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d']);
 }
 
 export async function stopTenant(appId: string, tenantId: string): Promise<void> {
-  const tenantPath = path.join(getAppsDir(), appId, 'tenants', tenantId);
-  await execAsync(`docker compose -f ${tenantPath}/docker-compose.yml down`);
+  const composePath = path.join(getAppsDir(), appId, 'tenants', tenantId, 'docker-compose.yml');
+  await execFileAsync('docker', ['compose', '-f', composePath, 'down']);
 }
 
 export async function restartTenant(appId: string, tenantId: string): Promise<void> {
-  const tenantPath = path.join(getAppsDir(), appId, 'tenants', tenantId);
-  await execAsync(`docker compose -f ${tenantPath}/docker-compose.yml up -d --force-recreate`);
+  const composePath = path.join(getAppsDir(), appId, 'tenants', tenantId, 'docker-compose.yml');
+  await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
 }
 
 function parseEnv(content: string): Record<string, string> {

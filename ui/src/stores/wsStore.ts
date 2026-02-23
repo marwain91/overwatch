@@ -35,18 +35,24 @@ export const useWSStore = create<WSState>((set, get) => ({
     if (!token || state._ws) return;
 
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${location.host}/ws?token=${encodeURIComponent(token)}`;
+    const wsUrl = `${protocol}//${location.host}/ws`;
 
     try {
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        set({ connected: true, _reconnectDelay: 1000 });
+        // Send auth token as first message instead of in URL (avoids token in logs)
+        ws.send(JSON.stringify({ type: 'auth', token }));
       };
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data) as WSMessage;
+
+          if (msg.type === 'auth:ok') {
+            set({ connected: true, _reconnectDelay: 1000 });
+            return;
+          }
 
           if (msg.type === 'metrics:snapshot') {
             set({ latestMetrics: msg.data as MetricsSnapshot });

@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -8,7 +8,12 @@ import { getTenantInfo, listTenants } from './docker';
 import { getApp, listApps } from './app';
 import { AppDefinition } from '../models/app';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+/** Validate that a path is safe for use in docker exec/cp (no shell metacharacters) */
+function isValidContainerPath(p: string): boolean {
+  return /^[a-zA-Z0-9/_.\-]+$/.test(p) && !p.includes('..');
+}
 
 function getBackupTempDir(): string {
   const config = loadConfig();
@@ -126,7 +131,7 @@ export async function getBackupInfo(appId: string): Promise<BackupInfo & { isLoc
   }
 
   try {
-    await execAsync('restic cat config', { env: getResticEnv(app), timeout: 30000 });
+    await execFileAsync('restic', ['cat', 'config'], { env: getResticEnv(app), timeout: 30000 });
     return { configured: true, initialized: true };
   } catch (error: any) {
     const errorMsg = error.stderr || error.message || '';
@@ -138,14 +143,14 @@ export async function getBackupInfo(appId: string): Promise<BackupInfo & { isLoc
       return { configured: true, initialized: true, isLocked: true, lockInfo: lockInfo || undefined, error: 'Repository is locked by another operation.' };
     }
     console.error('Backup status check failed:', errorMsg);
-    return { configured: true, initialized: true, error: errorMsg };
+    return { configured: true, initialized: true, error: 'Failed to check backup status. Check server logs.' };
   }
 }
 
 export async function initializeRepository(appId: string): Promise<void> {
   const app = await getApp(appId);
   if (!app) throw new Error(`App '${appId}' not found`);
-  await execAsync('restic init', { env: getResticEnv(app) });
+  await execFileAsync('restic', ['init'], { env: getResticEnv(app) });
 }
 
 export async function unlockRepository(appId: string): Promise<{ success: boolean; error?: string }> {
@@ -153,10 +158,11 @@ export async function unlockRepository(appId: string): Promise<{ success: boolea
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
   try {
-    await execAsync('restic unlock --remove-all', { env: getResticEnv(app), timeout: 30000 });
+    await execFileAsync('restic', ['unlock', '--remove-all'], { env: getResticEnv(app), timeout: 30000 });
     return { success: true };
   } catch (error: any) {
-    return { success: false, error: error.message };
+    console.error('[Backup] Unlock failed:', error.message);
+    return { success: false, error: 'Failed to unlock repository. Check server logs.' };
   }
 }
 
@@ -166,7 +172,9 @@ function formatError(error: any): { error: string; isLocked?: boolean; lockInfo?
     const lockInfo = parseLockInfo(msg);
     return { error: 'Repository is locked by another operation.', isLocked: true, lockInfo: lockInfo || undefined };
   }
-  return { error: msg };
+  // Return generic message to client; full error is logged server-side
+  console.error('[Backup] Operation failed:', msg);
+  return { error: 'Backup operation failed. Check server logs for details.' };
 }
 
 export async function listSnapshots(appId: string, tenantId?: string): Promise<BackupSnapshot[]> {
@@ -179,16 +187,13 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
   if (!app) return [];
 
   try {
-    let cmd = 'restic snapshots --json';
-    const tags: string[] = [`app:${appId}`];
+    const args = ['snapshots', '--json'];
+    args.push('--tag', `app:${appId}`);
     if (tenantId) {
-      tags.push(`tenant:${tenantId}`);
-    }
-    for (const tag of tags) {
-      cmd += ` --tag ${tag}`;
+      args.push('--tag', `tenant:${tenantId}`);
     }
 
-    const { stdout } = await execAsync(cmd, { env: getResticEnv(app) });
+    const { stdout } = await execFileAsync('restic', args, { env: getResticEnv(app) });
     const snapshots = JSON.parse(stdout || '[]') as any[];
 
     return snapshots.map(s => ({
@@ -220,7 +225,8 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     try {
       await initializeRepository(appId);
     } catch (error: any) {
-      return { success: false, error: `Failed to initialize repository: ${error.message}` };
+      console.error('[Backup] Failed to initialize repository:', error.message);
+      return { success: false, error: 'Failed to initialize backup repository. Check server logs.' };
     }
   }
 
@@ -276,13 +282,21 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
 
       for (const pathConfig of service.paths) {
         try {
-          const { stdout: checkOutput } = await execAsync(
-            `docker exec ${containerName} ls -A ${pathConfig.container} 2>/dev/null || echo ""`
-          );
+          if (!isValidContainerPath(pathConfig.container)) {
+            console.error(`Skipping unsafe container path: ${pathConfig.container}`);
+            continue;
+          }
+          if (!isValidContainerPath(pathConfig.local)) {
+            console.error(`Skipping unsafe local path: ${pathConfig.local}`);
+            continue;
+          }
+          const { stdout: checkOutput } = await execFileAsync(
+            'docker', ['exec', containerName, 'ls', '-A', pathConfig.container]
+          ).catch(() => ({ stdout: '' }));
           if (checkOutput.trim()) {
             const localDir = path.join(tenantBackupDir, pathConfig.local);
             await fs.mkdir(localDir, { recursive: true });
-            await execAsync(`docker cp ${containerName}:${pathConfig.container}/. "${localDir}/"`);
+            await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`]);
           }
         } catch (error: any) {
           console.error(`Failed to copy ${pathConfig.container} from ${containerName}:`, error.message);
@@ -300,9 +314,9 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     };
     await fs.writeFile(path.join(backupDir, 'metadata.json'), JSON.stringify(metadata, null, 2));
 
-    // Run restic backup with app and tenant tags
-    const { stdout } = await execAsync(
-      `restic backup "${backupDir}" --tag app:${appId} --tag tenant:${tenantId} --json`,
+    // Run restic backup with app and tenant tags (execFile avoids shell injection)
+    const { stdout } = await execFileAsync(
+      'restic', ['backup', backupDir, '--tag', `app:${appId}`, '--tag', `tenant:${tenantId}`, '--json'],
       { env: getResticEnv(app) }
     );
 
@@ -399,14 +413,14 @@ export async function restoreBackup(
   try {
     await fs.mkdir(restoreDir, { recursive: true });
 
-    // Restore from restic
-    await execAsync(
-      `restic restore ${snapshotId} --target "${restoreDir}"`,
+    // Restore from restic (execFile avoids shell injection on snapshotId)
+    await execFileAsync(
+      'restic', ['restore', snapshotId, '--target', restoreDir],
       { env: getResticEnv(app) }
     );
 
     // Find the backup data
-    const { stdout: findOutput } = await execAsync(`find "${restoreDir}" -name "metadata.json" -type f`);
+    const { stdout: findOutput } = await execFileAsync('find', [restoreDir, '-name', 'metadata.json', '-type', 'f']);
     const metadataPath = findOutput.trim();
     if (!metadataPath) {
       return { success: false, error: 'Invalid backup: metadata.json not found' };
@@ -445,8 +459,8 @@ export async function restoreBackup(
       await db.initialize();
       await db.restoreDatabase(dbName, sqlFile);
     } catch (error: any) {
-      console.error('Failed to restore database:', error.message);
-      return { success: false, error: `Failed to restore database: ${error.message}` };
+      console.error('[Backup] Failed to restore database:', error.message);
+      return { success: false, error: 'Failed to restore database. Check server logs.' };
     }
 
     // Restore paths to service containers
@@ -454,11 +468,19 @@ export async function restoreBackup(
       const containerName = `${prefix}-${appId}-${targetTenantId}-${service.name}`;
 
       for (const pathConfig of service.paths) {
-        const localBackupDir = path.join(tenantBackupDir, pathConfig.local);
         try {
+          if (!isValidContainerPath(pathConfig.container)) {
+            console.error(`Skipping unsafe container path: ${pathConfig.container}`);
+            continue;
+          }
+          if (!isValidContainerPath(pathConfig.local)) {
+            console.error(`Skipping unsafe local path: ${pathConfig.local}`);
+            continue;
+          }
+          const localBackupDir = path.join(tenantBackupDir, pathConfig.local);
           await fs.access(localBackupDir);
-          await execAsync(`docker exec ${containerName} mkdir -p ${pathConfig.container}`);
-          await execAsync(`docker cp "${localBackupDir}/." ${containerName}:${pathConfig.container}/`);
+          await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
+          await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`]);
         } catch {
           // No data to restore or container not running
         }
@@ -484,7 +506,7 @@ export async function deleteSnapshot(appId: string, snapshotId: string): Promise
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
   try {
-    await execAsync(`restic forget ${snapshotId}`, {
+    await execFileAsync('restic', ['forget', snapshotId], {
       env: getResticEnv(app),
       timeout: 60000
     });
@@ -500,12 +522,16 @@ export async function pruneBackups(appId: string, keepDaily: number = 7, keepWee
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
   try {
-    await execAsync(
-      `restic forget --keep-daily ${keepDaily} --keep-weekly ${keepWeekly} --keep-monthly ${keepMonthly} --prune`,
-      { env: getResticEnv(app) }
-    );
+    await execFileAsync('restic', [
+      'forget',
+      '--keep-daily', String(keepDaily),
+      '--keep-weekly', String(keepWeekly),
+      '--keep-monthly', String(keepMonthly),
+      '--prune',
+    ], { env: getResticEnv(app) });
     return { success: true };
   } catch (error: any) {
-    return { success: false, error: error.message };
+    console.error('[Backup] Prune failed:', error.message);
+    return { success: false, error: 'Prune operation failed. Check server logs.' };
   }
 }

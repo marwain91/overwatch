@@ -77,7 +77,7 @@ router.get('/verify', (req: Request, res: Response) => {
   const token = authHeader.substring(7);
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { email: string; name: string; picture: string };
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { email: string; name: string; picture: string };
     res.json({
       user: {
         email: decoded.email,

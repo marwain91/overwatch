@@ -44,7 +44,7 @@ router.get('/health', asyncHandler(async (req, res) => {
 
 // GET /api/monitoring/alerts — alert history (paginated)
 router.get('/alerts', asyncHandler(async (req, res) => {
-  const limit = parseInt(req.query.limit as string) || 50;
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit as string) || 50, 500));
   const history = await getAlertHistory(limit);
   res.json(history);
 }));
@@ -67,6 +67,18 @@ router.post('/notifications', asyncHandler(async (req, res) => {
 
   if (!name || !channelConfig?.url) {
     res.status(400).json({ error: 'Name and URL are required' });
+    return;
+  }
+
+  // Validate URL format
+  try {
+    const parsed = new URL(channelConfig.url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      res.status(400).json({ error: 'Webhook URL must use http or https' });
+      return;
+    }
+  } catch {
+    res.status(400).json({ error: 'Invalid webhook URL' });
     return;
   }
 

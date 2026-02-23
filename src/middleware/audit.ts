@@ -25,7 +25,7 @@ function getUserFromRequest(req: Request): string {
 
   try {
     const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { email?: string };
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!, { algorithms: ['HS256'] }) as { email?: string };
     return decoded.email || 'unknown';
   } catch {
     return 'unknown';
@@ -66,7 +66,7 @@ function describeAction(method: string, reqPath: string, body?: Record<string, u
 function sanitizeBody(body: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!body) return undefined;
   const sanitized = { ...body };
-  const sensitiveKeys = ['password', 'secret', 'token', 'value'];
+  const sensitiveKeys = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key'];
   for (const key of Object.keys(sanitized)) {
     if (sensitiveKeys.some(s => key.toLowerCase().includes(s))) {
       sanitized[key] = '[redacted]';

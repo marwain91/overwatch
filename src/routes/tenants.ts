@@ -7,6 +7,15 @@ import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router({ mergeParams: true });
 
+// Validate tenantId format on all routes that use it
+const validateTenantId: import('express').RequestHandler = (req, res, next) => {
+  const { tenantId } = req.params;
+  if (tenantId && (tenantId.length > 63 || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(tenantId))) {
+    return res.status(400).json({ error: 'Invalid tenant ID format' });
+  }
+  next();
+};
+
 // List tenants for an app
 router.get('/', asyncHandler(async (req, res) => {
   const { appId } = req.params;
@@ -34,7 +43,7 @@ router.post('/', asyncHandler(async (req, res) => {
 }));
 
 // Update tenant version
-router.patch('/:tenantId', asyncHandler(async (req, res) => {
+router.patch('/:tenantId', validateTenantId, asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   const { imageTag } = req.body;
 
@@ -47,7 +56,7 @@ router.patch('/:tenantId', asyncHandler(async (req, res) => {
 }));
 
 // Delete a tenant
-router.delete('/:tenantId', asyncHandler(async (req, res) => {
+router.delete('/:tenantId', validateTenantId, asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   const keepData = req.query.keepData === 'true';
 
@@ -56,28 +65,28 @@ router.delete('/:tenantId', asyncHandler(async (req, res) => {
 }));
 
 // Start tenant containers
-router.post('/:tenantId/start', asyncHandler(async (req, res) => {
+router.post('/:tenantId/start', validateTenantId, asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   await startTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
 
 // Stop tenant containers
-router.post('/:tenantId/stop', asyncHandler(async (req, res) => {
+router.post('/:tenantId/stop', validateTenantId, asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   await stopTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
 
 // Restart tenant containers
-router.post('/:tenantId/restart', asyncHandler(async (req, res) => {
+router.post('/:tenantId/restart', validateTenantId, asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   await restartTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
 
 // Generate admin access token for a tenant
-router.post('/:tenantId/access-token', asyncHandler(async (req, res) => {
+router.post('/:tenantId/access-token', validateTenantId, asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
 
   const app = await getApp(appId);

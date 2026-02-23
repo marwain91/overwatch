@@ -1,9 +1,10 @@
 import mysql from 'mysql2/promise';
-import { exec } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { createReadStream, createWriteStream } from 'fs';
 import { DatabaseAdapter, DatabaseAdapterConfig } from './types';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * MySQL/MariaDB database adapter
@@ -108,20 +109,39 @@ export class MySQLAdapter implements DatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Use docker exec to run mysqldump in the container
-    const cmd = `docker exec ${containerName} mysqldump -u ${this.config.rootUser} -p"${this.config.rootPassword}" --single-transaction "${dbName}" > "${outputPath}"`;
+    // Use execFile (no shell) to avoid password injection; pass password via MYSQL_PWD env
+    const { stdout } = await execFileAsync('docker', [
+      'exec', '-e', `MYSQL_PWD=${this.config.rootPassword}`,
+      containerName, 'mysqldump', '-u', this.config.rootUser,
+      '--single-transaction', dbName,
+    ], { maxBuffer: 100 * 1024 * 1024 });
 
-    await execAsync(cmd, { maxBuffer: 100 * 1024 * 1024 });
+    const fs = await import('fs/promises');
+    await fs.writeFile(outputPath, stdout);
   }
 
   async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Use docker exec to run mysql restore in the container
-    const cmd = `docker exec -i ${containerName} mysql -u ${this.config.rootUser} -p"${this.config.rootPassword}" "${dbName}" < "${inputPath}"`;
+    // Use spawn (no shell) with stdin pipe to avoid password injection
+    return new Promise<void>((resolve, reject) => {
+      const proc = spawn('docker', [
+        'exec', '-i', '-e', `MYSQL_PWD=${this.config.rootPassword}`,
+        containerName, 'mysql', '-u', this.config.rootUser, dbName,
+      ]);
 
-    await execAsync(cmd, { maxBuffer: 100 * 1024 * 1024 });
+      const input = createReadStream(inputPath);
+      input.pipe(proc.stdin);
+
+      let stderr = '';
+      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      proc.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`mysql restore exited with code ${code}: ${stderr}`));
+      });
+      proc.on('error', reject);
+    });
   }
 
   getDatabaseName(tenantId: string): string {

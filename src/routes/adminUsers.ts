@@ -17,7 +17,7 @@ function getCurrentUserEmail(req: Request): string | null {
 
   try {
     const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, JWT_SECRET) as { email: string };
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { email: string };
     return decoded.email;
   } catch {
     return null;
@@ -34,8 +34,13 @@ router.get('/', asyncHandler(async (req: Request, res: Response) => {
 router.post('/', asyncHandler(async (req: Request, res: Response) => {
   const { email } = req.body;
 
-  if (!email) {
+  if (!email || typeof email !== 'string') {
     return res.status(400).json({ error: 'Email is required' });
+  }
+
+  const trimmed = email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    return res.status(400).json({ error: 'Invalid email format' });
   }
 
   const currentUser = getCurrentUserEmail(req);

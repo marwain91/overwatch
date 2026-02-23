@@ -7,17 +7,15 @@ import { createWSMessage, WSMessage } from './types';
 
 const JWT_SECRET = process.env.JWT_SECRET!;
 const HEARTBEAT_INTERVAL = 30_000;
+const AUTH_TIMEOUT = 5_000; // 5 seconds to authenticate after connecting
 
 let wss: WebSocketServer | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 const clients = new Set<WebSocket>();
 
-function authenticate(request: any): boolean {
+function verifyToken(token: string): boolean {
   try {
-    const url = new URL(request.url, `http://${request.headers.host}`);
-    const token = url.searchParams.get('token');
-    if (!token) return false;
-    jwt.verify(token, JWT_SECRET);
+    jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     return true;
   } catch {
     return false;
@@ -44,21 +42,37 @@ export function createWebSocketServer(server: HTTPServer): WebSocketServer {
       return;
     }
 
-    if (!authenticate(request)) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
     wss!.handleUpgrade(request, socket, head, (ws) => {
-      wss!.emit('connection', ws, request);
+      // First-message auth only — token must be sent as first WS message (not in URL)
+      (ws as any).authenticated = false;
+
+      const authTimer = setTimeout(() => {
+        if (!(ws as any).authenticated) {
+          ws.close(4001, 'Authentication timeout');
+        }
+      }, AUTH_TIMEOUT);
+
+      ws.once('message', (data) => {
+        clearTimeout(authTimer);
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'auth' && msg.token && verifyToken(msg.token)) {
+            (ws as any).authenticated = true;
+            clients.add(ws);
+            (ws as any).isAlive = true;
+            ws.send(JSON.stringify({ type: 'auth:ok' }));
+            wss!.emit('connection', ws, request);
+          } else {
+            ws.close(4003, 'Invalid token');
+          }
+        } catch {
+          ws.close(4003, 'Invalid auth message');
+        }
+      });
     });
   });
 
   wss.on('connection', (ws: WebSocket) => {
-    clients.add(ws);
-    (ws as any).isAlive = true;
-
     ws.on('pong', () => {
       (ws as any).isAlive = true;
     });

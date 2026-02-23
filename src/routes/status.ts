@@ -13,10 +13,18 @@ router.get('/containers', asyncHandler(async (req, res) => {
   res.json(containers);
 }));
 
+// Validate Docker container ID (12 or 64 hex chars)
+function isValidContainerId(id: string): boolean {
+  return /^[a-f0-9]{12,64}$/.test(id);
+}
+
 // Get container logs
 router.get('/containers/:containerId/logs', asyncHandler(async (req, res) => {
   const { containerId } = req.params;
-  const tail = parseInt(req.query.tail as string) || 100;
+  if (!isValidContainerId(containerId)) {
+    return res.status(400).json({ error: 'Invalid container ID format' });
+  }
+  const tail = Math.max(1, Math.min(parseInt(req.query.tail as string) || 100, 10000));
   const logs = await getContainerLogs(containerId, tail);
   res.json({ logs });
 }));
@@ -24,6 +32,9 @@ router.get('/containers/:containerId/logs', asyncHandler(async (req, res) => {
 // Restart a container
 router.post('/containers/:containerId/restart', asyncHandler(async (req, res) => {
   const { containerId } = req.params;
+  if (!isValidContainerId(containerId)) {
+    return res.status(400).json({ error: 'Invalid container ID format' });
+  }
   await restartContainer(containerId);
   res.json({ success: true });
 }));

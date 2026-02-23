@@ -16,6 +16,15 @@ import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router({ mergeParams: true });
 
+// Restic snapshot IDs are short hex strings
+function isValidSnapshotId(id: string): boolean {
+  return /^[a-f0-9]{8,64}$/.test(id);
+}
+
+function isValidTenantId(id: string): boolean {
+  return id.length <= 63 && /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(id);
+}
+
 // Get backup configuration status for an app
 router.get('/status', asyncHandler(async (req, res) => {
   const { appId } = req.params;
@@ -54,8 +63,8 @@ router.post('/', asyncHandler(async (req, res) => {
   const { appId } = req.params;
   const { tenantId } = req.body;
 
-  if (!tenantId) {
-    return res.status(400).json({ error: 'tenantId is required' });
+  if (!tenantId || !isValidTenantId(tenantId)) {
+    return res.status(400).json({ error: 'Valid tenantId is required' });
   }
 
   const result = await createBackup(appId, tenantId);
@@ -79,8 +88,12 @@ router.post('/:snapshotId/restore', asyncHandler(async (req, res) => {
   const { appId, snapshotId } = req.params;
   const { tenantId } = req.body;
 
-  if (!tenantId) {
-    return res.status(400).json({ error: 'tenantId is required' });
+  if (!isValidSnapshotId(snapshotId)) {
+    return res.status(400).json({ error: 'Invalid snapshot ID format' });
+  }
+
+  if (!tenantId || !isValidTenantId(tenantId)) {
+    return res.status(400).json({ error: 'Valid tenantId is required' });
   }
 
   const tenant = await getTenantInfo(appId, tenantId);
@@ -102,8 +115,12 @@ router.post('/:snapshotId/create-tenant', asyncHandler(async (req, res) => {
   const { appId, snapshotId } = req.params;
   const { tenantId, domain, imageTag } = req.body;
 
-  if (!tenantId || !domain) {
-    return res.status(400).json({ error: 'tenantId and domain are required' });
+  if (!isValidSnapshotId(snapshotId)) {
+    return res.status(400).json({ error: 'Invalid snapshot ID format' });
+  }
+
+  if (!tenantId || !domain || !isValidTenantId(tenantId)) {
+    return res.status(400).json({ error: 'Valid tenantId and domain are required' });
   }
 
   await createTenant({ appId, tenantId, domain, imageTag: imageTag || 'latest' });
@@ -132,6 +149,11 @@ router.post('/:snapshotId/create-tenant', asyncHandler(async (req, res) => {
 // Delete a backup snapshot
 router.delete('/:snapshotId', asyncHandler(async (req, res) => {
   const { appId, snapshotId } = req.params;
+
+  if (!isValidSnapshotId(snapshotId)) {
+    return res.status(400).json({ error: 'Invalid snapshot ID format' });
+  }
+
   const result = await deleteSnapshot(appId, snapshotId);
 
   if (result.success) {
@@ -144,7 +166,9 @@ router.delete('/:snapshotId', asyncHandler(async (req, res) => {
 // Prune old backups
 router.post('/prune', asyncHandler(async (req, res) => {
   const { appId } = req.params;
-  const { keepDaily = 7, keepWeekly = 4, keepMonthly = 12 } = req.body;
+  const keepDaily = Math.max(0, Math.min(Number(req.body.keepDaily) || 7, 365));
+  const keepWeekly = Math.max(0, Math.min(Number(req.body.keepWeekly) || 4, 52));
+  const keepMonthly = Math.max(0, Math.min(Number(req.body.keepMonthly) || 12, 120));
   const result = await pruneBackups(appId, keepDaily, keepWeekly, keepMonthly);
 
   if (result.success) {

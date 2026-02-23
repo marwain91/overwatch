@@ -14,7 +14,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7);
     try {
-      jwt.verify(token, JWT_SECRET);
+      jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
       return next();
     } catch (error) {
       // Token invalid

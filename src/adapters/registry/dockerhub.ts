@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 
 /**
@@ -20,10 +20,14 @@ export class DockerHubAdapter implements RegistryAdapter {
     try {
       console.log('Authenticating with Docker Hub...');
 
-      execSync(
-        `echo "${this.config.token}" | docker login -u ${this.config.username} --password-stdin`,
-        { stdio: 'pipe' }
+      const result = spawnSync(
+        'docker', ['login', '-u', this.config.username, '--password-stdin'],
+        { input: this.config.token, stdio: ['pipe', 'pipe', 'pipe'] }
       );
+
+      if (result.status !== 0) {
+        throw new Error(result.stderr?.toString() || 'docker login failed');
+      }
 
       console.log('Successfully logged in to Docker Hub');
     } catch (error) {

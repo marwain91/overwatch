@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 
 /**
@@ -17,11 +17,21 @@ export class ECRAdapter implements RegistryAdapter {
     try {
       console.log(`Authenticating with AWS ECR in ${region}...`);
 
-      // Use AWS CLI to get login credentials and pipe to docker login
-      execSync(
-        `aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${this.config.url}`,
-        { stdio: 'pipe' }
+      // Get login password from AWS CLI (no shell)
+      const password = execFileSync(
+        'aws', ['ecr', 'get-login-password', '--region', region],
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim();
+
+      // Pipe password to docker login via stdin (no shell)
+      const result = spawnSync(
+        'docker', ['login', '--username', 'AWS', '--password-stdin', this.config.url],
+        { input: password, stdio: ['pipe', 'pipe', 'pipe'] }
       );
+
+      if (result.status !== 0) {
+        throw new Error(result.stderr?.toString() || 'docker login failed');
+      }
 
       console.log(`Successfully logged in to ${this.config.url}`);
     } catch (error) {
@@ -34,9 +44,9 @@ export class ECRAdapter implements RegistryAdapter {
     const region = this.config.awsRegion || 'us-east-1';
 
     try {
-      // Use AWS CLI to list image tags
-      const result = execSync(
-        `aws ecr describe-images --repository-name ${this.config.repository} --region ${region} --query 'imageDetails[*].imageTags' --output json`,
+      // Use AWS CLI to list image tags (no shell)
+      const result = execFileSync(
+        'aws', ['ecr', 'describe-images', '--repository-name', this.config.repository, '--region', region, '--query', 'imageDetails[*].imageTags', '--output', 'json'],
         { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
       );
 

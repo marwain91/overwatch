@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 
 /**
@@ -21,10 +21,14 @@ export class CustomRegistryAdapter implements RegistryAdapter {
     try {
       console.log(`Authenticating with custom registry ${this.config.url}...`);
 
-      execSync(
-        `echo "${this.config.token}" | docker login ${this.config.url} -u ${this.config.username} --password-stdin`,
-        { stdio: 'pipe' }
+      const result = spawnSync(
+        'docker', ['login', this.config.url, '-u', this.config.username, '--password-stdin'],
+        { input: this.config.token, stdio: ['pipe', 'pipe', 'pipe'] }
       );
+
+      if (result.status !== 0) {
+        throw new Error(result.stderr?.toString() || 'docker login failed');
+      }
 
       console.log(`Successfully logged in to ${this.config.url}`);
     } catch (error) {

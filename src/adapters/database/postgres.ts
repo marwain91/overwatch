@@ -1,9 +1,10 @@
 import { Pool, Client } from 'pg';
-import { exec } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { createReadStream } from 'fs';
 import { DatabaseAdapter, DatabaseAdapterConfig } from './types';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 /**
  * PostgreSQL database adapter
@@ -61,14 +62,14 @@ export class PostgresAdapter implements DatabaseAdapter {
 
     try {
       // Create user if not exists (PostgreSQL doesn't have IF NOT EXISTS for CREATE USER)
-      // Use PL/pgSQL DO block to handle this
+      // Use format() with %I for identifiers and %L for literals to prevent SQL injection
       await client.query(`
-        DO $$ BEGIN
-          CREATE USER "${userName}" WITH PASSWORD '${password.replace(/'/g, "''")}';
+        DO $body$ BEGIN
+          EXECUTE format('CREATE USER %I WITH PASSWORD %L', $1, $2);
         EXCEPTION WHEN duplicate_object THEN
-          ALTER USER "${userName}" WITH PASSWORD '${password.replace(/'/g, "''")}';
-        END $$;
-      `);
+          EXECUTE format('ALTER USER %I WITH PASSWORD %L', $1, $2);
+        END $body$;
+      `, [userName, password]);
 
       // Check if database exists
       const dbExists = await client.query(
@@ -77,7 +78,8 @@ export class PostgresAdapter implements DatabaseAdapter {
       );
 
       if (dbExists.rows.length === 0) {
-        // Need to use a separate connection without transaction for CREATE DATABASE
+        // CREATE DATABASE cannot use parameterized queries, but dbName is validated upstream
+        // (only alphanumeric, underscore, hyphen from config prefix + appId + tenantId)
         await client.query(`CREATE DATABASE "${dbName}" OWNER "${userName}"`);
       }
 
@@ -133,20 +135,38 @@ export class PostgresAdapter implements DatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Set PGPASSWORD environment variable for pg_dump
-    const cmd = `docker exec -e PGPASSWORD="${this.config.rootPassword}" ${containerName} pg_dump -U ${this.config.rootUser} -d "${dbName}" > "${outputPath}"`;
+    // Use execFile (no shell) to avoid password injection; pass password via PGPASSWORD env
+    const { stdout } = await execFileAsync('docker', [
+      'exec', '-e', `PGPASSWORD=${this.config.rootPassword}`,
+      containerName, 'pg_dump', '-U', this.config.rootUser, '-d', dbName,
+    ], { maxBuffer: 100 * 1024 * 1024 });
 
-    await execAsync(cmd, { maxBuffer: 100 * 1024 * 1024 });
+    const fs = await import('fs/promises');
+    await fs.writeFile(outputPath, stdout);
   }
 
   async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Set PGPASSWORD environment variable for psql
-    const cmd = `docker exec -i -e PGPASSWORD="${this.config.rootPassword}" ${containerName} psql -U ${this.config.rootUser} -d "${dbName}" < "${inputPath}"`;
+    // Use spawn (no shell) with stdin pipe to avoid password injection
+    return new Promise<void>((resolve, reject) => {
+      const proc = spawn('docker', [
+        'exec', '-i', '-e', `PGPASSWORD=${this.config.rootPassword}`,
+        containerName, 'psql', '-U', this.config.rootUser, '-d', dbName,
+      ]);
 
-    await execAsync(cmd, { maxBuffer: 100 * 1024 * 1024 });
+      const input = createReadStream(inputPath);
+      input.pipe(proc.stdin);
+
+      let stderr = '';
+      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      proc.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`psql restore exited with code ${code}: ${stderr}`));
+      });
+      proc.on('error', reject);
+    });
   }
 
   getDatabaseName(tenantId: string): string {
