@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { findDeployDir } from './lifecycle';
@@ -10,22 +11,67 @@ function exec(cmd: string): string {
   return execSync(cmd, { stdio: 'pipe', encoding: 'utf-8' }).trim();
 }
 
+/**
+ * Read the current image reference from docker-compose.yml for the given service.
+ */
+function readComposeImage(composeDir: string, serviceName: string): string | null {
+  const composePath = path.join(composeDir, 'docker-compose.yml');
+  try {
+    const content = fs.readFileSync(composePath, 'utf-8');
+    // Match "image: ..." under the service definition
+    const serviceRegex = new RegExp(`${serviceName}:[\\s\\S]*?image:\\s*([^\\s#]+)`, 'm');
+    const match = content.match(serviceRegex);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Update the image reference in docker-compose.yml.
+ * Falls back to retagging the image locally if the file can't be written (e.g., owned by root).
+ */
+function updateComposeImage(composeDir: string, oldImage: string, newImage: string): boolean {
+  const composePath = path.join(composeDir, 'docker-compose.yml');
+  try {
+    const content = fs.readFileSync(composePath, 'utf-8');
+    const updated = content.replace(oldImage, newImage);
+    fs.writeFileSync(composePath, updated);
+    return true;
+  } catch {
+    // Permission denied — retag the pulled image to match the compose file's tag instead
+    console.log(`Cannot write compose file, retagging image instead...`);
+    execSync(`docker tag "${newImage}" "${oldImage}"`, { stdio: 'pipe' });
+    return false;
+  }
+}
+
 export async function runUpdate(args: string[]): Promise<void> {
   const checkOnly = args.includes('--check');
 
   const composeDir = path.join(findDeployDir(), 'overwatch');
   const serviceName = process.env.SERVICE_NAME || 'overwatch';
-  const image = process.env.IMAGE || 'ghcr.io/marwain91/overwatch:latest';
+
+  // Determine image: explicit IMAGE env, or read from compose file, or default to latest
+  const composeImage = readComposeImage(composeDir, serviceName);
+  const imageBase = composeImage
+    ? composeImage.split(':')[0].split('@')[0]
+    : 'ghcr.io/marwain91/overwatch';
+  const image = process.env.IMAGE || `${imageBase}:latest`;
 
   console.log(`${GREEN}Overwatch Update${NC}`);
   console.log('================');
   console.log('');
 
+  if (composeImage) {
+    console.log(`Compose image: ${composeImage}`);
+  }
+
   // Get current local digest
   console.log('Checking current version...');
   let currentDigest: string;
   try {
-    currentDigest = exec(`docker inspect --format='{{index .RepoDigests 0}}' "${image}"`);
+    currentDigest = exec(`docker inspect --format='{{index .RepoDigests 0}}' "${composeImage || image}"`);
   } catch {
     currentDigest = 'none';
   }
@@ -37,21 +83,17 @@ export async function runUpdate(args: string[]): Promise<void> {
     console.log('Checking remote registry...');
     let remoteDigest = 'unknown';
     try {
-      // docker buildx imagetools inspect prints "Digest: sha256:..." without pulling layers
       const output = exec(`docker buildx imagetools inspect "${image}" 2>/dev/null`);
       const match = output.match(/Digest:\s+(sha256:[a-f0-9]+)/);
       if (match) {
-        const imageBase = image.split('@')[0].split(':')[0];
         remoteDigest = `${imageBase}@${match[1]}`;
       }
     } catch {
       try {
-        // Fallback: docker manifest inspect (requires experimental on older Docker)
         const output = exec(`docker manifest inspect "${image}" 2>/dev/null`);
         const parsed = JSON.parse(output);
         const digest = parsed.config?.digest || parsed.manifests?.[0]?.digest;
         if (digest) {
-          const imageBase = image.split('@')[0].split(':')[0];
           remoteDigest = `${imageBase}@${digest}`;
         }
       } catch {
@@ -62,7 +104,6 @@ export async function runUpdate(args: string[]): Promise<void> {
     }
     console.log(`Remote:  ${remoteDigest}`);
 
-    // Compare the sha256 hash portion only
     const localHash = currentDigest.match(/sha256:[a-f0-9]+/)?.[0] || currentDigest;
     const remoteHash = remoteDigest.match(/sha256:[a-f0-9]+/)?.[0] || remoteDigest;
 
@@ -79,7 +120,7 @@ export async function runUpdate(args: string[]): Promise<void> {
 
   // Pull latest
   console.log('');
-  console.log('Pulling latest image...');
+  console.log(`Pulling ${image}...`);
   execSync(`docker pull "${image}"`, { stdio: 'inherit' });
 
   // Get new digest
@@ -98,10 +139,14 @@ export async function runUpdate(args: string[]): Promise<void> {
     return;
   }
 
+  // Update docker-compose.yml to use the pulled image tag
+  if (composeImage && composeImage !== image) {
+    console.log(`Updating compose image: ${composeImage} -> ${image}`);
+    updateComposeImage(composeDir, composeImage, image);
+  }
+
   console.log('');
-  console.log(`${YELLOW}Update available!${NC}`);
-  console.log('');
-  console.log('Applying update...');
+  console.log(`${YELLOW}Update found!${NC} Applying...`);
   execSync(`docker compose up -d --force-recreate "${serviceName}"`, { stdio: 'inherit', cwd: composeDir });
 
   console.log('');

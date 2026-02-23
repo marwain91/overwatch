@@ -1,5 +1,5 @@
 import { NavLink, useParams } from 'react-router-dom';
-import { useApps } from '../hooks/useApps';
+import { useApps, useProjectConfig } from '../hooks/useApps';
 import { useAuthStore } from '../stores/authStore';
 import { useWSStore } from '../stores/wsStore';
 import { useThemeStore } from '../stores/themeStore';
@@ -37,6 +37,7 @@ const themeLabels = { light: 'Light', dark: 'Dark', system: 'System' };
 export function Sidebar() {
   const { appId } = useParams();
   const { data: apps } = useApps();
+  const { data: config } = useProjectConfig();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const wsConnected = useWSStore((s) => s.connected);
@@ -53,7 +54,10 @@ export function Sidebar() {
       {/* Brand */}
       <div className="flex items-center gap-3 border-b border-border px-4 py-4">
         <img src="/logo.svg" alt="Overwatch" className="h-8 w-8" />
-        <span className="text-lg font-semibold text-content-primary">Overwatch</span>
+        <div>
+          <span className="text-lg font-semibold text-content-primary">Overwatch</span>
+          {config?.version && <span className="ml-2 text-xs text-content-faint">v{config.version}</span>}
+        </div>
       </div>
 
       {/* Navigation */}

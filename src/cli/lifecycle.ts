@@ -117,9 +117,11 @@ function execQuiet(cmd: string): string {
   }
 }
 
-function parseContainers(prefix: string): ContainerInfo[] {
+function parseContainers(filterNames: string[]): ContainerInfo[] {
+  const unique = [...new Set(filterNames)];
+  const filters = unique.map(n => `--filter "name=${n}-"`).join(' ');
   const output = execQuiet(
-    `docker ps -a --filter "name=${prefix}-" --format "{{.Names}}\t{{.State}}\t{{.Status}}"`,
+    `docker ps -a ${filters} --format "{{.Names}}\t{{.State}}\t{{.Status}}"`,
   );
   if (!output) return [];
 
@@ -215,8 +217,8 @@ export async function runStatus(): Promise<void> {
   }
 
   const { prefix } = config;
-  const allContainers = parseContainers(prefix);
   const apps = loadAppDefinitions(base);
+  const allContainers = parseContainers([prefix, ...apps.map(a => a.id)]);
 
   if (allContainers.length === 0) {
     console.log('');
@@ -244,8 +246,8 @@ export async function runStatus(): Promise<void> {
     // Try to match against known apps
     let matched = false;
     for (const app of apps) {
-      // Pattern: {prefix}-{appId}-{tenantId}-{service}
-      const appPrefix = `${prefix}-${app.id}-`;
+      // Pattern: {appId}-{tenantId}-{service}
+      const appPrefix = `${app.id}-`;
       if (c.name.startsWith(appPrefix)) {
         const rest = c.name.slice(appPrefix.length);
         // Find service name at the end

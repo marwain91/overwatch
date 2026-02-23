@@ -165,6 +165,7 @@ export interface SystemHealth {
 }
 
 export interface ProjectConfig {
+  version: string;
   project: { name: string; prefix: string };
   database: { type: string; host: string };
   apps: Array<{ id: string; name: string; serviceCount: number; tenantCount: number }>;

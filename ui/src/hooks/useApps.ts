@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import type { AppDefinition, BackupSummary } from '../lib/types';
+import type { AppDefinition, BackupSummary, ProjectConfig } from '../lib/types';
 
 export function useApps() {
   return useQuery({
@@ -59,6 +59,14 @@ export function useDeleteApp() {
 export function useTestRegistry(appId: string) {
   return useMutation({
     mutationFn: () => api.post<{ success: boolean }>(`/apps/${appId}/registry/test`),
+  });
+}
+
+export function useProjectConfig() {
+  return useQuery({
+    queryKey: ['project-config'],
+    queryFn: () => api.get<ProjectConfig>('/status/config'),
+    staleTime: 300_000,
   });
 }
 

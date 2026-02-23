@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { loadConfig } from '../config';
+import { VERSION } from '../version';
 import { listContainers, getContainerLogs, restartContainer, listTenants, extractContainerInfo } from '../services/docker';
 import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
@@ -84,6 +85,7 @@ router.get('/config', asyncHandler(async (req, res) => {
   const config = loadConfig();
   const apps = await listApps();
   res.json({
+    version: VERSION,
     project: {
       name: config.project.name,
       prefix: config.project.prefix,
