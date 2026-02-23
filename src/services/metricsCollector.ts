@@ -1,7 +1,7 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { docker, extractContainerInfo } from './docker';
 import { eventBus } from './eventBus';
-import { getContainerPrefix } from '../config';
+import { listApps } from './app';
 
 export interface ContainerMetrics {
   containerId: string;
@@ -61,9 +61,9 @@ const metricsHistory = new Map<string, RingBuffer<ContainerMetrics>>();
 let scheduledTask: ScheduledTask | null = null;
 let collecting = false;
 
-function getContainerPattern(): RegExp {
-  const prefix = getContainerPrefix();
-  return new RegExp(`^/?${prefix}-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
+function getContainerPattern(appIds: string[]): RegExp {
+  const escaped = appIds.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`^/?(${escaped.join('|')})-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
 }
 
 function calculateCpuPercent(stats: any): number {
@@ -94,7 +94,8 @@ async function collectMetrics(): Promise<void> {
 
   try {
     const containers = await docker.listContainers({ filters: { status: ['running'] } });
-    const pattern = getContainerPattern();
+    const apps = await listApps();
+    const pattern = getContainerPattern(apps.map(a => a.id));
 
     const managedContainers = containers.filter(c =>
       c.Names.some(n => pattern.test(n))

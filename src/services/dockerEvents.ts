@@ -1,18 +1,19 @@
 import { docker } from './docker';
 import { eventBus } from './eventBus';
-import { getContainerPrefix } from '../config';
+import { listApps } from './app';
 
 let eventStream: NodeJS.ReadableStream | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-function getContainerPattern(): RegExp {
-  const prefix = getContainerPrefix();
-  // Match: {prefix}-{appId}-{tenantId}-{service}(-N)?
-  return new RegExp(`^/?${prefix}-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
+function getContainerPattern(appIds: string[]): RegExp {
+  const escaped = appIds.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  // Match: {appId}-{tenantId}-{service}(-N)?
+  return new RegExp(`^/?(${escaped.join('|')})-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
 }
 
-function startListening(): void {
-  const pattern = getContainerPattern();
+async function startListening(): Promise<void> {
+  const apps = await listApps();
+  const pattern = getContainerPattern(apps.map(a => a.id));
 
   docker.getEvents({
     filters: {

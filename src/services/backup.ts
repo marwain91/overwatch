@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { loadConfig, getContainerPrefix, resolveEnvValue, getAppsDir } from '../config';
+import { loadConfig, resolveEnvValue, getAppsDir } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { getTenantInfo, listTenants } from './docker';
 import { getApp, listApps } from './app';
@@ -231,7 +231,6 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
   }
 
   const config = loadConfig();
-  const prefix = getContainerPrefix();
   const db = getDatabaseAdapter();
   const appsDir = getAppsDir();
 
@@ -278,7 +277,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
 
     // Copy paths from services that have backup enabled
     for (const service of backupServices) {
-      const containerName = `${prefix}-${appId}-${tenant.tenantId}-${service.name}`;
+      const containerName = `${appId}-${tenant.tenantId}-${service.name}`;
 
       for (const pathConfig of service.paths) {
         try {
@@ -396,7 +395,6 @@ export async function restoreBackup(
   }
 
   const config = loadConfig();
-  const prefix = getContainerPrefix();
   const db = getDatabaseAdapter();
 
   // Get backup-enabled services from app definition
@@ -465,7 +463,7 @@ export async function restoreBackup(
 
     // Restore paths to service containers
     for (const service of backupServices) {
-      const containerName = `${prefix}-${appId}-${targetTenantId}-${service.name}`;
+      const containerName = `${appId}-${targetTenantId}-${service.name}`;
 
       for (const pathConfig of service.paths) {
         try {

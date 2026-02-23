@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { loadConfig, getContainerPrefix, getAppsDir } from '../config';
+import { loadConfig, getAppsDir } from '../config';
 import { listApps } from './app';
 
 const execFileAsync = promisify(execFile);
@@ -32,36 +32,21 @@ export interface TenantStatus {
 }
 
 /**
- * Build regex pattern for matching all managed containers.
- * Pattern: {prefix}-{appId}-{tenantId}-{service}(-N)?
- */
-function getContainerPattern(): RegExp {
-  const prefix = getContainerPrefix();
-  return new RegExp(`^${prefix}-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
-}
-
-/**
- * Build regex pattern for matching containers of a specific app+tenant
+ * Build regex pattern for matching containers of a specific app+tenant.
+ * Pattern: {appId}-{tenantId}-{service}(-N)?
  */
 function getTenantContainerPattern(appId: string, tenantId: string): RegExp {
-  const prefix = getContainerPrefix();
   const escapedApp = appId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const escapedId = tenantId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${prefix}-${escapedApp}-${escapedId}-[a-z0-9-]+(?:-\\d+)?$`);
+  return new RegExp(`^${escapedApp}-${escapedId}-[a-z0-9-]+(?:-\\d+)?$`);
 }
 
 /**
  * Extract appId, tenantId, and service from a container name.
- * Pattern: {prefix}-{appId}-{tenantId}-{service}(-N)?
+ * Pattern: {appId}-{tenantId}-{service}(-N)?
  */
 export function extractContainerInfo(containerName: string): { appId: string; tenantId: string; service: string } | null {
-  const prefix = getContainerPrefix();
-  if (!containerName.startsWith(`${prefix}-`)) return null;
-
-  const withoutPrefix = containerName.slice(prefix.length + 1);
-  // We need to match: {appId}-{tenantId}-{service}(-N)?
-  // Split on '-' and try to match known apps
-  const parts = withoutPrefix.split('-');
+  const parts = containerName.split('-');
   if (parts.length < 3) return null;
 
   // Strip trailing replica number if present
@@ -74,11 +59,9 @@ export function extractContainerInfo(containerName: string): { appId: string; te
   const service = serviceParts[serviceParts.length - 1];
   const remaining = serviceParts.slice(0, -1);
 
-  // Split remaining into appId and tenantId — try all split points
-  // Heuristic: try the first part as appId, rest as tenantId
+  // Split remaining into appId and tenantId
+  // Heuristic: first segment is appId, rest is tenantId
   if (remaining.length >= 2) {
-    // Simple case: appId is single segment, tenantId is everything else
-    // For multi-segment IDs we need the app list
     return {
       appId: remaining[0],
       tenantId: remaining.slice(1).join('-'),
@@ -91,13 +74,14 @@ export function extractContainerInfo(containerName: string): { appId: string; te
 
 export async function listContainers(): Promise<ContainerInfo[]> {
   const containers = await docker.listContainers({ all: true });
-  const pattern = getContainerPattern();
-  const prefix = getContainerPrefix();
+  const apps = await listApps();
+  const appIds = new Set(apps.map(a => a.id));
 
   return containers
     .filter(c => c.Names.some(n => {
       const name = n.replace(/^\//, '');
-      return name.startsWith(`${prefix}-`) && pattern.test(name);
+      const info = extractContainerInfo(name);
+      return info !== null && appIds.has(info.appId);
     }))
     .map(c => {
       const name = c.Names[0].replace(/^\//, '');
@@ -140,7 +124,6 @@ export async function restartContainer(containerId: string): Promise<void> {
 export async function listTenants(): Promise<TenantStatus[]> {
   const tenants: TenantStatus[] = [];
   const appsDir = getAppsDir();
-  const prefix = getContainerPrefix();
 
   try {
     const apps = await listApps();

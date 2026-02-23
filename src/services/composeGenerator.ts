@@ -30,7 +30,7 @@ export function generateComposeFile(options: GenerateOptions): string {
   });
 
   for (const service of sortedServices) {
-    const containerName = `${prefix}-${app.id}-${tenantId}-${service.name}`;
+    const containerName = `${app.id}-${tenantId}-${service.name}`;
     const imageName = service.image_suffix || service.name;
     const image = `${imageRegistry}/${imageName}:\${IMAGE_TAG:-${app.default_image_tag}}`;
 

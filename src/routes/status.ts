@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { loadConfig, getContainerPrefix } from '../config';
+import { loadConfig } from '../config';
 import { listContainers, getContainerLogs, restartContainer, listTenants } from '../services/docker';
 import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';

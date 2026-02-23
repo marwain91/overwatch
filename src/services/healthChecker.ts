@@ -3,7 +3,6 @@ import net from 'net';
 import cron, { ScheduledTask } from 'node-cron';
 import { docker, extractContainerInfo } from './docker';
 import { eventBus } from './eventBus';
-import { getContainerPrefix } from '../config';
 import { listApps } from './app';
 import { AppService } from '../models/app';
 
@@ -21,9 +20,9 @@ const healthStates = new Map<string, HealthState>();
 let scheduledTask: ScheduledTask | null = null;
 let checking = false;
 
-function getContainerPattern(): RegExp {
-  const prefix = getContainerPrefix();
-  return new RegExp(`^/?${prefix}-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
+function getContainerPattern(appIds: string[]): RegExp {
+  const escaped = appIds.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`^/?(${escaped.join('|')})-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
 }
 
 function parseInterval(interval: string): number {
@@ -74,9 +73,8 @@ async function runHealthChecks(): Promise<void> {
   checking = true;
 
   try {
-    const prefix = getContainerPrefix();
-    const pattern = getContainerPattern();
     const apps = await listApps();
+    const pattern = getContainerPattern(apps.map(a => a.id));
 
     // Build service config map keyed by appId -> serviceName -> config
     const serviceMap = new Map<string, Map<string, AppService>>();
