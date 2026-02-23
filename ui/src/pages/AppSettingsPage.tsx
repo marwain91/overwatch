@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useUpdateApp, useDeleteApp, useBackupSummary } from '../hooks/useApps';
-import { formatRelativeTime } from '../lib/format';
+import { formatRelativeTime, formatCron } from '../lib/format';
 import type { AppService, AppRegistry, AppBackup, AppAdminAccess } from '../lib/types';
 
 export function AppSettingsPage() {
@@ -195,7 +195,7 @@ export function AppSettingsPage() {
             <div>
               <p className="text-xs text-content-faint">Schedule</p>
               <p className="mt-1 text-sm font-medium text-content-secondary">
-                {backupSummary.schedule || 'Manual only'}
+                {backupSummary.schedule ? formatCron(backupSummary.schedule) : 'Manual only'}
               </p>
             </div>
             <div>

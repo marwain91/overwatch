@@ -194,6 +194,8 @@ export interface BackupSummary {
   lastBackup: string | null;
   totalSnapshots: number;
   isLocked?: boolean;
+  bucket?: string | null;
+  endpoint?: string | null;
 }
 
 // Auth

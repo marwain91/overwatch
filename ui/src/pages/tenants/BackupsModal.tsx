@@ -1,9 +1,10 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useBackupStatus, useTenantBackups, useCreateBackup, useRestoreBackup, useDeleteBackup } from '../../hooks/useTenants';
 import { useBackupSummary } from '../../hooks/useApps';
 import { Modal } from '../../components/Modal';
 import { cn } from '../../lib/cn';
+import { formatCron } from '../../lib/format';
 import type { Tenant, BackupSnapshot } from '../../lib/types';
 
 const WEEKDAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
@@ -68,6 +69,14 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
     return toDateKey(new Date(sorted[0].time));
   }, [backups]);
 
+  // Navigate calendar to the month of the most recent backup
+  useEffect(() => {
+    if (autoSelected && !selectedDate) {
+      const [y, m] = autoSelected.split('-').map(Number);
+      setViewMonth(new Date(y, m - 1, 1));
+    }
+  }, [autoSelected, selectedDate]);
+
   const activeDate = selectedDate ?? autoSelected;
 
   const todayKey = toDateKey(new Date());
@@ -85,7 +94,7 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
       {/* Schedule + Create button */}
       <div className="mb-4 flex items-center justify-between">
         <p className="text-xs text-content-muted">
-          Schedule: {summary?.schedule ?? 'Manual only'}
+          Schedule: {summary?.schedule ? formatCron(summary.schedule) : 'Manual only'}
         </p>
         <button
           className="btn btn-primary btn-sm"

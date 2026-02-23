@@ -47,11 +47,23 @@ router.get('/summary', asyncHandler(async (req, res) => {
     }
   }
 
+  // Resolve non-secret config values for display
+  let bucket: string | null = null;
+  let endpoint: string | null = null;
+  if (app.backup?.s3?.bucket_env) {
+    bucket = process.env[app.backup.s3.bucket_env] || null;
+  }
+  if (app.backup?.s3?.endpoint_env) {
+    endpoint = process.env[app.backup.s3.endpoint_env] || null;
+  }
+
   res.json({
     ...info,
     schedule: app.backup?.schedule || null,
     lastBackup,
     totalSnapshots,
+    bucket,
+    endpoint,
   });
 }));
 

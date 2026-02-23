@@ -1,10 +1,10 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useBackupSummary } from '../hooks/useApps';
 import { useBackupStatus, useAllBackups, useTenants, useCreateBackup, useRestoreBackup, useDeleteBackup } from '../hooks/useTenants';
 import { cn } from '../lib/cn';
-import { formatRelativeTime } from '../lib/format';
+import { formatRelativeTime, formatCron } from '../lib/format';
 import type { BackupSnapshot } from '../lib/types';
 
 const WEEKDAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
@@ -70,6 +70,14 @@ export function BackupsPage() {
     return toDateKey(new Date(sorted[0].time));
   }, [backups]);
 
+  // Navigate calendar to the month of the most recent backup
+  useEffect(() => {
+    if (autoSelected && !selectedDate) {
+      const [y, m] = autoSelected.split('-').map(Number);
+      setViewMonth(new Date(y, m - 1, 1));
+    }
+  }, [autoSelected, selectedDate]);
+
   const activeDate = selectedDate ?? autoSelected;
   const todayKey = toDateKey(new Date());
   const year = viewMonth.getFullYear();
@@ -112,18 +120,18 @@ export function BackupsPage() {
             </div>
             <div>
               <p className="text-xs text-content-faint">Schedule</p>
-              <p className="mt-1 text-sm font-medium text-content-secondary">{summary?.schedule ?? 'Manual only'}</p>
+              <p className="mt-1 text-sm font-medium text-content-secondary">{summary?.schedule ? formatCron(summary.schedule) : 'Manual only'}</p>
             </div>
-            {backupConfig.s3?.bucket_env && (
+            {summary?.bucket && (
               <div>
-                <p className="text-xs text-content-faint">Bucket (env)</p>
-                <p className="mt-1 text-sm font-mono text-content-secondary">{backupConfig.s3.bucket_env}</p>
+                <p className="text-xs text-content-faint">Bucket</p>
+                <p className="mt-1 text-sm font-mono text-content-secondary">{summary.bucket}</p>
               </div>
             )}
-            {backupConfig.s3?.endpoint_env && (
+            {summary?.endpoint && (
               <div>
-                <p className="text-xs text-content-faint">Endpoint (env)</p>
-                <p className="mt-1 text-sm font-mono text-content-secondary">{backupConfig.s3.endpoint_env}</p>
+                <p className="text-xs text-content-faint">Endpoint</p>
+                <p className="mt-1 text-sm font-mono text-content-secondary">{summary.endpoint}</p>
               </div>
             )}
             <div>
