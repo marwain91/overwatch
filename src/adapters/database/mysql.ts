@@ -61,15 +61,18 @@ export class MySQLAdapter implements DatabaseAdapter {
     const connection = await this.pool!.getConnection();
 
     try {
+      // Escape identifiers as defense-in-depth
+      const safeDb = dbName.replace(/`/g, '``');
+      const safeUser = userName.replace(/'/g, "''");
       await connection.query(
-        `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+        `CREATE DATABASE IF NOT EXISTS \`${safeDb}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
       );
       await connection.query(
-        `CREATE USER IF NOT EXISTS '${userName}'@'%' IDENTIFIED BY ?`,
+        `CREATE USER IF NOT EXISTS '${safeUser}'@'%' IDENTIFIED BY ?`,
         [password]
       );
       await connection.query(
-        `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${userName}'@'%'`
+        `GRANT ALL PRIVILEGES ON \`${safeDb}\`.* TO '${safeUser}'@'%'`
       );
       await connection.query('FLUSH PRIVILEGES');
     } finally {
@@ -87,8 +90,10 @@ export class MySQLAdapter implements DatabaseAdapter {
     const connection = await this.pool!.getConnection();
 
     try {
-      await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
-      await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`);
+      const safeDb = dbName.replace(/`/g, '``');
+      const safeUser = userName.replace(/'/g, "''");
+      await connection.query(`DROP DATABASE IF EXISTS \`${safeDb}\``);
+      await connection.query(`DROP USER IF EXISTS '${safeUser}'@'%'`);
       await connection.query('FLUSH PRIVILEGES');
     } finally {
       connection.release();

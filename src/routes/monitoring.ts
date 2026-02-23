@@ -13,9 +13,28 @@ import { loadConfig } from '../config';
 
 const router = Router();
 
+const ID_RE = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
+const CONTAINER_NAME_RE = /^[a-z0-9][a-z0-9_.-]*$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function isValidWebhookUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return 'Webhook URL must use http or https';
+    }
+    return null;
+  } catch {
+    return 'Invalid webhook URL';
+  }
+}
+
 // GET /api/monitoring/metrics — current + history for all containers
 router.get('/metrics', asyncHandler(async (req, res) => {
   const appId = req.query.appId as string | undefined;
+  if (appId && !ID_RE.test(appId)) {
+    return res.status(400).json({ error: 'Invalid app ID format' });
+  }
   const data = getMetrics(appId);
   res.json(data);
 }));
@@ -23,6 +42,9 @@ router.get('/metrics', asyncHandler(async (req, res) => {
 // GET /api/monitoring/metrics/:tenantId — metrics for specific tenant
 router.get('/metrics/:appId/:tenantId', asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
+  if (!ID_RE.test(appId) || !ID_RE.test(tenantId)) {
+    return res.status(400).json({ error: 'Invalid app or tenant ID format' });
+  }
   const data = getMetrics(appId, tenantId);
   res.json(data);
 }));
@@ -30,6 +52,9 @@ router.get('/metrics/:appId/:tenantId', asyncHandler(async (req, res) => {
 // GET /api/monitoring/metrics/history/:containerName — history for a container
 router.get('/metrics/history/:containerName', asyncHandler(async (req, res) => {
   const { containerName } = req.params;
+  if (!CONTAINER_NAME_RE.test(containerName) || containerName.length > 200) {
+    return res.status(400).json({ error: 'Invalid container name format' });
+  }
   const history = getMetricsHistory(containerName);
   res.json(history);
 }));
@@ -37,6 +62,9 @@ router.get('/metrics/history/:containerName', asyncHandler(async (req, res) => {
 // GET /api/monitoring/health — all health check states
 router.get('/health', asyncHandler(async (req, res) => {
   const appId = req.query.appId as string | undefined;
+  if (appId && !ID_RE.test(appId)) {
+    return res.status(400).json({ error: 'Invalid app ID format' });
+  }
   const states = getHealthStates();
   const filtered = appId ? states.filter(s => (s as any).appId === appId) : states;
   res.json(filtered);
@@ -98,7 +126,20 @@ router.post('/notifications', asyncHandler(async (req, res) => {
 // PUT /api/monitoring/notifications/:id — update channel
 router.put('/notifications/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid channel ID format' });
+    return;
+  }
   const { name, type, enabled, config: channelConfig } = req.body;
+
+  // Re-validate URL if config is being updated
+  if (channelConfig?.url) {
+    const urlError = isValidWebhookUrl(channelConfig.url);
+    if (urlError) {
+      res.status(400).json({ error: urlError });
+      return;
+    }
+  }
 
   const channels = await getNotificationChannelsData();
   const index = channels.findIndex(c => c.id === id);
@@ -123,6 +164,10 @@ router.put('/notifications/:id', asyncHandler(async (req, res) => {
 // DELETE /api/monitoring/notifications/:id — delete channel
 router.delete('/notifications/:id', asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid channel ID format' });
+    return;
+  }
   const channels = await getNotificationChannelsData();
   const filtered = channels.filter(c => c.id !== id);
 
@@ -138,6 +183,10 @@ router.delete('/notifications/:id', asyncHandler(async (req, res) => {
 // POST /api/monitoring/notifications/:id/test — send test notification
 router.post('/notifications/:id/test', asyncHandler(async (req, res) => {
   const { id } = req.params;
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ error: 'Invalid channel ID format' });
+    return;
+  }
   const channels = await getNotificationChannelsData();
   const channel = channels.find(c => c.id === id);
 

@@ -78,13 +78,16 @@ export class PostgresAdapter implements DatabaseAdapter {
       );
 
       if (dbExists.rows.length === 0) {
-        // CREATE DATABASE cannot use parameterized queries, but dbName is validated upstream
-        // (only alphanumeric, underscore, hyphen from config prefix + appId + tenantId)
-        await client.query(`CREATE DATABASE "${dbName}" OWNER "${userName}"`);
+        // CREATE DATABASE cannot use parameterized queries; escape identifiers as defense-in-depth
+        const safeDb = dbName.replace(/"/g, '""');
+        const safeUser = userName.replace(/"/g, '""');
+        await client.query(`CREATE DATABASE "${safeDb}" OWNER "${safeUser}"`);
       }
 
       // Grant privileges
-      await client.query(`GRANT ALL PRIVILEGES ON DATABASE "${dbName}" TO "${userName}"`);
+      const safeDb = dbName.replace(/"/g, '""');
+      const safeUser = userName.replace(/"/g, '""');
+      await client.query(`GRANT ALL PRIVILEGES ON DATABASE "${safeDb}" TO "${safeUser}"`);
     } finally {
       client.release();
     }
@@ -108,11 +111,13 @@ export class PostgresAdapter implements DatabaseAdapter {
         AND pid <> pg_backend_pid()
       `, [dbName]);
 
-      // Drop database
-      await client.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+      // Drop database (escape identifiers as defense-in-depth)
+      const safeDb = dbName.replace(/"/g, '""');
+      const safeUser = userName.replace(/"/g, '""');
+      await client.query(`DROP DATABASE IF EXISTS "${safeDb}"`);
 
       // Drop user
-      await client.query(`DROP USER IF EXISTS "${userName}"`);
+      await client.query(`DROP USER IF EXISTS "${safeUser}"`);
     } finally {
       client.release();
     }

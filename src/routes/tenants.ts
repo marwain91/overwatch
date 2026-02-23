@@ -38,6 +38,11 @@ router.post('/', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'tenantId and domain are required' });
   }
 
+  // Validate tenantId from body (same rules as URL param)
+  if (input.tenantId.length > 63 || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(input.tenantId)) {
+    return res.status(400).json({ error: 'Invalid tenant ID format' });
+  }
+
   const tenant = await createTenant(input);
   res.status(201).json(tenant);
 }));
@@ -103,7 +108,8 @@ router.post('/:tenantId/access-token', validateTenantId, asyncHandler(async (req
   const secret = process.env[secretEnv];
 
   if (!secret) {
-    return res.status(500).json({ error: `${secretEnv} not configured` });
+    console.error(`[AdminAccess] Secret env '${secretEnv}' not configured for app ${appId}`);
+    return res.status(500).json({ error: 'Admin access is not properly configured. Contact your administrator.' });
   }
 
   const tenantInfo = await getTenantInfo(appId, tenantId);
