@@ -188,7 +188,6 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
 
   try {
     const args = ['snapshots', '--json'];
-    args.push('--tag', `app:${appId}`);
     if (tenantId) {
       args.push('--tag', `tenant:${tenantId}`);
     }

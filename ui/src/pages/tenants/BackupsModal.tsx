@@ -135,7 +135,7 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
                   key={dateKey}
                   className={cn(
                     'relative mx-auto flex h-9 w-9 flex-col items-center justify-center rounded-lg transition-colors',
-                    isSelected ? 'bg-brand text-white' : 'hover:bg-surface-muted',
+                    isSelected ? 'bg-brand text-white' : hasBackups ? 'bg-brand/20 text-brand-400 hover:bg-brand/30' : 'hover:bg-surface-muted',
                     isToday && !isSelected && 'ring-1 ring-brand/40',
                   )}
                   onClick={() => setSelectedDate(dateKey)}
