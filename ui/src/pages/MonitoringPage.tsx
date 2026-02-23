@@ -90,7 +90,7 @@ export function MonitoringPage() {
                   {/* Per-container detail */}
                   <div className="space-y-1">
                     {containers.map((c) => (
-                      <div key={c.containerName} className="flex justify-between text-xs text-content-faint">
+                      <div key={c.name} className="flex justify-between text-xs text-content-faint">
                         <span>{c.service}</span>
                         <span>{c.cpuPercent.toFixed(1)}% / {formatBytes(c.memUsage)}</span>
                       </div>

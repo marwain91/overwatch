@@ -27,8 +27,9 @@ export function TenantDetailPage() {
 
   const [selectedContainer, setSelectedContainer] = useState<string | null>(null);
   const [tail, setTail] = useState<number>(200);
+  const [confirmRestart, setConfirmRestart] = useState<{ id: string; name: string } | null>(null);
 
-  const { data: logs, isLoading: logsLoading } = useContainerLogs(selectedContainer, tail);
+  const { data: logs, isLoading: logsLoading, dataUpdatedAt, refetch: refetchLogs } = useContainerLogs(selectedContainer, tail);
 
   // Auto-select first container
   useEffect(() => {
@@ -49,10 +50,11 @@ export function TenantDetailPage() {
       onError: (err) => toast.error(err.message),
       onSuccess: () => toast.success('Container restarting'),
     });
+    setConfirmRestart(null);
   };
 
   const getContainerMetrics = (containerName: string): ContainerMetrics | undefined =>
-    containerMetrics.find((m) => m.containerName === containerName);
+    containerMetrics.find((m) => m.name === containerName);
 
   if (isLoading) {
     return (
@@ -187,7 +189,7 @@ export function TenantDetailPage() {
                         className="btn btn-ghost btn-sm text-xs"
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleRestartContainer(container.id);
+                          setConfirmRestart({ id: container.id, name: container.service || container.name });
                         }}
                         disabled={restartContainer.isPending}
                         title="Restart container"
@@ -211,7 +213,33 @@ export function TenantDetailPage() {
           isLoading={logsLoading}
           tail={tail}
           onTailChange={setTail}
+          lastUpdated={dataUpdatedAt}
+          onRefresh={() => refetchLogs()}
         />
+      )}
+
+      {/* Restart Confirmation Dialog */}
+      {confirmRestart && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setConfirmRestart(null)}>
+          <div className="w-full max-w-sm rounded-lg border border-border bg-surface-primary p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-content-primary">Restart Container</h3>
+            <p className="mt-2 text-sm text-content-secondary">
+              Are you sure you want to restart <strong>{confirmRestart.name}</strong>? This will briefly interrupt the service.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="btn btn-secondary btn-sm" onClick={() => setConfirmRestart(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => handleRestartContainer(confirmRestart.id)}
+                disabled={restartContainer.isPending}
+              >
+                Restart
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -223,12 +251,16 @@ function LogViewer({
   isLoading,
   tail,
   onTailChange,
+  lastUpdated,
+  onRefresh,
 }: {
   containerName: string;
   logs: string | null;
   isLoading: boolean;
   tail: number;
   onTailChange: (n: number) => void;
+  lastUpdated: number;
+  onRefresh: () => void;
 }) {
   const scrollRef = useRef<HTMLPreElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -245,23 +277,38 @@ function LogViewer({
     setAutoScroll(scrollHeight - scrollTop - clientHeight < 40);
   };
 
+  const updatedAgo = lastUpdated ? `${Math.round((Date.now() - lastUpdated) / 1000)}s ago` : '';
+
   return (
     <section className="card">
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-semibold text-content-primary">
           Logs: {containerName}
         </h2>
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-content-faint">Tail:</label>
-          <select
-            className="input w-auto py-1 text-xs"
-            value={tail}
-            onChange={(e) => onTailChange(Number(e.target.value))}
+        <div className="flex items-center gap-3">
+          {updatedAgo && (
+            <span className="text-xs text-content-faint">Updated {updatedAgo}</span>
+          )}
+          <span className="text-xs text-content-faint">Auto-refresh: 10s</span>
+          <button
+            className="btn btn-ghost btn-sm text-xs"
+            onClick={onRefresh}
+            title="Refresh logs now"
           >
-            {TAIL_OPTIONS.map((n) => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+          </button>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-content-faint">Tail:</label>
+            <select
+              className="input w-auto py-1 text-xs"
+              value={tail}
+              onChange={(e) => onTailChange(Number(e.target.value))}
+            >
+              {TAIL_OPTIONS.map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
       <pre

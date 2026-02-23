@@ -92,7 +92,7 @@ export interface TenantEnvVar extends EnvVar {
 
 // Monitoring
 export interface ContainerMetrics {
-  containerName: string;
+  name: string;
   appId: string;
   tenantId: string;
   service: string;
