@@ -131,5 +131,20 @@ export function getAppsDir(): string {
  * Get the data directory path from config
  */
 export function getDataDir(): string {
-  return loadConfig().data_dir || '/app/data';
+  const dir = loadConfig().data_dir || '/app/data';
+
+  // If the path exists (inside container or custom path), use it
+  if (fs.existsSync(dir)) return dir;
+
+  // Fallback: derive from config file location (CLI running on host)
+  // overwatch.yaml is at {deployDir}/overwatch/overwatch.yaml
+  // data dir is at {deployDir}/overwatch/data/
+  try {
+    const configPath = findConfigPath();
+    const overwatchDir = path.dirname(configPath);
+    const hostDataDir = path.join(overwatchDir, 'data');
+    if (fs.existsSync(hostDataDir)) return hostDataDir;
+  } catch {}
+
+  return dir;
 }
