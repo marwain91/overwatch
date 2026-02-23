@@ -174,6 +174,28 @@ export async function runSelfUpdate(args: string[]): Promise<void> {
     return;
   }
 
+  // Check binary path and write permissions early (before network request)
+  let binaryPath: string;
+  try {
+    binaryPath = getBinaryPath();
+  } catch (err: any) {
+    throw new Error(err.message);
+  }
+
+  if (!checkOnly) {
+    const binaryDir = path.dirname(binaryPath);
+    try {
+      fs.accessSync(binaryDir, fs.constants.W_OK);
+    } catch {
+      throw new Error(
+        `Cannot write to ${binaryDir}\n` +
+        `  Try: sudo overwatch self-update`
+      );
+    }
+  }
+
+  console.log(`  ${DIM}Binary: ${binaryPath}${NC}`);
+
   // Fetch latest release
   console.log(`  ${DIM}Checking for updates...${NC}`);
 
@@ -216,28 +238,6 @@ export async function runSelfUpdate(args: string[]): Promise<void> {
     throw new Error(
       `No binary found for ${assetName} in release ${release.tag_name}.\n` +
       `  Available: ${release.assets.map(a => a.name).join(', ') || 'none'}`
-    );
-  }
-
-  // Determine binary location
-  let binaryPath: string;
-  try {
-    binaryPath = getBinaryPath();
-  } catch (err: any) {
-    throw new Error(err.message);
-  }
-
-  console.log(`  ${DIM}Binary: ${binaryPath}${NC}`);
-  console.log('');
-
-  // Check write access
-  const binaryDir = path.dirname(binaryPath);
-  try {
-    fs.accessSync(binaryDir, fs.constants.W_OK);
-  } catch {
-    throw new Error(
-      `Cannot write to ${binaryDir}\n` +
-      `  Try: sudo overwatch self-update`
     );
   }
 

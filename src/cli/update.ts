@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
 import { findDeployDir } from './lifecycle';
+import { runSelfUpdate } from './self-update';
 
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
@@ -48,6 +49,16 @@ function updateComposeImage(composeDir: string, oldImage: string, newImage: stri
 
 export async function runUpdate(args: string[]): Promise<void> {
   const checkOnly = args.includes('--check');
+
+  // Self-update CLI binary if requested
+  if (args.includes('--self-update')) {
+    try {
+      await runSelfUpdate(args);
+    } catch (err: any) {
+      console.log(`  ${YELLOW}!${NC} CLI self-update skipped: ${err.message}`);
+      console.log('');
+    }
+  }
 
   const composeDir = path.join(findDeployDir(), 'overwatch');
   const serviceName = process.env.SERVICE_NAME || 'overwatch';

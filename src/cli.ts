@@ -79,8 +79,8 @@ switch (command) {
     console.log('    status                  Show service status');
     console.log('    admins                  List, add, or remove admin users');
     console.log('    config                  View, edit, validate, and explore configuration');
-    console.log('    update [--check]        Pull latest image and restart (--check to only check)');
-    console.log('    self-update [--check]   Update the CLI binary itself (--check to only check)');
+    console.log('    update [--check]        Pull latest image and restart (--self-update to also update CLI)');
+    console.log('    self-update [--check]   Update the CLI binary itself');
     console.log('');
     console.log('  Environment:');
     console.log('    OVERWATCH_CONFIG        Path to overwatch.yaml (auto-detected if not set)');
