@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useBackupSummary } from '../hooks/useApps';
-import { useBackupStatus, useAllBackups, useTenants, useCreateBackup, useRestoreBackup, useDeleteBackup } from '../hooks/useTenants';
+import { useBackupStatus, useAllBackups, useTenants, useRestoreBackup, useDeleteBackup } from '../hooks/useTenants';
 import { cn } from '../lib/cn';
 import { formatRelativeTime, formatCron } from '../lib/format';
 
@@ -15,12 +15,10 @@ export function BackupsPage() {
   const { data: summary, isLoading: summaryLoading } = useBackupSummary(appId!);
   const { data: backups, isLoading: backupsLoading } = useAllBackups(appId!);
   const { data: tenants } = useTenants(appId!);
-  const createBackup = useCreateBackup(appId!);
   const restoreBackup = useRestoreBackup(appId!);
   const deleteBackup = useDeleteBackup(appId!);
 
   const [page, setPage] = useState(0);
-  const [backupTenantId, setBackupTenantId] = useState('');
   const [restoreTarget, setRestoreTarget] = useState<{ snapshotId: string; tenantId: string } | null>(null);
 
   const backupConfig = app?.backup;
@@ -93,29 +91,7 @@ export function BackupsPage() {
       {/* Snapshots */}
       {backupConfig?.enabled && status?.configured && (
         <div className="card">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-content-secondary">All Snapshots</h2>
-            <div className="flex items-center gap-2">
-              <select
-                className="input input-sm"
-                value={backupTenantId}
-                onChange={(e) => setBackupTenantId(e.target.value)}
-              >
-                <option value="">Select tenant...</option>
-                {tenants?.map((t) => <option key={t.tenantId} value={t.tenantId}>{t.tenantId}</option>)}
-              </select>
-              <button
-                className="btn btn-primary btn-sm"
-                disabled={createBackup.isPending || !backupTenantId}
-                onClick={() => createBackup.mutate(backupTenantId, {
-                  onSuccess: () => toast.success('Backup created'),
-                  onError: (err) => toast.error(err.message),
-                })}
-              >
-                {createBackup.isPending ? 'Backing up...' : '+ Create Backup'}
-              </button>
-            </div>
-          </div>
+          <h2 className="mb-4 text-lg font-semibold text-content-secondary">All Snapshots</h2>
 
           {backupsLoading ? (
             <div className="flex justify-center py-8"><span className="spinner" /></div>
