@@ -38,7 +38,7 @@ export interface EffectiveEnvVar {
   value: string;
   sensitive: boolean;
   description?: string;
-  source: 'global' | 'override';
+  source: 'global' | 'override' | 'tenant-only';
 }
 
 // ─── Storage format: keyed by appId ─────────────────────────────────────────
@@ -295,14 +295,14 @@ export async function getEffectiveEnvVars(appId: string, tenantId: string): Prom
     }
   }
 
-  // Add overrides for keys not in global (orphaned overrides)
+  // Add overrides for keys not in global (tenant-only vars)
   for (const ov of tenantOverrides) {
     if (!globalVars.find(gv => gv.key === ov.key)) {
       effective.push({
         key: ov.key,
         value: ov.value,
         sensitive: ov.sensitive,
-        source: 'override',
+        source: 'tenant-only',
       });
     }
   }

@@ -87,7 +87,7 @@ export interface EnvVar {
 }
 
 export interface TenantEnvVar extends EnvVar {
-  source: 'global' | 'override';
+  source: 'global' | 'override' | 'tenant-only';
 }
 
 // Monitoring
