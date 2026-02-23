@@ -97,8 +97,9 @@ async function start() {
     });
   });
 
-  // Auth routes (no auth required, stricter rate limit)
-  app.use('/api/auth', authLimiter, authRouter);
+  // Auth routes — login gets strict rate limit, verify/config get regular limit
+  app.post('/api/auth/google', authLimiter);
+  app.use('/api/auth', apiLimiter, authRouter);
 
   // App routes (with auth + appId validation for :appId sub-routes)
   app.use('/api/apps', authMiddleware, apiLimiter, auditLog, appsRouter);

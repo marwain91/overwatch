@@ -14,12 +14,13 @@ export function AuthGuard({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Verify token is still valid
+    // Verify token once on app mount, not on every route change
     api.get('/auth/verify').catch(() => {
       logout();
       navigate('/login', { replace: true });
     });
-  }, [token, navigate, logout]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   if (!token) return null;
 
