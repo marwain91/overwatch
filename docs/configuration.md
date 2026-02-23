@@ -1,6 +1,8 @@
 # Configuration Reference
 
-## `overwatch.yaml` Schema
+Overwatch separates **infrastructure config** (YAML, set at deployment) from **app config** (GUI/API, set at runtime).
+
+## `overwatch.yaml` — Infrastructure Config
 
 ### Project Configuration
 
@@ -12,7 +14,7 @@ project:
 ```
 
 **Naming conventions:**
-- Containers: `{prefix}-{tenantId}-{service}` (e.g., `myapp-acme-backend`)
+- Containers: `{prefix}-{appId}-{tenantId}-{service}` (e.g., `myapp-app1-acme-backend`)
 - Databases: `{db_prefix}_{tenantId}` (e.g., `myapp_acme`)
 - Users: `{db_prefix}_{tenantId}` (e.g., `myapp_acme`)
 
@@ -28,76 +30,14 @@ database:
   container_name: string          # Docker container name (for dumps via docker exec)
 ```
 
-### Registry Configuration
+### Networking Configuration
 
 ```yaml
-registry:
-  type: "ghcr" | "dockerhub" | "ecr" | "custom"
-  url: string                     # Registry URL
-  repository: string              # Repository path (org/repo)
-  auth:
-    type: "token" | "basic" | "aws_iam"
-    token_env: string             # For token auth: env var with PAT
-    username_env: string          # For basic auth: env var with username
-    aws_region_env: string        # For ECR: env var with AWS region
+networking:
+  external_network: string        # Shared Docker network name
+  apps_path: string               # Directory where app/tenant configs are stored
+  internal_network_template: string  # Template for tenant networks (default: "${prefix}-${tenantId}-internal")
 ```
-
-**Registry-specific configuration:**
-
-| Registry | Type | Auth Type | Required Env Vars |
-|----------|------|-----------|-------------------|
-| GHCR | `ghcr` | `token` | `GHCR_TOKEN` (PAT with `read:packages`) |
-| Docker Hub | `dockerhub` | `basic` | `DOCKER_USERNAME`, `DOCKER_PASSWORD` |
-| AWS ECR | `ecr` | `aws_iam` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
-| Custom | `custom` | `token` or `basic` | Varies |
-
-### Services Configuration
-
-```yaml
-services:
-  - name: string                  # Service identifier
-    required: boolean             # Include in health checks (default: false)
-    is_init_container: boolean    # Exclude from running counts (default: false)
-    image_suffix: string          # Appended to registry URL for image name
-    health_check:                 # Optional
-      type: "http" | "tcp"        # Default: "http"
-      path: string                # HTTP health check path
-      port: number                # Service port
-      interval: string            # Check interval (default: "30s")
-    backup:                       # Optional
-      enabled: boolean            # Enable backup for this service
-      paths:
-        - container: string       # Path inside container
-          local: string           # Local backup directory name
-```
-
-**Service types:**
-- **Required services**: Must be running for tenant to be "healthy"
-- **Init containers**: One-time jobs (e.g., migrations), excluded from health counts
-- **Optional services**: Can be stopped without affecting health status
-
-### Backup Configuration
-
-```yaml
-backup:
-  enabled: boolean                # Enable backup functionality (default: true)
-  schedule: string                # Cron expression for automatic backups (e.g., "0 2 * * *" for daily at 2 AM)
-  provider: "s3" | "local" | "azure" | "gcs"  # Storage provider (default: "s3")
-  s3:
-    endpoint_env: string          # Env var for S3 endpoint
-    endpoint_template: string     # Or template: "s3:https://${ACCOUNT}.r2.cloudflarestorage.com/${BUCKET}"
-    bucket_env: string            # Env var for bucket name
-    access_key_env: string        # Env var for access key
-    secret_key_env: string        # Env var for secret key
-  restic_password_env: string     # Env var for Restic encryption password (default: "RESTIC_PASSWORD")
-```
-
-When `schedule` is set, Overwatch automatically backs up all tenants on the configured cron schedule. The schedule is displayed in the System Status section of the admin panel.
-
-**What gets backed up:**
-- Database dump (SQL file)
-- Tenant `.env` configuration
-- Paths defined in service backup configuration (e.g., uploads)
 
 ### Credentials Configuration
 
@@ -107,134 +47,151 @@ credentials:
   jwt_secret_length: number       # Auto-generated JWT secret length (default: 64)
 ```
 
-### Networking Configuration
+These are project-wide defaults. Apps can override these per-app.
+
+### Monitoring Configuration
 
 ```yaml
+monitoring:
+  enabled: boolean                # Enable container monitoring (default: true)
+  metrics_interval: number        # Metrics collection interval in seconds (default: 15)
+  metrics_retention: number       # Metrics retention period in seconds (default: 3600)
+```
+
+### Alert Rules
+
+```yaml
+alert_rules:
+  - id: string                    # Unique rule ID
+    name: string                  # Display name
+    condition:
+      type: "container_down" | "cpu_threshold" | "memory_threshold" | "health_check_failed"
+      duration: string            # How long condition must persist (e.g., "3m", "5m")
+      threshold: number           # CPU/memory percentage threshold
+      consecutive_failures: number # Health check failure count
+    cooldown: string              # Min time between repeated alerts (default: "15m")
+    severity: "info" | "warning" | "critical"  # Default: "warning"
+```
+
+### Retention Configuration
+
+```yaml
+retention:
+  max_alert_entries: number       # Max alert history entries (default: 10000)
+  max_audit_entries: number       # Max audit log entries (default: 10000)
+```
+
+Log files are pruned on startup and hourly.
+
+### Full Example
+
+```yaml
+project:
+  name: "MyApp"
+  prefix: "myapp"
+  db_prefix: "myapp"
+
+database:
+  type: "mariadb"
+  host: "myapp-mariadb"
+  port: 3306
+  root_user: "root"
+  root_password_env: "MYSQL_ROOT_PASSWORD"
+  container_name: "myapp-mariadb"
+
 networking:
-  external_network: string        # Shared Docker network name
-  tenants_path: string            # Directory where tenant configs are stored
-  internal_network_template: string  # Template for tenant networks (default: "${prefix}-${tenantId}-internal")
+  external_network: "myapp-network"
+  apps_path: "/app/apps"
+
+monitoring:
+  enabled: true
+  metrics_interval: 15
+
+retention:
+  max_alert_entries: 10000
+  max_audit_entries: 10000
 ```
-
-### Admin Access Configuration (Optional)
-
-Generate JWT tokens for accessing tenant applications directly:
-
-```yaml
-admin_access:
-  enabled: boolean                # Enable "Access" button in UI (default: false)
-  url_template: string            # URL template for access links
-                                  # Default: "https://${domain}/admin-login?token=${token}"
-                                  # Variables: ${domain}, ${token}, ${tenantId}
-  secret_env: string              # Env var name for JWT signing secret (default: "AUTH_SERVICE_SECRET")
-  token_payload:
-    admin_flag: string            # JWT claim for admin status (default: "isSystemAdmin")
-    email_template: string        # Admin email in token (default: "admin@overwatch.local")
-    name: string                  # Admin name in token (default: "System Admin")
-```
-
-**Use case:** Your tenant application has an `/admin-login` endpoint that accepts a JWT and creates a session. Overwatch can generate these tokens so you can access any tenant without credentials.
 
 ---
 
-## Tenant Template
+## App Definition — GUI/API Config
 
-The tenant template defines how tenant containers are created. Place your template in `tenant-template/docker-compose.yml`.
+Apps are created and managed through the web UI or API (`POST /api/apps`). Each app defines its own registry, services, backup, and admin access settings. Apps are stored in `data/apps.json`.
 
-### Available Variables
+### App Schema
 
-Templates use `${VAR}` syntax for variable substitution:
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `${TENANT_ID}` | Tenant identifier | `acme` |
-| `${TENANT_DOMAIN}` | Tenant's domain | `acme.example.com` |
-| `${PROJECT_PREFIX}` | Container prefix from config | `myapp` |
-| `${IMAGE_TAG}` | Image version to deploy | `v1.2.0` |
-| `${DB_HOST}` | Database host | `myapp-mariadb` |
-| `${DB_PORT}` | Database port | `3306` |
-| `${DB_NAME}` | Tenant database name | `myapp_acme` |
-| `${DB_USER}` | Tenant database user | `myapp_acme` |
-| `${DB_PASSWORD}` | Generated DB password | (auto-generated) |
-| `${JWT_SECRET}` | Generated JWT secret | (auto-generated) |
-| `${SHARED_NETWORK}` | Shared Docker network | `myapp-network` |
-| `${IMAGE_REGISTRY}` | Full registry path | `ghcr.io/org/repo` |
-
-### Example Template
-
-```yaml
-# tenant-template/docker-compose.yml
-
-services:
-  backend:
-    image: ${IMAGE_REGISTRY}/backend:${IMAGE_TAG}
-    container_name: ${PROJECT_PREFIX}-${TENANT_ID}-backend
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT}
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET}
-      FRONTEND_URL: https://${TENANT_DOMAIN}
-    volumes:
-      - uploads:/app/uploads
-    networks:
-      - ${SHARED_NETWORK}
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${TENANT_ID}-api.rule=Host(`${TENANT_DOMAIN}`) && PathPrefix(`/api`)"
-      - "traefik.http.routers.${TENANT_ID}-api.entrypoints=websecure"
-      - "traefik.http.routers.${TENANT_ID}-api.tls=true"
-      - "traefik.http.routers.${TENANT_ID}-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.${TENANT_ID}-api.loadbalancer.server.port=3001"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    depends_on:
-      - migrator
-
-  frontend:
-    image: ${IMAGE_REGISTRY}/frontend:${IMAGE_TAG}
-    container_name: ${PROJECT_PREFIX}-${TENANT_ID}-frontend
-    restart: unless-stopped
-    networks:
-      - ${SHARED_NETWORK}
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${TENANT_ID}-frontend.rule=Host(`${TENANT_DOMAIN}`)"
-      - "traefik.http.routers.${TENANT_ID}-frontend.entrypoints=websecure"
-      - "traefik.http.routers.${TENANT_ID}-frontend.tls=true"
-      - "traefik.http.routers.${TENANT_ID}-frontend.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.${TENANT_ID}-frontend.priority=1"
-      - "traefik.http.services.${TENANT_ID}-frontend.loadbalancer.server.port=80"
-
-  migrator:
-    image: ${IMAGE_REGISTRY}/backend:${IMAGE_TAG}
-    container_name: ${PROJECT_PREFIX}-${TENANT_ID}-migrator
-    environment:
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT}
-      DB_NAME: ${DB_NAME}
-      DB_USER: ${DB_USER}
-      DB_PASSWORD: ${DB_PASSWORD}
-    command: ["npm", "run", "db:migrate"]
-    networks:
-      - ${SHARED_NETWORK}
-    restart: "no"
-
-networks:
-  ${SHARED_NETWORK}:
-    external: true
-
-volumes:
-  uploads:
-    name: ${PROJECT_PREFIX}-${TENANT_ID}-uploads
+```json
+{
+  "id": "myapp",
+  "name": "My Application",
+  "domain_template": "*.myapp.com",
+  "default_image_tag": "latest",
+  "registry": {
+    "type": "ghcr",
+    "url": "ghcr.io",
+    "repository": "org/myapp",
+    "auth": {
+      "type": "token",
+      "token_env": "GHCR_TOKEN",
+      "username_env": "GHCR_USERNAME"
+    }
+  },
+  "services": [
+    {
+      "name": "backend",
+      "required": true,
+      "ports": { "internal": 3000 },
+      "health_check": { "type": "http", "path": "/health", "port": 3000 }
+    },
+    {
+      "name": "migrator",
+      "is_init_container": true
+    }
+  ],
+  "backup": {
+    "enabled": true,
+    "schedule": "0 2 * * *",
+    "provider": "s3",
+    "s3": {
+      "endpoint_env": "S3_ENDPOINT",
+      "bucket_env": "S3_BUCKET",
+      "access_key_env": "S3_ACCESS_KEY",
+      "secret_key_env": "S3_SECRET_KEY"
+    }
+  },
+  "admin_access": {
+    "enabled": true,
+    "url_template": "https://${domain}/admin-login?token=${token}",
+    "secret_env": "AUTH_SERVICE_SECRET"
+  }
+}
 ```
+
+### Services
+
+Each service in an app defines a container that gets deployed per tenant:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Service name — also used as the image name in the registry |
+| `image_suffix` | No | Override image name if it differs from service name |
+| `required` | No | Must be running for tenant to be "healthy" (default: false) |
+| `is_init_container` | No | One-time setup container, e.g. migrations (default: false) |
+| `ports.internal` | No | Container port |
+| `ports.external` | No | Host-mapped port |
+| `health_check` | No | HTTP or TCP health check config |
+| `command` | No | Override container command |
+| `env_mapping` | No | Map environment variables to container vars |
+| `depends_on` | No | Other service names this service depends on |
+
+**Registry configuration per app:**
+
+| Registry | Type | Auth Type | Required Env Vars |
+|----------|------|-----------|-------------------|
+| GHCR | `ghcr` | `token` | `GHCR_TOKEN` (PAT with `read:packages`) |
+| Docker Hub | `dockerhub` | `basic` | `DOCKER_USERNAME`, `DOCKER_PASSWORD` |
+| AWS ECR | `ecr` | `aws_iam` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
+| Custom | `custom` | `token` or `basic` | Varies |
 
 ---
 
@@ -254,7 +211,7 @@ volumes:
 | `MYSQL_ROOT_PASSWORD` | MySQL/MariaDB root password |
 | `POSTGRES_PASSWORD` | PostgreSQL superuser password |
 
-### Registry (name from config)
+### Registry (name from app config)
 
 | Variable | Description |
 |----------|-------------|
@@ -265,17 +222,17 @@ volumes:
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key (ECR) |
 | `AWS_REGION` | AWS region (ECR) |
 
-### Backup (optional)
+### Backup (optional, from app config)
 
 | Variable | Description |
 |----------|-------------|
-| `R2_ENDPOINT` | S3 endpoint URL |
-| `R2_BUCKET_NAME` | S3 bucket name |
-| `R2_ACCESS_KEY_ID` | S3 access key |
-| `R2_SECRET_ACCESS_KEY` | S3 secret key |
+| `S3_ENDPOINT` | S3 endpoint URL |
+| `S3_BUCKET` | S3 bucket name |
+| `S3_ACCESS_KEY` | S3 access key |
+| `S3_SECRET_KEY` | S3 secret key |
 | `RESTIC_PASSWORD` | Restic encryption password |
 
-### Admin Access (optional)
+### Admin Access (optional, from app config)
 
 | Variable | Description |
 |----------|-------------|
@@ -287,5 +244,3 @@ volumes:
 |----------|---------|-------------|
 | `PORT` | `3002` | Overwatch HTTP port |
 | `ALLOWED_ADMIN_EMAILS` | (none) | Comma-separated initial admin emails |
-
-> **Note:** Paths for tenants, templates, and data are configured in `overwatch.yaml` (under `networking.tenants_path`, `tenant_template.dir`, and `data_dir`). There are no environment variable overrides for these.

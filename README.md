@@ -2,20 +2,24 @@
 
 A universal, configuration-driven multi-tenant management tool for containerized applications.
 
-Overwatch provides a web-based admin panel to manage multi-tenant deployments, including tenant lifecycle management, container operations, backups, and version updates. It's designed to be project-agnostic - configure it once for your application, and it handles all the complexity.
+Overwatch provides a web-based admin panel to manage multi-tenant deployments, including tenant lifecycle management, container operations, backups, and version updates. It supports multiple apps per instance — configure your infrastructure once, then add apps and tenants through the UI.
 
 ## Features
 
-- **Tenant Management**: Create, update, delete, start, stop, and restart tenants
-- **Container Operations**: View logs, restart containers, health monitoring
-- **Version Management**: List available image tags, deploy specific versions per tenant
-- **Backup & Restore**: Full tenant backups using Restic (database + files), restore to existing or new tenants
-- **Automated Backup Scheduling**: Built-in cron scheduler for automatic backups (via `node-cron`)
-- **Environment Variable Management**: Global and per-tenant environment variables with override support
+- **Multi-App Support**: Manage multiple applications from a single Overwatch instance
+- **Tenant Management**: Create, update, delete, start, stop, and restart tenants per app
+- **Container Operations**: View logs, restart containers, real-time health monitoring
+- **Real-Time Monitoring**: Live CPU/memory metrics, health checks, and alert rules via WebSocket
+- **Version Management**: Browse registry tags or type custom versions per tenant
+- **Backup & Restore**: Per-app tenant backups using Restic (database + files), restore to existing or new tenants
+- **Automated Backup Scheduling**: Per-app cron schedulers for automatic backups
+- **Environment Variable Management**: Per-app global and per-tenant environment variables with override support
 - **Admin User Management**: Add/remove admin users at runtime through the UI
 - **Audit Logging**: Track all state-changing operations with user, action, and timestamp
-- **Admin Access**: Generate JWT tokens for direct tenant application access (optional)
-- **Google OAuth**: Secure admin panel login with allowlist
+- **Log Retention**: Configurable max entries for alert history and audit logs
+- **Admin Access**: Generate JWT tokens for direct tenant application access (optional, per-app)
+- **Google OAuth**: Secure admin panel login with email allowlist
+- **Light/Dark Theme**: System-preference-aware with manual toggle
 - **Self-Update**: Update both the Docker image (`overwatch update`) and the CLI binary (`overwatch self-update`)
 
 ## Supported Infrastructure
@@ -48,7 +52,7 @@ curl -fsSL https://github.com/marwain91/overwatch/releases/latest/download/overw
 overwatch init
 ```
 
-The wizard walks you through project name, domain, database (MariaDB/PostgreSQL), container registry credentials, DNS provider for SSL, Google OAuth, and optional S3 backups. Everything has sensible defaults — press Enter to accept them.
+The wizard walks you through project name, domain, database (MariaDB/PostgreSQL), DNS provider for SSL, Google OAuth, and optional S3 backups. Everything has sensible defaults — press Enter to accept them.
 
 After confirming, it generates a complete deployment:
 
@@ -62,8 +66,8 @@ After confirming, it generates a complete deployment:
 │   ├── overwatch.yaml
 │   ├── .env
 │   └── data/
-├── tenants/                  # Auto-managed by Overwatch
-└── tenant-template/          # Your app's compose template (add after init)
+└── apps/                     # Auto-managed by Overwatch
+    └── {appId}/tenants/
 ```
 
 ### 3. Start
@@ -72,9 +76,24 @@ After confirming, it generates a complete deployment:
 overwatch start
 ```
 
-Open `https://overwatch.yourdomain.com` and log in with Google OAuth. Add your tenant template (`docker-compose.yml`) to `tenant-template/` before creating tenants — see [Tenant Template](docs/configuration.md#tenant-template) for the format.
+Open `https://overwatch.yourdomain.com` and log in with Google OAuth. Create your first app through the UI — define its registry, services, and backup settings — then start adding tenants.
 
 > For a manual step-by-step setup without the CLI, see [Deploying for a New Project](docs/deployment.md#deploying-for-a-new-project).
+
+## Architecture Overview
+
+```
+overwatch.yaml (infrastructure)     GUI / API (runtime)
+├── project (name, prefix)          ├── Apps (registry, services, backup)
+├── database (host, credentials)    ├── Tenants (per app)
+├── networking                      ├── Environment variables (per app)
+├── monitoring & alert rules        ├── Admin users
+└── retention                       └── Notification channels
+```
+
+- **Infrastructure config** lives in `overwatch.yaml` — set once at deployment
+- **App definitions** are created through the UI and stored in `data/apps.json`
+- **Tenant data** (compose files, .env) is generated on the filesystem
 
 ## CLI Commands
 
@@ -102,8 +121,8 @@ Open `https://overwatch.yourdomain.com` and log in with Google OAuth. Add your t
 
 | Document | Contents |
 |----------|----------|
-| [Configuration](docs/configuration.md) | `overwatch.yaml` schema, tenant template variables, environment variables |
-| [API Reference](docs/api.md) | REST API endpoints for tenants, backups, status, and admin |
+| [Configuration](docs/configuration.md) | `overwatch.yaml` schema, app definition, environment variables |
+| [API Reference](docs/api.md) | REST API endpoints for apps, tenants, backups, monitoring, and admin |
 | [Deployment](docs/deployment.md) | Docker Compose setup, production checklist, manual deploy guide, CI/CD workflows |
 | [Updating](docs/updating.md) | Updating the Docker image and CLI binary |
 | [Architecture](docs/architecture.md) | System architecture and project structure |
