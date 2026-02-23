@@ -138,6 +138,18 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
     throw new Error(`Tenant '${tenantId}' not found in app '${appId}'`);
   }
 
+  // Read DB_NAME from tenant .env (may differ from constructed name for migrated tenants)
+  let dbName = `${dbPrefix}_${appId}_${tenantId}`;
+  try {
+    const envContent = await fs.readFile(path.join(tenantPath, '.env'), 'utf-8');
+    const env = parseEnv(envContent);
+    if (env.DB_NAME) {
+      dbName = env.DB_NAME;
+    }
+  } catch {
+    // Fall back to constructed name
+  }
+
   // Clean up tenant env var overrides
   await deleteTenantAllOverrides(appId, tenantId);
 
@@ -150,7 +162,6 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
 
   // Drop database unless keeping data
   if (!keepData) {
-    const dbName = `${dbPrefix}_${appId}_${tenantId}`;
     await db.initialize();
     await db.dropDatabase(dbName);
   }

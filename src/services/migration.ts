@@ -3,19 +3,27 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { findConfigPath } from '../config/loader';
-import { LegacyOverwatchConfigSchema, LegacyOverwatchConfig } from '../config/schema';
+import { LegacyOverwatchConfigSchema, LegacyOverwatchConfig, OverwatchConfig } from '../config/schema';
 import { AppDefinition } from '../models/app';
+import { generateComposeFile } from './composeGenerator';
 
 const MIGRATION_MARKER = '.migration-v2-complete';
 
 /**
  * Check if the current config is in legacy format (has registry + services keys)
+ * and migration hasn't already been performed.
  */
 export function isLegacyFormat(): boolean {
   try {
     const configPath = findConfigPath();
     const raw = yaml.load(fsSync.readFileSync(configPath, 'utf-8')) as any;
-    return !!(raw?.registry && raw?.services);
+    if (!(raw?.registry && raw?.services)) return false;
+
+    // Even if yaml still has legacy keys (read-only mount), skip if already migrated
+    const dataDir = raw?.data_dir || '/app/data';
+    if (isMigrationComplete(dataDir)) return false;
+
+    return true;
   } catch {
     return false;
   }
@@ -150,10 +158,21 @@ export async function runMigration(): Promise<void> {
   await fs.writeFile(appsFile, JSON.stringify([defaultApp], null, 2));
   console.log(`[Migration] Created app '${appId}' in apps.json`);
 
-  // 3. Move tenants to apps/{appId}/tenants/
-  const appsDir = '/app/apps';
+  // 3. Move tenants to apps/{appId}/tenants/ and regenerate compose files
+  const appsDir = legacyConfig.networking?.tenants_path
+    ? path.resolve(path.dirname(legacyConfig.networking.tenants_path), 'apps')
+    : '/app/apps';
   const newTenantsDir = path.join(appsDir, appId, 'tenants');
   await fs.mkdir(newTenantsDir, { recursive: true });
+
+  // Build a minimal OverwatchConfig for compose file generation
+  const minimalConfig = {
+    project: legacyConfig.project,
+    database: legacyConfig.database,
+    networking: {
+      external_network: legacyConfig.networking?.external_network || `${legacyConfig.project.prefix}-network`,
+    },
+  } as OverwatchConfig;
 
   try {
     const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
@@ -181,18 +200,20 @@ export async function runMigration(): Promise<void> {
           }
         }
 
-        // Update DB_NAME to include appId: {prefix}_{appId}_{tenantId}
-        const dbPrefix = legacyConfig.project.db_prefix;
-        envContent = envContent.replace(
-          new RegExp(`^DB_NAME=${dbPrefix}_${tenantId}$`, 'm'),
-          `DB_NAME=${dbPrefix}_${appId}_${tenantId}`
-        );
-        envContent = envContent.replace(
-          new RegExp(`^DB_USER=${dbPrefix}_${tenantId}$`, 'm'),
-          `DB_USER=${dbPrefix}_${appId}_${tenantId}`
-        );
-
         await fs.writeFile(envPath, envContent);
+
+        // Regenerate docker-compose.yml with new container naming
+        const domainMatch = envContent.match(/^TENANT_DOMAIN=(.+)$/m);
+        const domain = domainMatch ? domainMatch[1] : '';
+        if (domain) {
+          const composeContent = generateComposeFile({
+            app: defaultApp,
+            tenantId,
+            domain,
+            config: minimalConfig,
+          });
+          await fs.writeFile(path.join(newPath, 'docker-compose.yml'), composeContent);
+        }
       } catch {
         // Skip env update if file doesn't exist
       }
@@ -233,7 +254,7 @@ export async function runMigration(): Promise<void> {
     // File doesn't exist or is already new format
   }
 
-  // 6. Slim down overwatch.yaml
+  // 6. Slim down overwatch.yaml (may fail if config is read-only)
   const slimConfig: any = {
     project: rawYaml.project,
     database: rawYaml.database,
@@ -249,16 +270,22 @@ export async function runMigration(): Promise<void> {
     apps_path: appsDir,
   };
 
-  // Backup the old config
-  const backupPath = configPath + '.pre-migration';
-  await fs.copyFile(configPath, backupPath);
-  console.log(`[Migration] Backed up old config to ${backupPath}`);
+  try {
+    // Backup the old config
+    const backupPath = configPath + '.pre-migration';
+    await fs.copyFile(configPath, backupPath);
+    console.log(`[Migration] Backed up old config to ${backupPath}`);
 
-  // Write slimmed config
-  await fs.writeFile(configPath, yaml.dump(slimConfig, { lineWidth: -1 }));
-  console.log('[Migration] Updated overwatch.yaml (removed registry, services, backup, admin_access)');
+    // Write slimmed config
+    await fs.writeFile(configPath, yaml.dump(slimConfig, { lineWidth: -1 }));
+    console.log('[Migration] Updated overwatch.yaml (removed registry, services, backup, admin_access)');
+  } catch (err: any) {
+    console.warn(`[Migration] Could not update overwatch.yaml (${err.code || err.message}).`);
+    console.warn('[Migration] The config file may be read-only. Update it manually to the slim format:');
+    console.warn(yaml.dump(slimConfig, { lineWidth: -1 }));
+  }
 
-  // 7. Write migration marker
+  // 7. Write migration marker (always, even if config write failed)
   await fs.writeFile(path.join(dataDir, MIGRATION_MARKER), new Date().toISOString());
   console.log('[Migration] Migration complete!');
   console.log(`[Migration] Created app '${appId}' with ${defaultApp.services.length} services`);
