@@ -11,13 +11,6 @@ interface DnsProviderDef {
   envVars: { name: string; label: string; secret?: boolean }[];
 }
 
-interface RegistryDef {
-  label: string;
-  url: string;
-  authType: 'token' | 'basic' | 'aws_iam';
-  envVars: { envName: string; configKey: string; label: string; secret?: boolean }[];
-}
-
 interface InitConfig {
   // Project
   projectName: string;
@@ -27,12 +20,6 @@ interface InitConfig {
   // Database
   dbType: 'mariadb' | 'postgres';
   dbPassword: string;
-  // Registry
-  registryType: 'ghcr' | 'dockerhub' | 'ecr' | 'custom';
-  registryUrl: string;
-  registryRepo: string;
-  registryAuthType: 'token' | 'basic' | 'aws_iam';
-  registryEnvVars: { envName: string; configKey: string; value: string }[];
   // SSL / DNS
   dnsProvider: string;
   dnsEnvVars: { name: string; value: string }[];
@@ -43,14 +30,6 @@ interface InitConfig {
   allowedAdminEmails: string;
   // Secrets
   jwtSecret: string;
-  // Backup
-  backupEnabled: boolean;
-  s3Endpoint: string;
-  s3Bucket: string;
-  s3AccessKey: string;
-  s3SecretKey: string;
-  resticPassword: string;
-  backupSchedule: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
@@ -83,45 +62,6 @@ const DNS_PROVIDERS: Record<string, DnsProviderDef> = {
       { name: 'AWS_SECRET_ACCESS_KEY', label: 'AWS secret access key', secret: true },
       { name: 'AWS_REGION', label: 'AWS region (e.g. us-east-1)' },
       { name: 'AWS_HOSTED_ZONE_ID', label: 'Route 53 hosted zone ID' },
-    ],
-  },
-};
-
-const REGISTRY_TYPES: Record<string, RegistryDef> = {
-  ghcr: {
-    label: 'GitHub Container Registry',
-    url: 'ghcr.io',
-    authType: 'token',
-    envVars: [
-      { envName: 'GHCR_TOKEN', configKey: 'token_env', label: 'GitHub personal access token (with read:packages)', secret: true },
-    ],
-  },
-  dockerhub: {
-    label: 'Docker Hub',
-    url: 'docker.io',
-    authType: 'basic',
-    envVars: [
-      { envName: 'DOCKER_USERNAME', configKey: 'username_env', label: 'Docker Hub username' },
-      { envName: 'DOCKER_PASSWORD', configKey: 'token_env', label: 'Docker Hub password or access token', secret: true },
-    ],
-  },
-  ecr: {
-    label: 'AWS ECR',
-    url: '',
-    authType: 'aws_iam',
-    envVars: [
-      { envName: 'AWS_ACCESS_KEY_ID', configKey: 'username_env', label: 'AWS access key ID' },
-      { envName: 'AWS_SECRET_ACCESS_KEY', configKey: 'token_env', label: 'AWS secret access key', secret: true },
-      { envName: 'AWS_REGION', configKey: 'aws_region_env', label: 'AWS region (e.g. us-east-1)' },
-    ],
-  },
-  custom: {
-    label: 'Custom Registry',
-    url: '',
-    authType: 'basic',
-    envVars: [
-      { envName: 'REGISTRY_USERNAME', configKey: 'username_env', label: 'Registry username' },
-      { envName: 'REGISTRY_PASSWORD', configKey: 'token_env', label: 'Registry password or token', secret: true },
     ],
   },
 };
@@ -212,7 +152,6 @@ async function checkPrerequisites(): Promise<void> {
     warn('Docker Compose not found (needed to start services)');
   }
 
-  // Check docker connectivity
   try {
     execSync('docker ps', { stdio: 'pipe' });
   } catch {
@@ -302,67 +241,10 @@ async function collectDatabase(): Promise<Pick<InitConfig, 'dbType' | 'dbPasswor
   return { dbType, dbPassword };
 }
 
-// ─── Step 4: Registry ───────────────────────────────────────────────────────────
-
-async function collectRegistry(): Promise<Pick<InitConfig, 'registryType' | 'registryUrl' | 'registryRepo' | 'registryAuthType' | 'registryEnvVars'>> {
-  header('Step 3: Container Registry');
-
-  const { registryType } = await inquirer.prompt([{
-    type: 'list',
-    name: 'registryType',
-    message: 'Registry type:',
-    choices: Object.entries(REGISTRY_TYPES).map(([value, def]) => ({
-      name: def.label,
-      value,
-    })),
-    default: 'ghcr',
-  }]);
-
-  const registryDef = REGISTRY_TYPES[registryType];
-  let registryUrl = registryDef.url;
-
-  if (!registryUrl) {
-    const { url } = await inquirer.prompt([{
-      type: 'input',
-      name: 'url',
-      message: 'Registry URL:',
-      validate: (input: string) => input.length > 0 || 'Required',
-    }]);
-    registryUrl = url;
-  }
-
-  const { registryRepo } = await inquirer.prompt([{
-    type: 'input',
-    name: 'registryRepo',
-    message: 'Repository path (e.g. myorg/myapp):',
-    validate: (input: string) => input.includes('/') || 'Use format: org/repo',
-  }]);
-
-  const registryEnvVars: InitConfig['registryEnvVars'] = [];
-  for (const envVar of registryDef.envVars) {
-    const { value } = await inquirer.prompt([{
-      type: envVar.secret ? 'password' : 'input',
-      name: 'value',
-      message: `${envVar.label}:`,
-      mask: envVar.secret ? '*' : undefined,
-      validate: (input: string) => input.length > 0 || 'Required',
-    }]);
-    registryEnvVars.push({ envName: envVar.envName, configKey: envVar.configKey, value });
-  }
-
-  return {
-    registryType: registryType as InitConfig['registryType'],
-    registryUrl,
-    registryRepo,
-    registryAuthType: registryDef.authType,
-    registryEnvVars,
-  };
-}
-
-// ─── Step 5: SSL / Reverse Proxy ────────────────────────────────────────────────
+// ─── Step 4: SSL / Reverse Proxy ────────────────────────────────────────────────
 
 async function collectSsl(domain: string): Promise<Pick<InitConfig, 'dnsProvider' | 'dnsEnvVars' | 'adminEmail'>> {
-  header('Step 4: SSL & Reverse Proxy');
+  header('Step 3: SSL & Reverse Proxy');
 
   info('Traefik will handle SSL via DNS challenge for wildcard certificates.');
   console.log('');
@@ -430,10 +312,10 @@ async function collectSsl(domain: string): Promise<Pick<InitConfig, 'dnsProvider
   return { dnsProvider: actualProvider, dnsEnvVars, adminEmail };
 }
 
-// ─── Step 6: Overwatch Access ───────────────────────────────────────────────────
+// ─── Step 5: Overwatch Access ───────────────────────────────────────────────────
 
 async function collectAccess(domain: string): Promise<Pick<InitConfig, 'overwatchDomain' | 'googleClientId' | 'allowedAdminEmails' | 'jwtSecret'>> {
-  header('Step 5: Overwatch Access');
+  header('Step 4: Overwatch Access');
 
   const { overwatchDomain } = await inquirer.prompt([{
     type: 'input',
@@ -461,89 +343,20 @@ async function collectAccess(domain: string): Promise<Pick<InitConfig, 'overwatc
   return { overwatchDomain, googleClientId, allowedAdminEmails, jwtSecret };
 }
 
-// ─── Step 7: Backup ─────────────────────────────────────────────────────────────
-
-async function collectBackup(): Promise<Pick<InitConfig, 'backupEnabled' | 's3Endpoint' | 's3Bucket' | 's3AccessKey' | 's3SecretKey' | 'resticPassword' | 'backupSchedule'>> {
-  header('Step 6: Backups');
-
-  const defaults = {
-    backupEnabled: false,
-    s3Endpoint: '',
-    s3Bucket: '',
-    s3AccessKey: '',
-    s3SecretKey: '',
-    resticPassword: '',
-    backupSchedule: '0 2 * * *',
-  };
-
-  const { backupEnabled } = await inquirer.prompt([{
-    type: 'confirm',
-    name: 'backupEnabled',
-    message: 'Enable automatic backups (S3-compatible storage)?',
-    default: true,
-  }]);
-
-  if (!backupEnabled) {
-    return { ...defaults, backupEnabled: false };
-  }
-
-  const { s3Endpoint } = await inquirer.prompt([{
-    type: 'input',
-    name: 's3Endpoint',
-    message: 'S3 endpoint URL (e.g. https://s3.us-east-1.amazonaws.com or R2 URL):',
-    validate: (input: string) => input.startsWith('https://') || input.startsWith('http://') || 'Must start with https:// or http://',
-  }]);
-
-  const { s3Bucket } = await inquirer.prompt([{
-    type: 'input',
-    name: 's3Bucket',
-    message: 'S3 bucket name:',
-    validate: (input: string) => input.length > 0 || 'Required',
-  }]);
-
-  const { s3AccessKey } = await inquirer.prompt([{
-    type: 'input',
-    name: 's3AccessKey',
-    message: 'S3 access key ID:',
-    validate: (input: string) => input.length > 0 || 'Required',
-  }]);
-
-  const { s3SecretKey } = await inquirer.prompt([{
-    type: 'password',
-    name: 's3SecretKey',
-    message: 'S3 secret access key:',
-    mask: '*',
-    validate: (input: string) => input.length > 0 || 'Required',
-  }]);
-
-  const resticPassword = generateSecret(32);
-  info('Restic encryption password generated (will be saved to .env)');
-
-  const { backupSchedule } = await inquirer.prompt([{
-    type: 'input',
-    name: 'backupSchedule',
-    message: 'Backup schedule (cron expression):',
-    default: '0 2 * * *',
-  }]);
-
-  return { backupEnabled, s3Endpoint, s3Bucket, s3AccessKey, s3SecretKey, resticPassword, backupSchedule };
-}
-
 // ─── Summary ────────────────────────────────────────────────────────────────────
 
 async function showSummary(config: InitConfig): Promise<boolean> {
   header('Summary');
 
-  const registryDef = REGISTRY_TYPES[config.registryType];
-
   console.log(`  ${BOLD}Project:${NC}    ${config.projectName} (${config.projectPrefix})`);
   console.log(`  ${BOLD}Domain:${NC}     ${config.domain}`);
   console.log(`  ${BOLD}Deploy to:${NC}  ${config.deployDir}`);
   console.log(`  ${BOLD}Database:${NC}   ${config.dbType === 'mariadb' ? 'MariaDB' : 'PostgreSQL'}`);
-  console.log(`  ${BOLD}Registry:${NC}   ${registryDef?.label || config.registryType} (${config.registryRepo})`);
   console.log(`  ${BOLD}DNS:${NC}        ${config.dnsProvider}`);
   console.log(`  ${BOLD}Overwatch:${NC}  https://${config.overwatchDomain}`);
-  console.log(`  ${BOLD}Backup:${NC}     ${config.backupEnabled ? `Enabled (${config.backupSchedule})` : 'Disabled'}`);
+  console.log('');
+  console.log(`  ${DIM}Apps, registries, services, and backups are configured${NC}`);
+  console.log(`  ${DIM}via the Overwatch web GUI after setup.${NC}`);
   console.log('');
   console.log(`  ${DIM}Files to generate:${NC}`);
   console.log(`    ${config.deployDir}/infrastructure/docker-compose.yml`);
@@ -658,7 +471,6 @@ ${dbVolume}
 function generateInfraEnv(c: InitConfig): string {
   const lines: string[] = ['# Infrastructure environment variables', ''];
 
-  // Database password
   if (c.dbType === 'mariadb') {
     lines.push('# MariaDB root password');
     lines.push(`MYSQL_ROOT_PASSWORD=${c.dbPassword}`);
@@ -668,7 +480,6 @@ function generateInfraEnv(c: InitConfig): string {
   }
   lines.push('');
 
-  // DNS provider credentials
   lines.push('# DNS provider credentials (for Traefik SSL)');
   for (const v of c.dnsEnvVars) {
     lines.push(`${v.name}=${v.value}`);
@@ -678,7 +489,7 @@ function generateInfraEnv(c: InitConfig): string {
   return lines.join('\n');
 }
 
-// ─── Template: overwatch/overwatch.yaml ─────────────────────────────────────────
+// ─── Template: overwatch/overwatch.yaml (slimmed — infrastructure only) ─────
 
 function generateOverwatchYaml(c: InitConfig): string {
   const isMariadb = c.dbType === 'mariadb';
@@ -686,31 +497,6 @@ function generateOverwatchYaml(c: InitConfig): string {
   const dbHost = isMariadb ? `${c.projectPrefix}-mariadb` : `${c.projectPrefix}-postgres`;
   const dbPort = isMariadb ? 3306 : 5432;
   const dbUser = isMariadb ? 'root' : 'postgres';
-  const dbContainerName = dbHost;
-
-  // Registry auth block
-  const authLines: string[] = [];
-  authLines.push(`    type: "${c.registryAuthType}"`);
-  for (const ev of c.registryEnvVars) {
-    authLines.push(`    ${ev.configKey}: "${ev.envName}"`);
-  }
-
-  // Backup block
-  let backupBlock = '';
-  if (c.backupEnabled) {
-    backupBlock = `
-backup:
-  enabled: true
-  schedule: "${c.backupSchedule}"
-  provider: "s3"
-  s3:
-    endpoint_env: "S3_ENDPOINT"
-    bucket_env: "S3_BUCKET"
-    access_key_env: "S3_ACCESS_KEY"
-    secret_key_env: "S3_SECRET_KEY"
-  restic_password_env: "RESTIC_PASSWORD"
-`;
-  }
 
   return `project:
   name: "${c.projectName}"
@@ -723,36 +509,7 @@ database:
   port: ${dbPort}
   root_user: "${dbUser}"
   root_password_env: "${dbPasswordEnv}"
-  container_name: "${dbContainerName}"
-
-registry:
-  type: "${c.registryType}"
-  url: "${c.registryUrl}"
-  repository: "${c.registryRepo}"
-  auth:
-${authLines.join('\n')}
-
-services:
-  - name: "backend"
-    required: true
-    image_suffix: "backend"
-    backup:
-      enabled: true
-      paths:
-        - container: "/app/uploads"
-          local: "uploads"
-
-  - name: "frontend"
-    required: true
-    image_suffix: "frontend"
-
-  - name: "migrator"
-    is_init_container: true
-    image_suffix: "backend"
-${backupBlock}
-admin_access:
-  enabled: true
-  url_template: "https://\${domain}/admin-login?token=\${token}"
+  container_name: "${dbHost}"
 
 credentials:
   db_password_length: 32
@@ -760,7 +517,7 @@ credentials:
 
 networking:
   external_network: "${c.projectPrefix}-network"
-  tenants_path: "/app/tenants"
+  apps_path: "/app/apps"
 `;
 }
 
@@ -777,12 +534,8 @@ function generateOverwatchCompose(c: InitConfig): string {
       - /var/run/docker.sock:/var/run/docker.sock
       - /root/.docker:/root/.docker:ro
       - ./overwatch.yaml:/app/overwatch.yaml:ro
-      - ./data/admin-users.json:/app/data/admin-users.json
-      - ./data/env-vars.json:/app/data/env-vars.json
-      - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
-      - ./data/audit.log:/app/data/audit.log
-      - ../tenants:/app/tenants
-      - ../tenant-template:/app/tenant-template:ro
+      - ./data:/app/data
+      - ../apps:/app/apps
     networks:
       - ${c.projectPrefix}-network
     labels:
@@ -813,13 +566,11 @@ networks:
 function generateOverwatchEnv(c: InitConfig): string {
   const lines: string[] = ['# Overwatch environment variables', '# Generated by overwatch init', ''];
 
-  // Core
   lines.push('# Core');
   lines.push(`JWT_SECRET=${c.jwtSecret}`);
   lines.push(`GOOGLE_CLIENT_ID=${c.googleClientId}`);
   lines.push('');
 
-  // Database
   lines.push('# Database');
   if (c.dbType === 'mariadb') {
     lines.push(`MYSQL_ROOT_PASSWORD=${c.dbPassword}`);
@@ -828,28 +579,9 @@ function generateOverwatchEnv(c: InitConfig): string {
   }
   lines.push('');
 
-  // Registry
-  lines.push('# Container Registry');
-  for (const ev of c.registryEnvVars) {
-    lines.push(`${ev.envName}=${ev.value}`);
-  }
-  lines.push('');
-
-  // Admin
   lines.push('# Admin access');
   lines.push(`ALLOWED_ADMIN_EMAILS=${c.allowedAdminEmails}`);
   lines.push('');
-
-  // Backup
-  if (c.backupEnabled) {
-    lines.push('# Backup (S3-compatible storage)');
-    lines.push(`S3_ENDPOINT=${c.s3Endpoint}`);
-    lines.push(`S3_BUCKET=${c.s3Bucket}`);
-    lines.push(`S3_ACCESS_KEY=${c.s3AccessKey}`);
-    lines.push(`S3_SECRET_KEY=${c.s3SecretKey}`);
-    lines.push(`RESTIC_PASSWORD=${c.resticPassword}`);
-    lines.push('');
-  }
 
   return lines.join('\n');
 }
@@ -865,8 +597,7 @@ async function generateFiles(config: InitConfig): Promise<void> {
   const dirs = [
     path.join(base, 'infrastructure'),
     path.join(base, 'overwatch', 'data'),
-    path.join(base, 'tenants'),
-    path.join(base, 'tenant-template'),
+    path.join(base, 'apps'),
   ];
 
   for (const dir of dirs) {
@@ -906,12 +637,16 @@ async function generateFiles(config: InitConfig): Promise<void> {
     '[]\n',
   );
   await writeFileSafe(
-    path.join(base, 'overwatch', 'data', 'env-vars.json'),
+    path.join(base, 'overwatch', 'data', 'apps.json'),
     '[]\n',
   );
   await writeFileSafe(
+    path.join(base, 'overwatch', 'data', 'env-vars.json'),
+    '{}\n',
+  );
+  await writeFileSafe(
     path.join(base, 'overwatch', 'data', 'tenant-env-overrides.json'),
-    '[]\n',
+    '{}\n',
   );
 
   // Create audit.log if it doesn't exist
@@ -922,8 +657,8 @@ async function generateFiles(config: InitConfig): Promise<void> {
   }
 
   console.log('');
-  info('Add your tenant template to:');
-  info(`  ${path.join(base, 'tenant-template', 'docker-compose.yml')}`);
+  info('Configure your apps (registry, services, backups) via the');
+  info('Overwatch web GUI after starting the services.');
 }
 
 // ─── Start Services ─────────────────────────────────────────────────────────────
@@ -935,12 +670,10 @@ async function startServices(config: InitConfig): Promise<void> {
   const network = `${config.projectPrefix}-network`;
 
   try {
-    // Create network
     info('Creating Docker network...');
     execSync(`docker network create ${network} 2>/dev/null || true`, { stdio: 'pipe' });
     success(`Network ${network} ready`);
 
-    // Start infrastructure
     info('Starting infrastructure (Traefik + database)...');
     execSync(`docker compose -f ${path.join(base, 'infrastructure', 'docker-compose.yml')} up -d`, {
       stdio: 'inherit',
@@ -948,7 +681,6 @@ async function startServices(config: InitConfig): Promise<void> {
     });
     success('Infrastructure started');
 
-    // Wait for database
     info('Waiting for database to be healthy...');
     const dbContainer = config.dbType === 'mariadb'
       ? `${config.projectPrefix}-mariadb`
@@ -977,7 +709,6 @@ async function startServices(config: InitConfig): Promise<void> {
       warn('Database health check timed out — starting Overwatch anyway');
     }
 
-    // Start Overwatch
     info('Starting Overwatch...');
     execSync(`docker compose -f ${path.join(base, 'overwatch', 'docker-compose.yml')} up -d`, {
       stdio: 'inherit',
@@ -990,6 +721,7 @@ async function startServices(config: InitConfig): Promise<void> {
     console.log('');
     info('It may take a minute for SSL certificates to be issued.');
     info(`Log in with one of: ${config.allowedAdminEmails}`);
+    info('Then create your first app via the web GUI.');
     console.log('');
   } catch (error: any) {
     fail(`Failed to start services: ${error.message}`);
@@ -1018,6 +750,7 @@ function showNextSteps(config: InitConfig): void {
   console.log(`    docker compose -f ${base}/overwatch/docker-compose.yml up -d`);
   console.log('');
   console.log(`  Then open ${BOLD}https://${config.overwatchDomain}${NC}`);
+  console.log(`  and create your first app via the web GUI.`);
   console.log('');
 }
 
@@ -1037,12 +770,10 @@ export async function runInit(): Promise<void> {
 
   const basics = await collectProjectBasics();
   const db = await collectDatabase();
-  const registry = await collectRegistry();
   const ssl = await collectSsl(basics.domain);
   const access = await collectAccess(basics.domain);
-  const backup = await collectBackup();
 
-  const config: InitConfig = { ...basics, ...db, ...registry, ...ssl, ...access, ...backup };
+  const config: InitConfig = { ...basics, ...db, ...ssl, ...access };
 
   const confirmed = await showSummary(config);
   if (!confirmed) {

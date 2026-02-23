@@ -1,21 +1,25 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
-import { loadConfig } from '../config';
 import { listTenants, startTenant, stopTenant, restartTenant, getTenantInfo } from '../services/docker';
 import { createTenant, deleteTenant, updateTenant, CreateTenantInput } from '../services/tenant';
+import { getApp } from '../services/app';
 import { asyncHandler } from '../utils/asyncHandler';
 
-const router = Router();
+const router = Router({ mergeParams: true });
 
-// List all tenants
+// List tenants for an app
 router.get('/', asyncHandler(async (req, res) => {
-  const tenants = await listTenants();
-  res.json(tenants);
+  const { appId } = req.params;
+  const allTenants = await listTenants();
+  const appTenants = appId ? allTenants.filter(t => t.appId === appId) : allTenants;
+  res.json(appTenants);
 }));
 
 // Create a new tenant
 router.post('/', asyncHandler(async (req, res) => {
+  const { appId } = req.params;
   const input: CreateTenantInput = {
+    appId,
     tenantId: req.body.tenantId,
     domain: req.body.domain,
     imageTag: req.body.imageTag,
@@ -31,58 +35,61 @@ router.post('/', asyncHandler(async (req, res) => {
 
 // Update tenant version
 router.patch('/:tenantId', asyncHandler(async (req, res) => {
-  const { tenantId } = req.params;
+  const { appId, tenantId } = req.params;
   const { imageTag } = req.body;
 
   if (!imageTag) {
     return res.status(400).json({ error: 'imageTag is required' });
   }
 
-  await updateTenant(tenantId, imageTag);
-  res.json({ success: true, tenantId, imageTag });
+  await updateTenant(appId, tenantId, imageTag);
+  res.json({ success: true, appId, tenantId, imageTag });
 }));
 
 // Delete a tenant
 router.delete('/:tenantId', asyncHandler(async (req, res) => {
-  const { tenantId } = req.params;
+  const { appId, tenantId } = req.params;
   const keepData = req.query.keepData === 'true';
 
-  await deleteTenant(tenantId, keepData);
-  res.json({ success: true, tenantId });
+  await deleteTenant(appId, tenantId, keepData);
+  res.json({ success: true, appId, tenantId });
 }));
 
 // Start tenant containers
 router.post('/:tenantId/start', asyncHandler(async (req, res) => {
-  const { tenantId } = req.params;
-  await startTenant(tenantId);
-  res.json({ success: true, tenantId });
+  const { appId, tenantId } = req.params;
+  await startTenant(appId, tenantId);
+  res.json({ success: true, appId, tenantId });
 }));
 
 // Stop tenant containers
 router.post('/:tenantId/stop', asyncHandler(async (req, res) => {
-  const { tenantId } = req.params;
-  await stopTenant(tenantId);
-  res.json({ success: true, tenantId });
+  const { appId, tenantId } = req.params;
+  await stopTenant(appId, tenantId);
+  res.json({ success: true, appId, tenantId });
 }));
 
 // Restart tenant containers
 router.post('/:tenantId/restart', asyncHandler(async (req, res) => {
-  const { tenantId } = req.params;
-  await restartTenant(tenantId);
-  res.json({ success: true, tenantId });
+  const { appId, tenantId } = req.params;
+  await restartTenant(appId, tenantId);
+  res.json({ success: true, appId, tenantId });
 }));
 
 // Generate admin access token for a tenant
 router.post('/:tenantId/access-token', asyncHandler(async (req, res) => {
-  const config = loadConfig();
-  const adminAccess = config.admin_access;
+  const { appId, tenantId } = req.params;
 
-  // Check if admin access is enabled
-  if (!adminAccess?.enabled) {
-    return res.status(400).json({ error: 'Admin access is not enabled in configuration' });
+  const app = await getApp(appId);
+  if (!app) {
+    return res.status(404).json({ error: 'App not found' });
   }
 
-  // Get the secret from the configured environment variable
+  const adminAccess = app.admin_access;
+  if (!adminAccess?.enabled) {
+    return res.status(400).json({ error: 'Admin access is not enabled for this app' });
+  }
+
   const secretEnv = adminAccess.secret_env || 'AUTH_SERVICE_SECRET';
   const secret = process.env[secretEnv];
 
@@ -90,24 +97,20 @@ router.post('/:tenantId/access-token', asyncHandler(async (req, res) => {
     return res.status(500).json({ error: `${secretEnv} not configured` });
   }
 
-  const { tenantId } = req.params;
-
-  // Get tenant info to build the URL
-  const tenantInfo = await getTenantInfo(tenantId);
+  const tenantInfo = await getTenantInfo(appId, tenantId);
   if (!tenantInfo) {
     return res.status(404).json({ error: 'Tenant not found' });
   }
 
-  // Build token payload from config
   const tokenPayload = adminAccess.token_payload;
   const adminFlag = tokenPayload?.admin_flag || 'isSystemAdmin';
-  const emailTemplate = tokenPayload?.email_template || `admin@${config.project.name}.local`;
+  const emailTemplate = tokenPayload?.email_template || `admin@${app.name}.local`;
   const adminName = tokenPayload?.name || 'System Admin';
 
-  // Generate admin access token
   const adminToken = jwt.sign(
     {
       [adminFlag]: true,
+      appId,
       tenantId,
       email: emailTemplate.replace('${tenantId}', tenantId),
       name: adminName,
@@ -117,7 +120,6 @@ router.post('/:tenantId/access-token', asyncHandler(async (req, res) => {
     { expiresIn: '1h' }
   );
 
-  // Build the access URL from template
   const urlTemplate = adminAccess.url_template || 'https://${domain}/admin-login?token=${token}';
   const accessUrl = urlTemplate
     .replace('${domain}', tenantInfo.domain)
@@ -126,6 +128,7 @@ router.post('/:tenantId/access-token', asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
+    appId,
     tenantId,
     accessUrl,
     expiresIn: '1 hour',

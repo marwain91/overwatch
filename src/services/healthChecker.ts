@@ -1,13 +1,15 @@
 import http from 'http';
 import net from 'net';
 import cron, { ScheduledTask } from 'node-cron';
-import { docker } from './docker';
+import { docker, extractContainerInfo } from './docker';
 import { eventBus } from './eventBus';
-import { getContainerPrefix, getServiceNames, loadConfig } from '../config';
-import { ServiceConfig } from '../config/schema';
+import { getContainerPrefix } from '../config';
+import { listApps } from './app';
+import { AppService } from '../models/app';
 
 interface HealthState {
   containerName: string;
+  appId: string;
   tenantId: string;
   service: string;
   state: 'healthy' | 'unhealthy' | 'unknown';
@@ -21,8 +23,7 @@ let checking = false;
 
 function getContainerPattern(): RegExp {
   const prefix = getContainerPrefix();
-  const serviceNames = getServiceNames().join('|');
-  return new RegExp(`^/?${prefix}-([a-z0-9-]+)-(${serviceNames})(?:-\\d+)?$`);
+  return new RegExp(`^/?${prefix}-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
 }
 
 function parseInterval(interval: string): number {
@@ -73,9 +74,19 @@ async function runHealthChecks(): Promise<void> {
   checking = true;
 
   try {
-    const config = loadConfig();
     const prefix = getContainerPrefix();
     const pattern = getContainerPattern();
+    const apps = await listApps();
+
+    // Build service config map keyed by appId -> serviceName -> config
+    const serviceMap = new Map<string, Map<string, AppService>>();
+    for (const app of apps) {
+      const svcMap = new Map<string, AppService>();
+      for (const svc of app.services) {
+        svcMap.set(svc.name, svc);
+      }
+      serviceMap.set(app.id, svcMap);
+    }
 
     // Get running containers
     const containers = await docker.listContainers({ filters: { status: ['running'] } });
@@ -83,21 +94,16 @@ async function runHealthChecks(): Promise<void> {
       c.Names.some(n => pattern.test(n))
     );
 
-    // Build service config map
-    const serviceMap = new Map<string, ServiceConfig>();
-    for (const svc of config.services) {
-      serviceMap.set(svc.name, svc);
-    }
-
     for (const container of managedContainers) {
       const name = container.Names[0].replace(/^\//, '');
-      const match = name.match(pattern);
-      if (!match) continue;
+      const info = extractContainerInfo(name);
+      if (!info) continue;
 
-      const tenantId = match[1];
-      const serviceName = match[2];
-      const svcConfig = serviceMap.get(serviceName);
+      const { appId, tenantId, service: serviceName } = info;
+      const appServices = serviceMap.get(appId);
+      if (!appServices) continue;
 
+      const svcConfig = appServices.get(serviceName);
       if (!svcConfig?.health_check) continue;
 
       const hc = svcConfig.health_check;
@@ -110,8 +116,8 @@ async function runHealthChecks(): Promise<void> {
       if (hc.type === 'tcp') {
         isHealthy = await checkTCP(host, port);
       } else {
-        const path = hc.path || '/';
-        isHealthy = await checkHTTP(host, port, path);
+        const hcPath = hc.path || '/';
+        isHealthy = await checkHTTP(host, port, hcPath);
       }
 
       const currentState = healthStates.get(name);
@@ -121,6 +127,7 @@ async function runHealthChecks(): Promise<void> {
 
       healthStates.set(name, {
         containerName: name,
+        appId,
         tenantId,
         service: serviceName,
         state: newState,
@@ -132,6 +139,7 @@ async function runHealthChecks(): Promise<void> {
       if (previousState !== newState) {
         eventBus.emit('health:change', {
           containerName: name,
+          appId,
           tenantId,
           service: serviceName,
           previousState,
@@ -149,21 +157,10 @@ async function runHealthChecks(): Promise<void> {
 }
 
 export function startHealthChecker(): void {
-  const config = loadConfig();
-
-  // Determine minimum interval from all service health checks
-  let minInterval = 30;
-  for (const svc of config.services) {
-    if (svc.health_check) {
-      const interval = parseInterval(svc.health_check.interval);
-      minInterval = Math.min(minInterval, interval);
-    }
-  }
-
-  // Ensure minimum 10 seconds
-  minInterval = Math.max(minInterval, 10);
-
+  // Use a default interval; per-app intervals are evaluated during checks
+  const minInterval = 10;
   const cronExpr = `*/${minInterval} * * * * *`;
+
   if (!cron.validate(cronExpr)) {
     console.error(`[HealthChecker] Invalid cron expression: ${cronExpr}`);
     return;

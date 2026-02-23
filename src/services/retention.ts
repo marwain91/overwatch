@@ -3,8 +3,6 @@ import * as path from 'path';
 import cron, { ScheduledTask } from 'node-cron';
 import { loadConfig, getDataDir } from '../config';
 
-const LOG_FILES = ['alert-history.jsonl', 'audit.log'];
-
 let scheduledTask: ScheduledTask | null = null;
 
 async function pruneJsonlFile(filePath: string, maxEntries: number): Promise<number> {
@@ -26,16 +24,19 @@ async function pruneJsonlFile(filePath: string, maxEntries: number): Promise<num
 }
 
 async function runRetention(): Promise<void> {
-  const maxEntries = loadConfig().retention?.max_log_entries ?? 10000;
+  const config = loadConfig();
   const dataDir = getDataDir();
+  const maxAlerts = config.retention?.max_alert_entries ?? 10000;
+  const maxAudit = config.retention?.max_audit_entries ?? 10000;
 
-  let totalPruned = 0;
-  for (const file of LOG_FILES) {
-    totalPruned += await pruneJsonlFile(path.join(dataDir, file), maxEntries).catch(() => 0);
-  }
+  const alertFile = path.join(dataDir, 'alert-history.jsonl');
+  const auditFile = path.join(dataDir, 'audit.log');
 
-  if (totalPruned > 0) {
-    console.log(`[Retention] Pruned ${totalPruned} log entries`);
+  const alertPruned = await pruneJsonlFile(alertFile, maxAlerts).catch(() => 0);
+  const auditPruned = await pruneJsonlFile(auditFile, maxAudit).catch(() => 0);
+
+  if (alertPruned > 0 || auditPruned > 0) {
+    console.log(`[Retention] Pruned ${alertPruned} alert(s), ${auditPruned} audit log(s)`);
   }
 }
 

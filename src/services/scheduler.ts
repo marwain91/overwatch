@@ -1,35 +1,71 @@
 import cron, { ScheduledTask } from 'node-cron';
 import { backupAllTenants } from './backup';
+import { listApps } from './app';
 
-let scheduledTask: ScheduledTask | null = null;
+const scheduledTasks = new Map<string, ScheduledTask>();
 
-export function startBackupScheduler(schedule: string): void {
+/**
+ * Start backup schedulers for all apps that have backup schedules configured.
+ */
+export async function startAllBackupSchedulers(): Promise<void> {
+  const apps = await listApps();
+
+  for (const app of apps) {
+    if (app.backup?.enabled && app.backup?.schedule) {
+      startBackupScheduler(app.id, app.backup.schedule);
+    }
+  }
+}
+
+/**
+ * Start a backup scheduler for a specific app.
+ */
+export function startBackupScheduler(appId: string, schedule: string): void {
   if (!cron.validate(schedule)) {
-    console.error(`Invalid cron expression: "${schedule}" — scheduler not started`);
+    console.error(`Invalid cron expression for app '${appId}': "${schedule}" — scheduler not started`);
     return;
   }
 
-  scheduledTask = cron.schedule(schedule, async () => {
+  // Stop existing scheduler for this app if any
+  stopBackupScheduler(appId);
+
+  const task = cron.schedule(schedule, async () => {
     const startTime = new Date().toISOString();
-    console.log(`[Scheduler] Starting scheduled backup at ${startTime}`);
+    console.log(`[Scheduler] Starting scheduled backup for app '${appId}' at ${startTime}`);
 
     try {
-      const result = await backupAllTenants();
+      const result = await backupAllTenants(appId);
       console.log(
-        `[Scheduler] Backup complete — success: ${result.successCount}, failed: ${result.failCount}`
+        `[Scheduler] Backup for app '${appId}' complete — success: ${result.successCount}, failed: ${result.failCount}`
       );
     } catch (error) {
-      console.error('[Scheduler] Backup failed with error:', error);
+      console.error(`[Scheduler] Backup for app '${appId}' failed with error:`, error);
     }
-  }, { name: 'backup-all-tenants', noOverlap: true });
+  }, { name: `backup-${appId}`, noOverlap: true });
 
-  console.log(`Backup scheduler started (schedule: "${schedule}")`);
+  scheduledTasks.set(appId, task);
+  console.log(`Backup scheduler started for app '${appId}' (schedule: "${schedule}")`);
 }
 
-export function stopBackupScheduler(): void {
-  if (scheduledTask) {
-    scheduledTask.stop();
-    scheduledTask = null;
-    console.log('Backup scheduler stopped');
+/**
+ * Stop the backup scheduler for a specific app.
+ */
+export function stopBackupScheduler(appId?: string): void {
+  if (appId) {
+    const task = scheduledTasks.get(appId);
+    if (task) {
+      task.stop();
+      scheduledTasks.delete(appId);
+      console.log(`Backup scheduler stopped for app '${appId}'`);
+    }
+  } else {
+    // Stop all schedulers
+    for (const [id, task] of scheduledTasks) {
+      task.stop();
+    }
+    scheduledTasks.clear();
+    if (scheduledTasks.size === 0) {
+      console.log('All backup schedulers stopped');
+    }
   }
 }

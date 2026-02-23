@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getTenantsDir, getDataDir } from '../config';
+import { getAppsDir, getDataDir } from '../config';
 import { withFileLock } from './fileLock';
 
 function getEnvVarsFile(): string {
@@ -16,6 +16,7 @@ const PROTECTED_KEYS = new Set([
   'DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME',
   'JWT_SECRET', 'JWT_EXPIRES_IN', 'TENANT_ID', 'TENANT_DOMAIN',
   'IMAGE_REGISTRY', 'IMAGE_TAG', 'PROJECT_PREFIX', 'SHARED_NETWORK',
+  'APP_ID',
 ]);
 
 export interface EnvVar {
@@ -40,6 +41,14 @@ export interface EffectiveEnvVar {
   source: 'global' | 'override';
 }
 
+// ─── Storage format: keyed by appId ─────────────────────────────────────────
+
+// env-vars.json: { "myapp": [...vars], "cms": [...vars] }
+type EnvVarsStore = Record<string, EnvVar[]>;
+
+// tenant-env-overrides.json: { "myapp": [{ tenantId, overrides }], ... }
+type TenantOverridesStore = Record<string, TenantEnvOverride[]>;
+
 async function ensureDataDir(): Promise<void> {
   try {
     await fs.mkdir(getDataDir(), { recursive: true });
@@ -48,40 +57,50 @@ async function ensureDataDir(): Promise<void> {
   }
 }
 
-async function readEnvVars(): Promise<EnvVar[]> {
+async function readEnvVarsStore(): Promise<EnvVarsStore> {
   try {
     const data = await fs.readFile(getEnvVarsFile(), 'utf-8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    // Handle legacy format (flat array) — treat as no apps
+    if (Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed;
   } catch (error: any) {
     if (error.code === 'ENOENT') {
-      await saveEnvVars([]);
-      return [];
+      await saveEnvVarsStore({});
+      return {};
     }
     throw error;
   }
 }
 
-async function saveEnvVars(vars: EnvVar[]): Promise<void> {
+async function saveEnvVarsStore(store: EnvVarsStore): Promise<void> {
   await ensureDataDir();
-  await fs.writeFile(getEnvVarsFile(), JSON.stringify(vars, null, 2));
+  await fs.writeFile(getEnvVarsFile(), JSON.stringify(store, null, 2));
 }
 
-async function readTenantOverrides(): Promise<TenantEnvOverride[]> {
+async function readTenantOverridesStore(): Promise<TenantOverridesStore> {
   try {
     const data = await fs.readFile(getTenantOverridesFile(), 'utf-8');
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    // Handle legacy format (flat array)
+    if (Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed;
   } catch (error: any) {
     if (error.code === 'ENOENT') {
-      await saveTenantOverrides([]);
-      return [];
+      await saveTenantOverridesStore({});
+      return {};
     }
     throw error;
   }
 }
 
-async function saveTenantOverrides(overrides: TenantEnvOverride[]): Promise<void> {
+async function saveTenantOverridesStore(store: TenantOverridesStore): Promise<void> {
   await ensureDataDir();
-  await fs.writeFile(getTenantOverridesFile(), JSON.stringify(overrides, null, 2));
+  await fs.writeFile(getTenantOverridesFile(), JSON.stringify(store, null, 2));
 }
 
 export function validateEnvVarKey(key: string): { valid: boolean; error?: string } {
@@ -97,13 +116,15 @@ export function validateEnvVarKey(key: string): { valid: boolean; error?: string
   return { valid: true };
 }
 
-// Global env vars CRUD
+// ─── Global env vars CRUD (per app) ─────────────────────────────────────────
 
-export async function listEnvVars(): Promise<EnvVar[]> {
-  return readEnvVars();
+export async function listEnvVars(appId: string): Promise<EnvVar[]> {
+  const store = await readEnvVarsStore();
+  return store[appId] || [];
 }
 
 export async function setEnvVar(
+  appId: string,
   key: string,
   value: string,
   sensitive: boolean = false,
@@ -115,7 +136,9 @@ export async function setEnvVar(
   }
 
   return withFileLock('env-vars', async () => {
-    const vars = await readEnvVars();
+    const store = await readEnvVarsStore();
+    if (!store[appId]) store[appId] = [];
+    const vars = store[appId];
     const now = new Date().toISOString();
     const existing = vars.find(v => v.key === key);
 
@@ -137,32 +160,36 @@ export async function setEnvVar(
       });
     }
 
-    await saveEnvVars(vars);
+    await saveEnvVarsStore(store);
     return vars.find(v => v.key === key)!;
   });
 }
 
-export async function deleteEnvVar(key: string): Promise<void> {
+export async function deleteEnvVar(appId: string, key: string): Promise<void> {
   return withFileLock('env-vars', async () => {
-    const vars = await readEnvVars();
+    const store = await readEnvVarsStore();
+    const vars = store[appId] || [];
     const index = vars.findIndex(v => v.key === key);
     if (index === -1) {
       throw new Error(`Environment variable "${key}" not found`);
     }
     vars.splice(index, 1);
-    await saveEnvVars(vars);
+    store[appId] = vars;
+    await saveEnvVarsStore(store);
   });
 }
 
-// Per-tenant overrides
+// ─── Per-tenant overrides ────────────────────────────────────────────────────
 
-export async function getTenantOverrides(tenantId: string): Promise<TenantEnvOverride['overrides']> {
-  const allOverrides = await readTenantOverrides();
-  const tenant = allOverrides.find(t => t.tenantId === tenantId);
+export async function getTenantOverrides(appId: string, tenantId: string): Promise<TenantEnvOverride['overrides']> {
+  const store = await readTenantOverridesStore();
+  const appOverrides = store[appId] || [];
+  const tenant = appOverrides.find(t => t.tenantId === tenantId);
   return tenant?.overrides || [];
 }
 
 export async function setTenantOverride(
+  appId: string,
   tenantId: string,
   key: string,
   value: string,
@@ -174,12 +201,14 @@ export async function setTenantOverride(
   }
 
   return withFileLock('tenant-overrides', async () => {
-    const allOverrides = await readTenantOverrides();
-    let tenant = allOverrides.find(t => t.tenantId === tenantId);
+    const store = await readTenantOverridesStore();
+    if (!store[appId]) store[appId] = [];
+    const appOverrides = store[appId];
+    let tenant = appOverrides.find(t => t.tenantId === tenantId);
 
     if (!tenant) {
       tenant = { tenantId, overrides: [] };
-      allOverrides.push(tenant);
+      appOverrides.push(tenant);
     }
 
     const now = new Date().toISOString();
@@ -193,14 +222,15 @@ export async function setTenantOverride(
       tenant.overrides.push({ key, value, sensitive, updatedAt: now });
     }
 
-    await saveTenantOverrides(allOverrides);
+    await saveTenantOverridesStore(store);
   });
 }
 
-export async function deleteTenantOverride(tenantId: string, key: string): Promise<void> {
+export async function deleteTenantOverride(appId: string, tenantId: string, key: string): Promise<void> {
   return withFileLock('tenant-overrides', async () => {
-    const allOverrides = await readTenantOverrides();
-    const tenant = allOverrides.find(t => t.tenantId === tenantId);
+    const store = await readTenantOverridesStore();
+    const appOverrides = store[appId] || [];
+    const tenant = appOverrides.find(t => t.tenantId === tenantId);
 
     if (!tenant) {
       throw new Error(`No overrides found for tenant "${tenantId}"`);
@@ -215,31 +245,32 @@ export async function deleteTenantOverride(tenantId: string, key: string): Promi
 
     // Remove tenant entry if no overrides remain
     if (tenant.overrides.length === 0) {
-      const tenantIndex = allOverrides.indexOf(tenant);
-      allOverrides.splice(tenantIndex, 1);
+      const tenantIndex = appOverrides.indexOf(tenant);
+      appOverrides.splice(tenantIndex, 1);
     }
 
-    await saveTenantOverrides(allOverrides);
+    await saveTenantOverridesStore(store);
   });
 }
 
-export async function deleteTenantAllOverrides(tenantId: string): Promise<void> {
+export async function deleteTenantAllOverrides(appId: string, tenantId: string): Promise<void> {
   return withFileLock('tenant-overrides', async () => {
-    const allOverrides = await readTenantOverrides();
-    const index = allOverrides.findIndex(t => t.tenantId === tenantId);
+    const store = await readTenantOverridesStore();
+    const appOverrides = store[appId] || [];
+    const index = appOverrides.findIndex(t => t.tenantId === tenantId);
 
     if (index !== -1) {
-      allOverrides.splice(index, 1);
-      await saveTenantOverrides(allOverrides);
+      appOverrides.splice(index, 1);
+      await saveTenantOverridesStore(store);
     }
   });
 }
 
-// Merged view
+// ─── Merged view ─────────────────────────────────────────────────────────────
 
-export async function getEffectiveEnvVars(tenantId: string): Promise<EffectiveEnvVar[]> {
-  const globalVars = await readEnvVars();
-  const tenantOverrides = await getTenantOverrides(tenantId);
+export async function getEffectiveEnvVars(appId: string, tenantId: string): Promise<EffectiveEnvVar[]> {
+  const globalVars = await listEnvVars(appId);
+  const tenantOverrides = await getTenantOverrides(appId, tenantId);
 
   const effective: EffectiveEnvVar[] = [];
 
@@ -279,11 +310,11 @@ export async function getEffectiveEnvVars(tenantId: string): Promise<EffectiveEn
   return effective;
 }
 
-// File generation
+// ─── File generation ─────────────────────────────────────────────────────────
 
-export async function generateSharedEnvFile(tenantId: string): Promise<void> {
-  const tenantsDir = getTenantsDir();
-  const tenantPath = path.join(tenantsDir, tenantId);
+export async function generateSharedEnvFile(appId: string, tenantId: string): Promise<void> {
+  const appsDir = getAppsDir();
+  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
 
   // Check tenant directory exists
   try {
@@ -292,7 +323,7 @@ export async function generateSharedEnvFile(tenantId: string): Promise<void> {
     return; // Skip if tenant directory doesn't exist
   }
 
-  const effective = await getEffectiveEnvVars(tenantId);
+  const effective = await getEffectiveEnvVars(appId, tenantId);
 
   const lines = [
     '# Shared environment variables',
@@ -323,26 +354,38 @@ export async function generateSharedEnvFile(tenantId: string): Promise<void> {
 }
 
 export async function regenerateAllSharedEnvFiles(): Promise<number> {
-  const tenantsDir = getTenantsDir();
+  const appsDir = getAppsDir();
   let count = 0;
 
   try {
-    const entries = await fs.readdir(tenantsDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        // Verify it's actually a tenant directory (has .env file)
-        try {
-          await fs.access(path.join(tenantsDir, entry.name, '.env'));
-          await generateSharedEnvFile(entry.name);
-          count++;
-        } catch {
-          // Not a tenant directory, skip
+    const appDirs = await fs.readdir(appsDir, { withFileTypes: true });
+    for (const appEntry of appDirs) {
+      if (!appEntry.isDirectory()) continue;
+      const appId = appEntry.name;
+      const tenantsDir = path.join(appsDir, appId, 'tenants');
+
+      try {
+        const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
+        for (const tenantEntry of tenantDirs) {
+          if (!tenantEntry.isDirectory()) continue;
+          const tenantId = tenantEntry.name;
+
+          // Verify it's actually a tenant directory (has .env file)
+          try {
+            await fs.access(path.join(tenantsDir, tenantId, '.env'));
+            await generateSharedEnvFile(appId, tenantId);
+            count++;
+          } catch {
+            // Not a tenant directory, skip
+          }
         }
+      } catch {
+        // No tenants dir for this app
       }
     }
   } catch (error: any) {
     if (error.code === 'ENOENT') {
-      // Tenants directory doesn't exist yet
+      // Apps directory doesn't exist yet
       return 0;
     }
     throw error;

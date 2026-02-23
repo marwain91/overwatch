@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Shield background -->
+  <path d="M32 4L8 14v18c0 14.36 10.28 27.76 24 30 13.72-2.24 24-15.64 24-30V14L32 4z" fill="url(#shield-gradient)"/>
+
+  <!-- Inner glow -->
+  <path d="M32 8L12 16.5v13.5c0 12.08 8.64 23.36 20 25.2 11.36-1.84 20-13.12 20-25.2V16.5L32 8z" fill="url(#inner-gradient)" opacity="0.3"/>
+
+  <!-- Eye shape -->
+  <ellipse cx="32" cy="32" rx="16" ry="10" fill="white"/>
+
+  <!-- Iris -->
+  <circle cx="32" cy="32" r="8" fill="url(#iris-gradient)"/>
+
+  <!-- Pupil -->
+  <circle cx="32" cy="32" r="4" fill="#1e3a5f"/>
+
+  <!-- Eye highlight -->
+  <circle cx="29" cy="30" r="2" fill="white" opacity="0.8"/>
+
+  <!-- Scan lines effect -->
+  <path d="M16 32h6M42 32h6" stroke="white" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+
+  <defs>
+    <linearGradient id="shield-gradient" x1="32" y1="4" x2="32" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="inner-gradient" x1="32" y1="8" x2="32" y2="55" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+    <radialGradient id="iris-gradient" cx="32" cy="32" r="8" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#60a5fa"/>
+      <stop offset="70%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </radialGradient>
+  </defs>
+</svg>

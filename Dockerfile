@@ -1,4 +1,14 @@
 # Overwatch - Multi-Tenant Management Tool
+
+# ── Stage 1: Build React UI ──
+FROM node:20-alpine AS ui-build
+WORKDIR /ui
+COPY ui/package*.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+# ── Stage 2: Runtime ──
 FROM node:20-alpine
 
 ARG BUILD_TIME=dev
@@ -19,6 +29,11 @@ RUN npm ci --only=production
 
 # Copy built application
 COPY dist/ ./dist/
+
+# Copy React UI build
+COPY --from=ui-build /ui/dist ./ui/dist
+
+# Keep legacy public/ as fallback
 COPY public/ ./public/
 
 # Create data directory for admin users

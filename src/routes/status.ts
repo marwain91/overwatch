@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { loadConfig, getContainerPrefix } from '../config';
-import { listContainers, getContainerLogs, restartContainer } from '../services/docker';
+import { listContainers, getContainerLogs, restartContainer, listTenants } from '../services/docker';
 import { getDatabaseAdapter } from '../adapters/database';
-import { getImageTags } from '../adapters/registry';
+import { listApps } from '../services/app';
 import { asyncHandler } from '../utils/asyncHandler';
 
 const router = Router();
@@ -31,70 +31,56 @@ router.post('/containers/:containerId/restart', asyncHandler(async (req, res) =>
 // Get system health
 router.get('/health', asyncHandler(async (req, res) => {
   const config = loadConfig();
-  const prefix = getContainerPrefix();
   const db = getDatabaseAdapter();
 
   const dbConnected = await db.testConnection();
   const containers = await listContainers();
   const databases = await db.listDatabases();
+  const apps = await listApps();
 
-  // Exclude init containers (like migrators) from running count
-  const initServices = config.services
-    .filter(s => s.is_init_container)
-    .map(s => s.name);
-
-  const nonInitContainers = containers.filter(c => {
-    const parts = c.name.split('-');
-    const serviceName = parts[parts.length - 1];
-    return !initServices.includes(serviceName);
-  });
-
-  const runningContainers = nonInitContainers.filter(c => c.state === 'running');
+  const runningContainers = containers.filter(c => c.state === 'running');
 
   res.json({
     database: dbConnected ? 'connected' : 'disconnected',
-    containers: nonInitContainers.length,
+    containers: containers.length,
     runningContainers: runningContainers.length,
     databases: databases.length,
-    // Include container details for tooltip
+    apps: apps.length,
     containerDetails: containers.map(c => ({
-      name: c.name.replace(`${prefix}-`, ''),
+      name: c.name,
       state: c.state,
       status: c.status,
+      appId: c.appId,
     })),
   });
-}));
-
-// Get available image tags
-router.get('/tags', asyncHandler(async (req, res) => {
-  const tags = await getImageTags();
-  res.json({ tags });
 }));
 
 // Get project configuration (for frontend)
 router.get('/config', asyncHandler(async (req, res) => {
   const config = loadConfig();
+  const apps = await listApps();
   res.json({
     project: {
       name: config.project.name,
       prefix: config.project.prefix,
     },
-    services: config.services.map(s => ({
-      name: s.name,
-      required: s.required,
-      isInitContainer: s.is_init_container,
+    apps: apps.map(a => ({
+      id: a.id,
+      name: a.name,
+      servicesCount: a.services.length,
+      registry: { type: a.registry.type },
+      backup: { enabled: a.backup?.enabled ?? false },
     })),
-    registry: {
-      type: config.registry.type,
-    },
     database: {
       type: config.database.type,
     },
-    backup: {
-      enabled: config.backup?.enabled ?? false,
-      schedule: config.backup?.schedule ?? null,
-    },
   });
+}));
+
+// Get all tenants across all apps (global view)
+router.get('/tenants', asyncHandler(async (req, res) => {
+  const tenants = await listTenants();
+  res.json(tenants);
 }));
 
 export default router;

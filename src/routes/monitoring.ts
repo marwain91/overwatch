@@ -15,14 +15,15 @@ const router = Router();
 
 // GET /api/monitoring/metrics — current + history for all containers
 router.get('/metrics', asyncHandler(async (req, res) => {
-  const data = getMetrics();
+  const appId = req.query.appId as string | undefined;
+  const data = getMetrics(appId);
   res.json(data);
 }));
 
 // GET /api/monitoring/metrics/:tenantId — metrics for specific tenant
-router.get('/metrics/:tenantId', asyncHandler(async (req, res) => {
-  const { tenantId } = req.params;
-  const data = getMetrics(tenantId);
+router.get('/metrics/:appId/:tenantId', asyncHandler(async (req, res) => {
+  const { appId, tenantId } = req.params;
+  const data = getMetrics(appId, tenantId);
   res.json(data);
 }));
 
@@ -35,8 +36,10 @@ router.get('/metrics/history/:containerName', asyncHandler(async (req, res) => {
 
 // GET /api/monitoring/health — all health check states
 router.get('/health', asyncHandler(async (req, res) => {
+  const appId = req.query.appId as string | undefined;
   const states = getHealthStates();
-  res.json(states);
+  const filtered = appId ? states.filter(s => (s as any).appId === appId) : states;
+  res.json(filtered);
 }));
 
 // GET /api/monitoring/alerts — alert history (paginated)

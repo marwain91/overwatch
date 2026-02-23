@@ -2,9 +2,11 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { loadConfig, getContainerPrefix, getBackupServices, resolveEnvValue, getTenantsDir } from '../config';
+import { loadConfig, getContainerPrefix, resolveEnvValue, getAppsDir } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { getTenantInfo, listTenants } from './docker';
+import { getApp, listApps } from './app';
+import { AppDefinition } from '../models/app';
 
 const execAsync = promisify(exec);
 
@@ -14,31 +16,28 @@ function getBackupTempDir(): string {
 }
 
 /**
- * Get Restic environment variables from config
+ * Get Restic environment variables from an app's backup config
  */
-function getResticEnv(): NodeJS.ProcessEnv {
-  const config = loadConfig();
-  const backup = config.backup;
+function getResticEnv(app: AppDefinition): NodeJS.ProcessEnv {
+  const backup = app.backup;
 
-  if (!backup) {
-    throw new Error('Backup not configured');
+  if (!backup || !backup.enabled) {
+    throw new Error(`Backup not configured for app '${app.id}'`);
   }
 
   let repository: string;
-  if (backup.s3?.endpoint_template) {
-    repository = resolveEnvValue(backup.s3.endpoint_template);
-  } else if (backup.s3?.endpoint_env && backup.s3?.bucket_env) {
-    const endpoint = process.env[backup.s3.endpoint_env];
-    const bucket = process.env[backup.s3.bucket_env];
+  if (backup.s3?.endpoint_env && backup.s3?.bucket_env) {
+    const endpoint = process.env[backup.s3.endpoint_env!];
+    const bucket = process.env[backup.s3.bucket_env!];
     repository = `s3:${endpoint}/${bucket}`;
   } else {
-    throw new Error('Invalid backup S3 configuration');
+    throw new Error(`Invalid backup S3 configuration for app '${app.id}'`);
   }
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     RESTIC_REPOSITORY: repository,
-    RESTIC_PASSWORD: process.env[backup.restic_password_env],
+    RESTIC_PASSWORD: process.env[backup.restic_password_env || 'RESTIC_PASSWORD'],
   };
 
   if (backup.s3?.access_key_env) {
@@ -58,6 +57,7 @@ export interface BackupSnapshot {
   hostname: string;
   tags: string[];
   paths: string[];
+  appId?: string;
   tenantId?: string;
   size?: string;
 }
@@ -99,25 +99,23 @@ function parseLockInfo(errorMsg: string): LockInfo | null {
   return Object.keys(lockInfo).length > 0 ? lockInfo : null;
 }
 
-export async function getBackupInfo(): Promise<BackupInfo & { isLocked?: boolean; lockInfo?: LockInfo }> {
-  const config = loadConfig();
-  const backup = config.backup;
-
-  if (!backup?.enabled) {
-    return { configured: false, initialized: false, error: 'Backup not enabled in configuration.' };
+export async function getBackupInfo(appId: string): Promise<BackupInfo & { isLocked?: boolean; lockInfo?: LockInfo }> {
+  const app = await getApp(appId);
+  if (!app) {
+    return { configured: false, initialized: false, error: `App '${appId}' not found` };
   }
 
-  // Check required environment variables based on provider
-  if (backup.provider === 's3') {
-    const s3 = backup.s3;
-    if (!s3) {
-      return { configured: false, initialized: false, error: 'S3 backup configuration missing.' };
-    }
+  const backup = app.backup;
+  if (!backup?.enabled) {
+    return { configured: false, initialized: false, error: 'Backup not enabled for this app.' };
+  }
 
+  // Check required environment variables
+  if (backup.provider === 's3' && backup.s3) {
     const requiredEnvVars = [
       backup.restic_password_env,
-      s3.access_key_env,
-      s3.secret_key_env,
+      backup.s3.access_key_env,
+      backup.s3.secret_key_env,
     ].filter(Boolean);
 
     for (const envVar of requiredEnvVars) {
@@ -128,7 +126,7 @@ export async function getBackupInfo(): Promise<BackupInfo & { isLocked?: boolean
   }
 
   try {
-    await execAsync('restic cat config', { env: getResticEnv(), timeout: 30000 });
+    await execAsync('restic cat config', { env: getResticEnv(app), timeout: 30000 });
     return { configured: true, initialized: true };
   } catch (error: any) {
     const errorMsg = error.stderr || error.message || '';
@@ -144,13 +142,18 @@ export async function getBackupInfo(): Promise<BackupInfo & { isLocked?: boolean
   }
 }
 
-export async function initializeRepository(): Promise<void> {
-  await execAsync('restic init', { env: getResticEnv() });
+export async function initializeRepository(appId: string): Promise<void> {
+  const app = await getApp(appId);
+  if (!app) throw new Error(`App '${appId}' not found`);
+  await execAsync('restic init', { env: getResticEnv(app) });
 }
 
-export async function unlockRepository(): Promise<{ success: boolean; error?: string }> {
+export async function unlockRepository(appId: string): Promise<{ success: boolean; error?: string }> {
+  const app = await getApp(appId);
+  if (!app) return { success: false, error: `App '${appId}' not found` };
+
   try {
-    await execAsync('restic unlock --remove-all', { env: getResticEnv(), timeout: 30000 });
+    await execAsync('restic unlock --remove-all', { env: getResticEnv(app), timeout: 30000 });
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message };
@@ -166,19 +169,26 @@ function formatError(error: any): { error: string; isLocked?: boolean; lockInfo?
   return { error: msg };
 }
 
-export async function listSnapshots(tenantId?: string): Promise<BackupSnapshot[]> {
-  const info = await getBackupInfo();
+export async function listSnapshots(appId: string, tenantId?: string): Promise<BackupSnapshot[]> {
+  const info = await getBackupInfo(appId);
   if (!info.configured || !info.initialized) {
     return [];
   }
 
+  const app = await getApp(appId);
+  if (!app) return [];
+
   try {
     let cmd = 'restic snapshots --json';
+    const tags: string[] = [`app:${appId}`];
     if (tenantId) {
-      cmd += ` --tag tenant:${tenantId}`;
+      tags.push(`tenant:${tenantId}`);
+    }
+    for (const tag of tags) {
+      cmd += ` --tag ${tag}`;
     }
 
-    const { stdout } = await execAsync(cmd, { env: getResticEnv() });
+    const { stdout } = await execAsync(cmd, { env: getResticEnv(app) });
     const snapshots = JSON.parse(stdout || '[]') as any[];
 
     return snapshots.map(s => ({
@@ -188,6 +198,7 @@ export async function listSnapshots(tenantId?: string): Promise<BackupSnapshot[]
       hostname: s.hostname,
       tags: s.tags || [],
       paths: s.paths || [],
+      appId: s.tags?.find((t: string) => t.startsWith('app:'))?.replace('app:', ''),
       tenantId: s.tags?.find((t: string) => t.startsWith('tenant:'))?.replace('tenant:', ''),
     })).sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
   } catch (error) {
@@ -196,15 +207,18 @@ export async function listSnapshots(tenantId?: string): Promise<BackupSnapshot[]
   }
 }
 
-export async function createBackup(tenantId: string): Promise<{ success: boolean; snapshotId?: string; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
-  const info = await getBackupInfo();
+export async function createBackup(appId: string, tenantId: string): Promise<{ success: boolean; snapshotId?: string; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
+  const app = await getApp(appId);
+  if (!app) return { success: false, error: `App '${appId}' not found` };
+
+  const info = await getBackupInfo(appId);
   if (!info.configured) {
     return { success: false, error: 'Backup not configured' };
   }
 
   if (!info.initialized) {
     try {
-      await initializeRepository();
+      await initializeRepository(appId);
     } catch (error: any) {
       return { success: false, error: `Failed to initialize repository: ${error.message}` };
     }
@@ -212,9 +226,16 @@ export async function createBackup(tenantId: string): Promise<{ success: boolean
 
   const config = loadConfig();
   const prefix = getContainerPrefix();
-  const backupServices = getBackupServices();
   const db = getDatabaseAdapter();
-  const tenantsDir = getTenantsDir();
+  const appsDir = getAppsDir();
+
+  // Get backup-enabled services from app definition
+  const backupServices = app.services
+    .filter(s => s.backup?.enabled && s.backup?.paths?.length)
+    .map(s => ({
+      name: s.name,
+      paths: s.backup!.paths!,
+    }));
 
   const timestamp = Date.now();
   const backupDir = path.join(getBackupTempDir(), `backup-${timestamp}`);
@@ -222,24 +243,26 @@ export async function createBackup(tenantId: string): Promise<{ success: boolean
   try {
     await fs.mkdir(backupDir, { recursive: true });
 
-    const tenant = await getTenantInfo(tenantId);
+    const tenant = await getTenantInfo(appId, tenantId);
     if (!tenant) {
-      return { success: false, error: `Tenant ${tenantId} not found` };
+      return { success: false, error: `Tenant ${tenantId} not found in app ${appId}` };
     }
 
     const tenantBackupDir = path.join(backupDir, tenant.tenantId);
     await fs.mkdir(tenantBackupDir, { recursive: true });
 
     // Dump database using adapter
+    const dbPrefix = config.project.db_prefix;
+    const dbName = `${dbPrefix}_${appId}_${tenantId}`;
     try {
       await db.initialize();
-      await db.dumpDatabase(tenantId, path.join(tenantBackupDir, 'database.sql'));
+      await db.dumpDatabase(dbName, path.join(tenantBackupDir, 'database.sql'));
     } catch (error: any) {
       console.error(`Failed to dump database for ${tenant.tenantId}:`, error.message);
     }
 
     // Copy tenant config
-    const tenantConfigDir = path.join(tenantsDir, tenant.tenantId);
+    const tenantConfigDir = path.join(appsDir, appId, 'tenants', tenant.tenantId);
     try {
       const envContent = await fs.readFile(path.join(tenantConfigDir, '.env'), 'utf-8');
       await fs.writeFile(path.join(tenantBackupDir, '.env'), envContent);
@@ -249,7 +272,7 @@ export async function createBackup(tenantId: string): Promise<{ success: boolean
 
     // Copy paths from services that have backup enabled
     for (const service of backupServices) {
-      const containerName = `${prefix}-${tenant.tenantId}-${service.name}`;
+      const containerName = `${prefix}-${appId}-${tenant.tenantId}-${service.name}`;
 
       for (const pathConfig of service.paths) {
         try {
@@ -270,16 +293,17 @@ export async function createBackup(tenantId: string): Promise<{ success: boolean
     // Create metadata file
     const metadata = {
       timestamp: new Date().toISOString(),
+      appId,
       tenants: [tenant.tenantId],
       project: config.project.name,
-      version: '1.0',
+      version: '2.0',
     };
     await fs.writeFile(path.join(backupDir, 'metadata.json'), JSON.stringify(metadata, null, 2));
 
-    // Run restic backup with tenant tag
+    // Run restic backup with app and tenant tags
     const { stdout } = await execAsync(
-      `restic backup "${backupDir}" --tag tenant:${tenantId} --json`,
-      { env: getResticEnv() }
+      `restic backup "${backupDir}" --tag app:${appId} --tag tenant:${tenantId} --json`,
+      { env: getResticEnv(app) }
     );
 
     // Parse output to get snapshot ID
@@ -307,20 +331,22 @@ export async function createBackup(tenantId: string): Promise<{ success: boolean
 
 export interface BackupAllResult {
   success: boolean;
-  results: Array<{ tenantId: string; success: boolean; snapshotId?: string; error?: string }>;
+  results: Array<{ appId: string; tenantId: string; success: boolean; snapshotId?: string; error?: string }>;
   successCount: number;
   failCount: number;
 }
 
-export async function backupAllTenants(): Promise<BackupAllResult> {
+export async function backupAllTenants(appId?: string): Promise<BackupAllResult> {
   const tenants = await listTenants();
+  const filtered = appId ? tenants.filter(t => t.appId === appId) : tenants;
   const results: BackupAllResult['results'] = [];
   let successCount = 0;
   let failCount = 0;
 
-  for (const tenant of tenants) {
-    const result = await createBackup(tenant.tenantId);
+  for (const tenant of filtered) {
+    const result = await createBackup(tenant.appId, tenant.tenantId);
     results.push({
+      appId: tenant.appId,
       tenantId: tenant.tenantId,
       success: result.success,
       snapshotId: result.snapshotId,
@@ -342,19 +368,30 @@ export async function backupAllTenants(): Promise<BackupAllResult> {
 }
 
 export async function restoreBackup(
+  appId: string,
   snapshotId: string,
   targetTenantId: string,
   options: { createNew?: boolean; newDomain?: string } = {}
 ): Promise<{ success: boolean; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
-  const info = await getBackupInfo();
+  const app = await getApp(appId);
+  if (!app) return { success: false, error: `App '${appId}' not found` };
+
+  const info = await getBackupInfo(appId);
   if (!info.configured || !info.initialized) {
     return { success: false, error: 'Backup not configured or initialized' };
   }
 
   const config = loadConfig();
   const prefix = getContainerPrefix();
-  const backupServices = getBackupServices();
   const db = getDatabaseAdapter();
+
+  // Get backup-enabled services from app definition
+  const backupServices = app.services
+    .filter(s => s.backup?.enabled && s.backup?.paths?.length)
+    .map(s => ({
+      name: s.name,
+      paths: s.backup!.paths!,
+    }));
 
   const timestamp = Date.now();
   const restoreDir = path.join(getBackupTempDir(), `restore-${timestamp}`);
@@ -365,10 +402,10 @@ export async function restoreBackup(
     // Restore from restic
     await execAsync(
       `restic restore ${snapshotId} --target "${restoreDir}"`,
-      { env: getResticEnv() }
+      { env: getResticEnv(app) }
     );
 
-    // Find the backup data (nested in the temp path structure)
+    // Find the backup data
     const { stdout: findOutput } = await execAsync(`find "${restoreDir}" -name "metadata.json" -type f`);
     const metadataPath = findOutput.trim();
     if (!metadataPath) {
@@ -395,18 +432,18 @@ export async function restoreBackup(
       return { success: false, error: `Tenant data not found in backup for ${sourceTenantId}` };
     }
 
-    if (options.createNew) {
-      if (!options.newDomain) {
-        return { success: false, error: 'Domain required for new tenant' };
-      }
+    if (options.createNew && !options.newDomain) {
+      return { success: false, error: 'Domain required for new tenant' };
     }
 
     // Restore database using adapter
+    const dbPrefix = config.project.db_prefix;
+    const dbName = `${dbPrefix}_${appId}_${targetTenantId}`;
     const sqlFile = path.join(tenantBackupDir, 'database.sql');
     try {
       await fs.access(sqlFile);
       await db.initialize();
-      await db.restoreDatabase(targetTenantId, sqlFile);
+      await db.restoreDatabase(dbName, sqlFile);
     } catch (error: any) {
       console.error('Failed to restore database:', error.message);
       return { success: false, error: `Failed to restore database: ${error.message}` };
@@ -414,7 +451,7 @@ export async function restoreBackup(
 
     // Restore paths to service containers
     for (const service of backupServices) {
-      const containerName = `${prefix}-${targetTenantId}-${service.name}`;
+      const containerName = `${prefix}-${appId}-${targetTenantId}-${service.name}`;
 
       for (const pathConfig of service.paths) {
         const localBackupDir = path.join(tenantBackupDir, pathConfig.local);
@@ -442,10 +479,13 @@ export async function restoreBackup(
   }
 }
 
-export async function deleteSnapshot(snapshotId: string): Promise<{ success: boolean; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
+export async function deleteSnapshot(appId: string, snapshotId: string): Promise<{ success: boolean; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
+  const app = await getApp(appId);
+  if (!app) return { success: false, error: `App '${appId}' not found` };
+
   try {
     await execAsync(`restic forget ${snapshotId}`, {
-      env: getResticEnv(),
+      env: getResticEnv(app),
       timeout: 60000
     });
     return { success: true };
@@ -455,11 +495,14 @@ export async function deleteSnapshot(snapshotId: string): Promise<{ success: boo
   }
 }
 
-export async function pruneBackups(keepDaily: number = 7, keepWeekly: number = 4, keepMonthly: number = 12): Promise<{ success: boolean; error?: string }> {
+export async function pruneBackups(appId: string, keepDaily: number = 7, keepWeekly: number = 4, keepMonthly: number = 12): Promise<{ success: boolean; error?: string }> {
+  const app = await getApp(appId);
+  if (!app) return { success: false, error: `App '${appId}' not found` };
+
   try {
     await execAsync(
       `restic forget --keep-daily ${keepDaily} --keep-weekly ${keepWeekly} --keep-monthly ${keepMonthly} --prune`,
-      { env: getResticEnv() }
+      { env: getResticEnv(app) }
     );
     return { success: true };
   } catch (error: any) {

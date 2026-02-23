@@ -1,9 +1,9 @@
-import { loadConfig } from '../../config';
 import { RegistryAdapter, RegistryAdapterConfig, toAdapterConfig } from './types';
 import { GHCRAdapter } from './ghcr';
 import { DockerHubAdapter } from './dockerhub';
 import { ECRAdapter } from './ecr';
 import { CustomRegistryAdapter } from './custom';
+import { AppDefinition, AppRegistry } from '../../models/app';
 
 export * from './types';
 export { GHCRAdapter } from './ghcr';
@@ -11,65 +11,88 @@ export { DockerHubAdapter } from './dockerhub';
 export { ECRAdapter } from './ecr';
 export { CustomRegistryAdapter } from './custom';
 
-let cachedAdapter: RegistryAdapter | null = null;
+// Per-app adapter cache
+const adapterCache = new Map<string, RegistryAdapter>();
 
 /**
- * Create a registry adapter based on the configuration
+ * Create a registry adapter from adapter config
  */
-export function createRegistryAdapter(adapterConfig?: RegistryAdapterConfig): RegistryAdapter {
-  const config = adapterConfig || getAdapterConfigFromOverwatch();
-
-  switch (config.type) {
+export function createRegistryAdapter(adapterConfig: RegistryAdapterConfig): RegistryAdapter {
+  switch (adapterConfig.type) {
     case 'ghcr':
-      return new GHCRAdapter(config);
+      return new GHCRAdapter(adapterConfig);
     case 'dockerhub':
-      return new DockerHubAdapter(config);
+      return new DockerHubAdapter(adapterConfig);
     case 'ecr':
-      return new ECRAdapter(config);
+      return new ECRAdapter(adapterConfig);
     case 'custom':
-      return new CustomRegistryAdapter(config);
+      return new CustomRegistryAdapter(adapterConfig);
     default:
-      throw new Error(`Unsupported registry type: ${config.type}`);
+      throw new Error(`Unsupported registry type: ${adapterConfig.type}`);
   }
 }
 
 /**
- * Get a singleton registry adapter instance based on the Overwatch configuration
+ * Convert an app's registry config to adapter config
  */
-export function getRegistryAdapter(): RegistryAdapter {
-  if (!cachedAdapter) {
-    cachedAdapter = createRegistryAdapter();
-  }
-  return cachedAdapter;
+function appRegistryToAdapterConfig(registry: AppRegistry): RegistryAdapterConfig {
+  return {
+    type: registry.type,
+    url: registry.url,
+    repository: registry.repository,
+    username: registry.auth.username_env ? process.env[registry.auth.username_env] : undefined,
+    token: registry.auth.token_env ? process.env[registry.auth.token_env] : undefined,
+    awsRegion: registry.auth.aws_region_env ? process.env[registry.auth.aws_region_env] : undefined,
+    tagPattern: registry.tag_pattern ? new RegExp(registry.tag_pattern) : undefined,
+  };
 }
 
 /**
- * Clear the cached adapter (useful for testing or config changes)
+ * Get or create a registry adapter for a specific app
+ */
+export function getRegistryAdapterForApp(app: AppDefinition): RegistryAdapter {
+  let adapter = adapterCache.get(app.id);
+  if (!adapter) {
+    const config = appRegistryToAdapterConfig(app.registry);
+    adapter = createRegistryAdapter(config);
+    adapterCache.set(app.id, adapter);
+  }
+  return adapter;
+}
+
+/**
+ * Clear the adapter cache (useful for config changes)
  */
 export function clearAdapterCache(): void {
-  cachedAdapter = null;
+  adapterCache.clear();
 }
 
 /**
- * Login to the configured registry
+ * Login to registry for a specific app
  */
-export async function loginToRegistry(): Promise<void> {
-  const adapter = getRegistryAdapter();
+export async function loginToRegistryForApp(app: AppDefinition): Promise<void> {
+  const adapter = getRegistryAdapterForApp(app);
   await adapter.login();
 }
 
 /**
- * Get available image tags from the configured registry
+ * Login to registries for all apps
  */
-export async function getImageTags(): Promise<string[]> {
-  const adapter = getRegistryAdapter();
-  return adapter.getImageTags();
+export async function loginToAllRegistries(apps: AppDefinition[]): Promise<void> {
+  for (const app of apps) {
+    try {
+      await loginToRegistryForApp(app);
+      console.log(`Registry login successful for app '${app.id}'`);
+    } catch (error) {
+      console.error(`Warning: Registry login failed for app '${app.id}':`, error);
+    }
+  }
 }
 
 /**
- * Convert Overwatch config to adapter config
+ * Get available image tags for a specific app
  */
-function getAdapterConfigFromOverwatch(): RegistryAdapterConfig {
-  const config = loadConfig();
-  return toAdapterConfig(config.registry);
+export async function getImageTagsForApp(app: AppDefinition): Promise<string[]> {
+  const adapter = getRegistryAdapterForApp(app);
+  return adapter.getImageTags();
 }

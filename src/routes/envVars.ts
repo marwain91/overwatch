@@ -11,11 +11,12 @@ import {
 } from '../services/envVars';
 import { asyncHandler } from '../utils/asyncHandler';
 
-const router = Router();
+const router = Router({ mergeParams: true });
 
-// List global env vars (sensitive values masked)
+// List global env vars for an app (sensitive values masked)
 router.get('/', asyncHandler(async (req: Request, res: Response) => {
-  const vars = await listEnvVars();
+  const { appId } = req.params;
+  const vars = await listEnvVars(appId);
   const masked = vars.map(v => ({
     ...v,
     value: v.sensitive ? '••••••••' : v.value,
@@ -23,8 +24,9 @@ router.get('/', asyncHandler(async (req: Request, res: Response) => {
   res.json(masked);
 }));
 
-// Create or update a global env var
+// Create or update a global env var for an app
 router.post('/', asyncHandler(async (req: Request, res: Response) => {
+  const { appId } = req.params;
   const { key, value, sensitive, description } = req.body;
 
   if (!key) {
@@ -34,7 +36,7 @@ router.post('/', asyncHandler(async (req: Request, res: Response) => {
   // When value is omitted, keep the existing value (for sensitive field edits)
   let effectiveValue: string;
   if (value === undefined || value === null || value === '') {
-    const existing = (await listEnvVars()).find(v => v.key === key);
+    const existing = (await listEnvVars(appId)).find(v => v.key === key);
     if (existing) {
       effectiveValue = existing.value;
     } else {
@@ -44,7 +46,7 @@ router.post('/', asyncHandler(async (req: Request, res: Response) => {
     effectiveValue = String(value);
   }
 
-  const envVar = await setEnvVar(key, effectiveValue, sensitive ?? false, description);
+  const envVar = await setEnvVar(appId, key, effectiveValue, sensitive ?? false, description);
   const tenantsAffected = await regenerateAllSharedEnvFiles();
 
   res.json({
@@ -56,18 +58,18 @@ router.post('/', asyncHandler(async (req: Request, res: Response) => {
   });
 }));
 
-// Delete a global env var
+// Delete a global env var for an app
 router.delete('/:key', asyncHandler(async (req: Request, res: Response) => {
-  const { key } = req.params;
-  await deleteEnvVar(key);
+  const { appId, key } = req.params;
+  await deleteEnvVar(appId, key);
   const tenantsAffected = await regenerateAllSharedEnvFiles();
   res.json({ success: true, tenantsAffected });
 }));
 
 // Get effective env vars for a tenant (merged view)
 router.get('/tenants/:tenantId', asyncHandler(async (req: Request, res: Response) => {
-  const { tenantId } = req.params;
-  const effective = await getEffectiveEnvVars(tenantId);
+  const { appId, tenantId } = req.params;
+  const effective = await getEffectiveEnvVars(appId, tenantId);
   const masked = effective.map(v => ({
     ...v,
     value: v.sensitive ? '••••••••' : v.value,
@@ -77,24 +79,24 @@ router.get('/tenants/:tenantId', asyncHandler(async (req: Request, res: Response
 
 // Set a tenant override
 router.post('/tenants/:tenantId/overrides', asyncHandler(async (req: Request, res: Response) => {
-  const { tenantId } = req.params;
+  const { appId, tenantId } = req.params;
   const { key, value, sensitive } = req.body;
 
   if (!key || value === undefined || value === null) {
     return res.status(400).json({ error: 'Key and value are required' });
   }
 
-  await setTenantOverride(tenantId, key, String(value), sensitive ?? false);
-  await generateSharedEnvFile(tenantId);
+  await setTenantOverride(appId, tenantId, key, String(value), sensitive ?? false);
+  await generateSharedEnvFile(appId, tenantId);
 
   res.json({ success: true });
 }));
 
 // Delete a tenant override
 router.delete('/tenants/:tenantId/overrides/:key', asyncHandler(async (req: Request, res: Response) => {
-  const { tenantId, key } = req.params;
-  await deleteTenantOverride(tenantId, key);
-  await generateSharedEnvFile(tenantId);
+  const { appId, tenantId, key } = req.params;
+  await deleteTenantOverride(appId, tenantId, key);
+  await generateSharedEnvFile(appId, tenantId);
 
   res.json({ success: true });
 }));

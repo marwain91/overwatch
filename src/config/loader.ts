@@ -120,45 +120,11 @@ export function getDatabasePrefix(): string {
 }
 
 /**
- * Get the list of service names from config
+ * Get the apps directory path from config.
+ * This is the root directory containing app subdirectories.
  */
-export function getServiceNames(): string[] {
-  return loadConfig().services.map(s => s.name);
-}
-
-/**
- * Get services that are required for health checks
- */
-export function getRequiredServices(): string[] {
-  return loadConfig().services
-    .filter(s => s.required && !s.is_init_container)
-    .map(s => s.name);
-}
-
-/**
- * Get services that have backup paths configured
- */
-export function getBackupServices(): Array<{ name: string; paths: Array<{ container: string; local: string }> }> {
-  return loadConfig().services
-    .filter(s => s.backup?.enabled && s.backup?.paths?.length)
-    .map(s => ({
-      name: s.name,
-      paths: s.backup!.paths!,
-    }));
-}
-
-/**
- * Get the tenants directory path from config
- */
-export function getTenantsDir(): string {
-  return loadConfig().networking?.tenants_path || '/app/tenants';
-}
-
-/**
- * Get the template directory path from config
- */
-export function getTemplateDir(): string {
-  return loadConfig().tenant_template?.dir || './tenant-template';
+export function getAppsDir(): string {
+  return loadConfig().networking?.apps_path || '/app/apps';
 }
 
 /**

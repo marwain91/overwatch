@@ -27,7 +27,7 @@ export function findDeployDir(): string {
     return path.dirname(cwd);
   }
 
-  // Derive from config file location: config is at {deploy}/overwatch/overwatch.yaml
+  // Derive from config file location
   try {
     const configPath = findConfigPath();
     const overwatchDir = path.dirname(configPath);
@@ -36,7 +36,7 @@ export function findDeployDir(): string {
       return deployDir;
     }
   } catch {
-    // findConfigPath threw — no config found anywhere
+    // findConfigPath threw
   }
 
   throw new Error(
@@ -129,10 +129,7 @@ function parseContainers(prefix: string): ContainerInfo[] {
     const state = parts[1] || 'unknown';
     const rawStatus = parts[2] || '';
 
-    // Extract uptime (e.g. "Up 3 days" from "Up 3 days (healthy)")
     const uptime = rawStatus.replace(/\s*\(.*\)\s*$/, '');
-
-    // Extract health from parenthesized portion
     const healthMatch = rawStatus.match(/\((\w+)\)\s*$/);
     const health = healthMatch ? healthMatch[1] : '';
 
@@ -161,7 +158,6 @@ function healthLabel(health: string): string {
 }
 
 function pad(str: string, len: number): string {
-  // Strip ANSI codes for length calculation
   const visible = str.replace(/\x1b\[[0-9;]*m/g, '');
   return str + ' '.repeat(Math.max(0, len - visible.length));
 }
@@ -171,40 +167,39 @@ function header(title: string): void {
   console.log(`${CYAN}━━━ ${title} ${bar}${NC}`);
 }
 
-function loadProjectConfig(): { prefix: string; serviceNames: string[]; initContainerNames: string[] } | null {
+function loadProjectConfig(): { prefix: string } | null {
   try {
     const configPath = findConfigPath();
     const raw = yaml.load(fs.readFileSync(configPath, 'utf-8')) as any;
     const prefix = raw?.project?.prefix;
-    const services = (raw?.services || []) as Array<{ name: string; is_init_container?: boolean }>;
-    const serviceNames = services
-      .filter(s => !s.is_init_container)
-      .map(s => s.name);
-    const initContainerNames = services
-      .filter(s => s.is_init_container)
-      .map(s => s.name);
-    return prefix ? { prefix, serviceNames, initContainerNames } : null;
+    return prefix ? { prefix } : null;
   } catch {
     return null;
   }
 }
 
-function extractTenantId(containerName: string, prefix: string, serviceNames: string[], initContainerNames: string[]): { tenantId: string; isInit: boolean } | null {
-  const withoutPrefix = containerName.slice(prefix.length + 1); // strip "prefix-"
-  for (const svc of serviceNames) {
-    // Match "-service" or "-service-N" (replica) at the end
-    const pattern = new RegExp(`-${svc}(?:-\\d+)?$`);
-    if (pattern.test(withoutPrefix)) {
-      return { tenantId: withoutPrefix.replace(pattern, ''), isInit: false };
-    }
+/**
+ * Load app definitions from apps.json to get service names per app.
+ */
+function loadAppDefinitions(base: string): Array<{ id: string; name: string; serviceNames: string[]; initContainerNames: string[] }> {
+  const appsJsonPath = path.join(base, 'overwatch', 'data', 'apps.json');
+  try {
+    const content = fs.readFileSync(appsJsonPath, 'utf-8');
+    const apps = JSON.parse(content);
+    if (!Array.isArray(apps)) return [];
+    return apps.map((app: any) => ({
+      id: app.id,
+      name: app.name || app.id,
+      serviceNames: (app.services || [])
+        .filter((s: any) => !s.is_init_container)
+        .map((s: any) => s.name),
+      initContainerNames: (app.services || [])
+        .filter((s: any) => s.is_init_container)
+        .map((s: any) => s.name),
+    }));
+  } catch {
+    return [];
   }
-  for (const svc of initContainerNames) {
-    const pattern = new RegExp(`-${svc}(?:-\\d+)?$`);
-    if (pattern.test(withoutPrefix)) {
-      return { tenantId: withoutPrefix.replace(pattern, ''), isInit: true };
-    }
-  }
-  return null;
 }
 
 export async function runStatus(): Promise<void> {
@@ -212,7 +207,6 @@ export async function runStatus(): Promise<void> {
   const config = loadProjectConfig();
 
   if (!config) {
-    // Fallback to raw compose output if config is unavailable
     console.log(`${GREEN}Infrastructure:${NC}`);
     compose(path.join(base, 'infrastructure'), 'ps');
     console.log(`\n${GREEN}Overwatch:${NC}`);
@@ -220,8 +214,9 @@ export async function runStatus(): Promise<void> {
     return;
   }
 
-  const { prefix, serviceNames, initContainerNames } = config;
+  const { prefix } = config;
   const allContainers = parseContainers(prefix);
+  const apps = loadAppDefinitions(base);
 
   if (allContainers.length === 0) {
     console.log('');
@@ -237,7 +232,8 @@ export async function runStatus(): Promise<void> {
   const overwatchName = `${prefix}-overwatch`;
   const infraContainers: ContainerInfo[] = [];
   const overwatchContainers: ContainerInfo[] = [];
-  const tenantContainerMap = new Map<string, ContainerInfo[]>();
+  // Map: appId -> tenantId -> containers
+  const appTenantMap = new Map<string, Map<string, ContainerInfo[]>>();
 
   for (const c of allContainers) {
     if (c.name === overwatchName) {
@@ -245,13 +241,46 @@ export async function runStatus(): Promise<void> {
       continue;
     }
 
-    const result = extractTenantId(c.name, prefix, serviceNames, initContainerNames);
-    if (result) {
-      if (result.isInit) continue; // Skip init containers (migrators) from display
-      const list = tenantContainerMap.get(result.tenantId) || [];
-      list.push(c);
-      tenantContainerMap.set(result.tenantId, list);
-    } else {
+    // Try to match against known apps
+    let matched = false;
+    for (const app of apps) {
+      // Pattern: {prefix}-{appId}-{tenantId}-{service}
+      const appPrefix = `${prefix}-${app.id}-`;
+      if (c.name.startsWith(appPrefix)) {
+        const rest = c.name.slice(appPrefix.length);
+        // Find service name at the end
+        const allServices = [...app.serviceNames, ...app.initContainerNames];
+        let tenantId = '';
+        let serviceName = '';
+        let isInit = false;
+
+        for (const svc of allServices) {
+          const pattern = new RegExp(`^(.+)-${svc}(?:-\\d+)?$`);
+          const match = rest.match(pattern);
+          if (match) {
+            tenantId = match[1];
+            serviceName = svc;
+            isInit = app.initContainerNames.includes(svc);
+            break;
+          }
+        }
+
+        if (tenantId && !isInit) {
+          if (!appTenantMap.has(app.id)) {
+            appTenantMap.set(app.id, new Map());
+          }
+          const tenantMap = appTenantMap.get(app.id)!;
+          if (!tenantMap.has(tenantId)) {
+            tenantMap.set(tenantId, []);
+          }
+          tenantMap.get(tenantId)!.push(c);
+          matched = true;
+          break;
+        }
+      }
+    }
+
+    if (!matched) {
       infraContainers.push(c);
     }
   }
@@ -286,63 +315,77 @@ export async function runStatus(): Promise<void> {
   }
   console.log('');
 
-  // Tenants
-  const tenantIds = [...tenantContainerMap.keys()].sort();
+  // Apps
+  let totalTenants = 0;
+  let totalContainers = 0;
+  let healthyTenants = 0;
 
-  header(`Tenants (${tenantIds.length})`);
-  console.log('');
-
-  if (tenantIds.length === 0) {
-    console.log(`  ${DIM}No tenants deployed${NC}`);
+  if (apps.length === 0 && appTenantMap.size === 0) {
+    header('Apps');
+    console.log('');
+    console.log(`  ${DIM}No apps configured. Create your first app via the web GUI.${NC}`);
     console.log('');
     return;
   }
 
-  const totalServices = serviceNames.length;
-  let healthyTenants = 0;
-  let totalContainers = 0;
+  for (const app of apps) {
+    const tenantMap = appTenantMap.get(app.id);
+    const tenantIds = tenantMap ? [...tenantMap.keys()].sort() : [];
+    const totalServices = app.serviceNames.length;
 
-  for (const tenantId of tenantIds) {
-    const containers = tenantContainerMap.get(tenantId)!;
-    totalContainers += containers.length;
-    const running = containers.filter(c => c.state === 'running');
-    const runningCount = running.length;
-    const allUp = runningCount >= totalServices;
+    header(`${app.name || app.id} (${tenantIds.length} tenant${tenantIds.length !== 1 ? 's' : ''})`);
+    console.log('');
 
-    if (allUp) healthyTenants++;
+    if (tenantIds.length === 0) {
+      console.log(`  ${DIM}No tenants deployed${NC}`);
+      console.log('');
+      continue;
+    }
 
-    const icon = allUp ? `${GREEN}✓${NC}` : `${RED}✗${NC}`;
-    const countStr = `${runningCount}/${totalServices} services`;
+    for (const tenantId of tenantIds) {
+      const containers = tenantMap!.get(tenantId)!;
+      totalTenants++;
+      totalContainers += containers.length;
+      const running = containers.filter(c => c.state === 'running');
+      const runningCount = running.length;
+      const allUp = runningCount >= totalServices;
 
-    if (allUp) {
-      console.log(`  ${icon} ${pad(tenantId, 22)} ${pad(countStr, 18)} ${GREEN}all running${NC}`);
-    } else {
-      // Find which services are down
-      const runningServices = new Set<string>();
-      for (const c of running) {
-        for (const svc of serviceNames) {
-          if (c.name.endsWith(`-${svc}`) || new RegExp(`-${svc}-\\d+$`).test(c.name)) {
-            runningServices.add(svc);
+      if (allUp) healthyTenants++;
+
+      const icon = allUp ? `${GREEN}✓${NC}` : `${RED}✗${NC}`;
+      const countStr = `${runningCount}/${totalServices} services`;
+
+      if (allUp) {
+        console.log(`  ${icon} ${pad(tenantId, 22)} ${pad(countStr, 18)} ${GREEN}all running${NC}`);
+      } else {
+        const runningServices = new Set<string>();
+        for (const c of running) {
+          for (const svc of app.serviceNames) {
+            if (c.name.endsWith(`-${svc}`) || new RegExp(`-${svc}-\\d+$`).test(c.name)) {
+              runningServices.add(svc);
+            }
           }
         }
+        const downServices = app.serviceNames.filter(s => !runningServices.has(s));
+        const downLabel = downServices.length <= 2
+          ? downServices.join(', ') + ' down'
+          : `${downServices.length} services down`;
+        console.log(`  ${icon} ${pad(tenantId, 22)} ${pad(countStr, 18)} ${RED}${downLabel}${NC}`);
       }
-      const downServices = serviceNames.filter(s => !runningServices.has(s));
-      const downLabel = downServices.length <= 2
-        ? downServices.join(', ') + ' down'
-        : `${downServices.length} services down`;
-      console.log(`  ${icon} ${pad(tenantId, 22)} ${pad(countStr, 18)} ${RED}${downLabel}${NC}`);
     }
+    console.log('');
   }
 
   // Summary
-  console.log('');
-  const unhealthyTenants = tenantIds.length - healthyTenants;
-  let summary = `  ${tenantIds.length} tenant${tenantIds.length !== 1 ? 's' : ''}, ${totalContainers} container${totalContainers !== 1 ? 's' : ''}`;
-  if (unhealthyTenants === 0) {
-    summary += ` — ${GREEN}all healthy${NC}`;
-  } else {
-    summary += ` — ${GREEN}${healthyTenants} healthy${NC}, ${RED}${unhealthyTenants} unhealthy${NC}`;
+  if (totalTenants > 0) {
+    const unhealthyTenants = totalTenants - healthyTenants;
+    let summary = `  ${totalTenants} tenant${totalTenants !== 1 ? 's' : ''} across ${apps.length} app${apps.length !== 1 ? 's' : ''}, ${totalContainers} container${totalContainers !== 1 ? 's' : ''}`;
+    if (unhealthyTenants === 0) {
+      summary += ` — ${GREEN}all healthy${NC}`;
+    } else {
+      summary += ` — ${GREEN}${healthyTenants} healthy${NC}, ${RED}${unhealthyTenants} unhealthy${NC}`;
+    }
+    console.log(summary);
+    console.log('');
   }
-  console.log(summary);
-  console.log('');
 }

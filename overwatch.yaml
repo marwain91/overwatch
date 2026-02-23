@@ -1,55 +1,17 @@
-# Overwatch Configuration
-# Edit this file to match your project settings.
-# See examples/ for complete configuration examples.
-
 project:
-  name: "MyApp"
-  prefix: "myapp"
-  db_prefix: "myapp"
-
+  name: MyApp
+  prefix: myapp
+  db_prefix: myapp
 database:
-  type: "mariadb"
-  host: "myapp-mariadb"
+  type: mariadb
+  host: myapp-mariadb
   port: 3306
-  root_user: "root"
-  root_password_env: "MYSQL_ROOT_PASSWORD"
-  container_name: "myapp-mariadb"
-
-registry:
-  type: "ghcr"
-  url: "ghcr.io"
-  repository: "your-org/your-app"
-  auth:
-    type: "token"
-    token_env: "GHCR_TOKEN"
-
-services:
-  - name: "backend"
-    required: true
-    image_suffix: "backend"
-    health_check:
-      path: "/api/health"
-      port: 3001
-    backup:
-      paths:
-        - container: "/app/uploads"
-          local: "uploads"
-
-  - name: "frontend"
-    required: true
-    image_suffix: "frontend"
-    health_check:
-      path: "/health"
-      port: 80
-
-  - name: "migrator"
-    is_init_container: true
-    image_suffix: "backend"
-
+  root_user: root
+  root_password_env: MYSQL_ROOT_PASSWORD
+  container_name: myapp-mariadb
 credentials:
   db_password_length: 32
   jwt_secret_length: 64
-
 networking:
-  external_network: "myapp-network"
-  tenants_path: "/opt/myapp/tenants"
+  external_network: myapp-network
+  apps_path: /app/apps

@@ -4,6 +4,7 @@ import { runUpdate } from './cli/update';
 import { runStart, runStop, runRestart, runRecreate, runStatus } from './cli/lifecycle';
 import { runConfig } from './cli/config';
 import { runSelfUpdate } from './cli/self-update';
+import { runAdmins } from './cli/admins';
 import { VERSION } from './version';
 
 const command = process.argv[2];
@@ -52,6 +53,10 @@ switch (command) {
     run(() => runStatus());
     break;
 
+  case 'admins':
+    run(runAdmins);
+    break;
+
   case '--version':
   case '-v':
     console.log(VERSION);
@@ -72,6 +77,7 @@ switch (command) {
     console.log('    restart                 Restart all services');
     console.log('    recreate                Force-recreate Overwatch containers');
     console.log('    status                  Show service status');
+    console.log('    admins                  List, add, or remove admin users');
     console.log('    config                  View, edit, validate, and explore configuration');
     console.log('    update [--check]        Pull latest image and restart (--check to only check)');
     console.log('    self-update [--check]   Update the CLI binary itself (--check to only check)');

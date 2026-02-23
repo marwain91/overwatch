@@ -1,14 +1,14 @@
 import { docker } from './docker';
 import { eventBus } from './eventBus';
-import { getContainerPrefix, getServiceNames } from '../config';
+import { getContainerPrefix } from '../config';
 
 let eventStream: NodeJS.ReadableStream | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 function getContainerPattern(): RegExp {
   const prefix = getContainerPrefix();
-  const serviceNames = getServiceNames().join('|');
-  return new RegExp(`^/?${prefix}-[a-z0-9-]+-(?:${serviceNames})(?:-\\d+)?$`);
+  // Match: {prefix}-{appId}-{tenantId}-{service}(-N)?
+  return new RegExp(`^/?${prefix}-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
 }
 
 function startListening(): void {

@@ -1,11 +1,12 @@
 import cron, { ScheduledTask } from 'node-cron';
-import { docker } from './docker';
+import { docker, extractContainerInfo } from './docker';
 import { eventBus } from './eventBus';
-import { getContainerPrefix, getServiceNames } from '../config';
+import { getContainerPrefix } from '../config';
 
 export interface ContainerMetrics {
   containerId: string;
   name: string;
+  appId: string;
   tenantId: string;
   service: string;
   cpuPercent: number;
@@ -18,6 +19,7 @@ export interface ContainerMetrics {
 }
 
 export interface TenantMetrics {
+  appId: string;
   tenantId: string;
   totalCpu: number;
   totalMem: number;
@@ -61,15 +63,7 @@ let collecting = false;
 
 function getContainerPattern(): RegExp {
   const prefix = getContainerPrefix();
-  const serviceNames = getServiceNames().join('|');
-  return new RegExp(`^/?${prefix}-([a-z0-9-]+)-(${serviceNames})(?:-\\d+)?$`);
-}
-
-function extractTenantAndService(containerName: string): { tenantId: string; service: string } | null {
-  const pattern = getContainerPattern();
-  const match = containerName.match(pattern);
-  if (!match) return null;
-  return { tenantId: match[1], service: match[2] };
+  return new RegExp(`^/?${prefix}-[a-z0-9-]+-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
 }
 
 function calculateCpuPercent(stats: any): number {
@@ -101,7 +95,6 @@ async function collectMetrics(): Promise<void> {
   try {
     const containers = await docker.listContainers({ filters: { status: ['running'] } });
     const pattern = getContainerPattern();
-    const prefix = getContainerPrefix();
 
     const managedContainers = containers.filter(c =>
       c.Names.some(n => pattern.test(n))
@@ -112,7 +105,7 @@ async function collectMetrics(): Promise<void> {
         const container = docker.getContainer(c.Id);
         const stats = await container.stats({ stream: false });
         const name = c.Names[0].replace(/^\//, '');
-        const info = extractTenantAndService(name);
+        const info = extractContainerInfo(name);
         if (!info) return null;
 
         const cpuPercent = calculateCpuPercent(stats);
@@ -124,6 +117,7 @@ async function collectMetrics(): Promise<void> {
         const metrics: ContainerMetrics = {
           containerId: c.Id.substring(0, 12),
           name,
+          appId: info.appId,
           tenantId: info.tenantId,
           service: info.service,
           cpuPercent: Math.round(cpuPercent * 100) / 100,
@@ -150,11 +144,13 @@ async function collectMetrics(): Promise<void> {
       .map(r => r.value)
       .filter((m): m is ContainerMetrics => m !== null);
 
-    // Aggregate per-tenant
+    // Aggregate per-tenant (keyed by appId:tenantId)
     const tenantMap = new Map<string, TenantMetrics>();
     for (const m of allMetrics) {
-      if (!tenantMap.has(m.tenantId)) {
-        tenantMap.set(m.tenantId, {
+      const key = `${m.appId}:${m.tenantId}`;
+      if (!tenantMap.has(key)) {
+        tenantMap.set(key, {
+          appId: m.appId,
           tenantId: m.tenantId,
           totalCpu: 0,
           totalMem: 0,
@@ -162,7 +158,7 @@ async function collectMetrics(): Promise<void> {
           containerCount: 0,
         });
       }
-      const t = tenantMap.get(m.tenantId)!;
+      const t = tenantMap.get(key)!;
       t.totalCpu += m.cpuPercent;
       t.totalMem += m.memUsage;
       t.totalMemLimit = Math.max(t.totalMemLimit, m.memLimit);
@@ -183,7 +179,6 @@ async function collectMetrics(): Promise<void> {
 }
 
 export function startMetricsCollector(intervalSeconds: number = 15): void {
-  // Convert seconds to a cron expression
   const cronExpr = `*/${intervalSeconds} * * * * *`;
 
   if (!cron.validate(cronExpr)) {
@@ -210,18 +205,21 @@ export function stopMetricsCollector(): void {
   }
 }
 
-export function getMetrics(tenantId?: string): { containers: ContainerMetrics[]; tenants: TenantMetrics[] } {
+export function getMetrics(appId?: string, tenantId?: string): { containers: ContainerMetrics[]; tenants: TenantMetrics[] } {
   const containers: ContainerMetrics[] = [];
   const tenantMap = new Map<string, TenantMetrics>();
 
   for (const [, history] of metricsHistory) {
     const latest = history.latest();
     if (!latest) continue;
+    if (appId && latest.appId !== appId) continue;
     if (tenantId && latest.tenantId !== tenantId) continue;
     containers.push(latest);
 
-    if (!tenantMap.has(latest.tenantId)) {
-      tenantMap.set(latest.tenantId, {
+    const key = `${latest.appId}:${latest.tenantId}`;
+    if (!tenantMap.has(key)) {
+      tenantMap.set(key, {
+        appId: latest.appId,
         tenantId: latest.tenantId,
         totalCpu: 0,
         totalMem: 0,
@@ -229,7 +227,7 @@ export function getMetrics(tenantId?: string): { containers: ContainerMetrics[];
         containerCount: 0,
       });
     }
-    const t = tenantMap.get(latest.tenantId)!;
+    const t = tenantMap.get(key)!;
     t.totalCpu += latest.cpuPercent;
     t.totalMem += latest.memUsage;
     t.totalMemLimit = Math.max(t.totalMemLimit, latest.memLimit);

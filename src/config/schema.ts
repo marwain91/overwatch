@@ -19,7 +19,8 @@ export const MonitoringConfigSchema = z.object({
 
 // Retention configuration for log files
 export const RetentionConfigSchema = z.object({
-  max_log_entries: z.number().default(10000).describe('Maximum number of entries to keep in each log file (alert history, audit log)'),
+  max_alert_entries: z.number().default(10000).describe('Maximum number of alert history entries to keep'),
+  max_audit_entries: z.number().default(10000).describe('Maximum number of audit log entries to keep'),
 });
 
 // Alert rule condition

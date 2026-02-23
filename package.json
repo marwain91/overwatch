@@ -25,7 +25,10 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:ui": "cd ui && npm run dev",
     "build": "tsc",
+    "build:ui": "cd ui && npm ci && npm run build",
+    "build:all": "tsc && cd ui && npm ci && npm run build",
     "build:cli": "tsc && pkg dist/cli.js --targets node20-linux-x64,node20-linux-arm64 --output dist/bin/overwatch --compress GZip",
     "start": "node dist/index.js",
     "setup": "tsx scripts/setup.ts",
