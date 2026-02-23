@@ -267,7 +267,12 @@ export async function runStatus(): Promise<void> {
           }
         }
 
-        if (tenantId && !isInit) {
+        if (tenantId) {
+          if (isInit) {
+            // Skip init containers (migrators etc.) — they're expected to be exited
+            matched = true;
+            break;
+          }
           if (!appTenantMap.has(app.id)) {
             appTenantMap.set(app.id, new Map());
           }
