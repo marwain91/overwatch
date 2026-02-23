@@ -1,7 +1,7 @@
 # Overwatch - Multi-Tenant Management Tool
 
 # ── Stage 1: Build React UI ──
-FROM node:20-alpine AS ui-build
+FROM node:22-alpine AS ui-build
 WORKDIR /ui
 COPY ui/package*.json ./
 RUN npm ci
@@ -9,7 +9,7 @@ COPY ui/ ./
 RUN npm run build
 
 # ── Stage 2: Runtime ──
-FROM node:20-alpine
+FROM node:22-alpine
 
 ARG BUILD_TIME=dev
 ARG BUILD_COMMIT=dev

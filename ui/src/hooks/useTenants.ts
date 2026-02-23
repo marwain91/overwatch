@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { useAuthStore } from '../stores/authStore';
 import type { Tenant, BackupSnapshot, BackupStatus, TenantEnvVar } from '../lib/types';
 
 export function useTenants(appId: string) {
@@ -117,6 +118,35 @@ export function useDeleteBackup(appId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['backups', appId] });
       qc.invalidateQueries({ queryKey: ['backup-summary', appId] });
+    },
+  });
+}
+
+// Container Logs & Restart
+export function useContainerLogs(containerId: string | null, tail: number = 200) {
+  const token = useAuthStore((s) => s.token);
+  return useQuery({
+    queryKey: ['container-logs', containerId, tail],
+    queryFn: async () => {
+      const res = await fetch(`/api/status/containers/${containerId}/logs?tail=${tail}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Failed to fetch logs');
+      const data = await res.json();
+      return data.logs as string;
+    },
+    enabled: !!containerId,
+    refetchInterval: 10_000,
+  });
+}
+
+export function useRestartContainer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (containerId: string) =>
+      api.post(`/status/containers/${containerId}/restart`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tenants'] });
     },
   });
 }

@@ -11,6 +11,7 @@ import { ActivityPage } from './pages/ActivityPage';
 import { EnvironmentPage } from './pages/EnvironmentPage';
 import { BackupsPage } from './pages/BackupsPage';
 import { AdminsPage } from './pages/AdminsPage';
+import { TenantDetailPage } from './pages/TenantDetailPage';
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="apps/new" element={<AppCreateWizard />} />
         <Route path="apps/:appId/settings" element={<AppSettingsPage />} />
         <Route path="apps/:appId/tenants" element={<TenantsPage />} />
+        <Route path="apps/:appId/tenants/:tenantId" element={<TenantDetailPage />} />
         <Route path="apps/:appId/monitoring" element={<MonitoringPage />} />
         <Route path="apps/:appId/activity" element={<ActivityPage />} />
         <Route path="apps/:appId/backups" element={<BackupsPage />} />

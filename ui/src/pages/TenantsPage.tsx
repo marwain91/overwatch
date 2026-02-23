@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp } from '../hooks/useApps';
 import { useTenants, useTenantAction, useAccessToken } from '../hooks/useTenants';
@@ -165,7 +165,7 @@ function TenantCard({
   return (
     <div className="card flex items-center gap-4">
       {/* Status + Info */}
-      <div className="min-w-0 flex-1">
+      <Link to={`/apps/${appId}/tenants/${tenant.tenantId}`} className="min-w-0 flex-1 rounded-lg transition-colors hover:bg-surface-subtle -m-2 p-2">
         <div className="flex items-center gap-3">
           <span className={cn('h-2.5 w-2.5 rounded-full', tenant.healthy ? 'bg-green-400' : 'bg-red-400')} />
           <h3 className="text-sm font-semibold text-content-primary">{tenant.tenantId}</h3>
@@ -184,7 +184,7 @@ function TenantCard({
             </>
           )}
         </div>
-      </div>
+      </Link>
 
       {/* Context menu */}
       <div className="relative" ref={menuRef}>

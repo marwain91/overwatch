@@ -72,6 +72,9 @@ export interface ContainerInfo {
   id: string;
   name: string;
   state: string;
+  status: string;
+  image: string;
+  created: string;
   service: string;
 }
 

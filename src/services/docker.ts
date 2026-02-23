@@ -18,6 +18,7 @@ export interface ContainerInfo {
   image: string;
   created: string;
   appId?: string;
+  service?: string;
 }
 
 export interface TenantStatus {
@@ -94,6 +95,7 @@ export async function listContainers(): Promise<ContainerInfo[]> {
         image: c.Image,
         created: new Date(c.Created * 1000).toISOString(),
         appId: info?.appId,
+        service: info?.service,
       };
     });
 }
