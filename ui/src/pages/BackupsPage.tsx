@@ -1,93 +1,34 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useBackupSummary } from '../hooks/useApps';
 import { useBackupStatus, useAllBackups, useTenants, useCreateBackup, useRestoreBackup, useDeleteBackup } from '../hooks/useTenants';
 import { cn } from '../lib/cn';
 import { formatRelativeTime, formatCron } from '../lib/format';
-import type { BackupSnapshot } from '../lib/types';
 
-const WEEKDAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
-
-function toDateKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
-
-function groupByDate(backups: BackupSnapshot[]): Map<string, BackupSnapshot[]> {
-  const map = new Map<string, BackupSnapshot[]>();
-  for (const b of backups) {
-    const key = toDateKey(new Date(b.time));
-    const arr = map.get(key);
-    if (arr) arr.push(b);
-    else map.set(key, [b]);
-  }
-  for (const arr of map.values()) {
-    arr.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-  }
-  return map;
-}
-
-function getCalendarDays(year: number, month: number): (number | null)[] {
-  const firstDay = new Date(year, month, 1).getDay();
-  const offset = (firstDay + 6) % 7;
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const cells: (number | null)[] = [];
-  for (let i = 0; i < offset; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
-  return cells;
-}
-
-function formatMonthYear(date: Date): string {
-  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-}
-
-function formatSelectedDate(dateKey: string): string {
-  const [y, m, d] = dateKey.split('-').map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-}
+const PAGE_SIZE = 20;
 
 export function BackupsPage() {
   const { appId } = useParams<{ appId: string }>();
   const { data: app, isLoading: appLoading } = useApp(appId!);
-  const { data: status } = useBackupStatus(appId!);
-  const { data: summary } = useBackupSummary(appId!);
+  const { data: status, isLoading: statusLoading } = useBackupStatus(appId!);
+  const { data: summary, isLoading: summaryLoading } = useBackupSummary(appId!);
   const { data: backups, isLoading: backupsLoading } = useAllBackups(appId!);
   const { data: tenants } = useTenants(appId!);
   const createBackup = useCreateBackup(appId!);
   const restoreBackup = useRestoreBackup(appId!);
   const deleteBackup = useDeleteBackup(appId!);
 
-  const [viewMonth, setViewMonth] = useState(() => new Date());
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [restoreTarget, setRestoreTarget] = useState<{ snapshotId: string; tenantId: string } | null>(null);
+  const [page, setPage] = useState(0);
   const [backupTenantId, setBackupTenantId] = useState('');
-
-  const backupsByDate = useMemo(() => groupByDate(backups ?? []), [backups]);
-
-  const autoSelected = useMemo(() => {
-    if (!backups || backups.length === 0) return null;
-    const sorted = [...backups].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-    return toDateKey(new Date(sorted[0].time));
-  }, [backups]);
-
-  // Navigate calendar to the month of the most recent backup
-  useEffect(() => {
-    if (autoSelected && !selectedDate) {
-      const [y, m] = autoSelected.split('-').map(Number);
-      setViewMonth(new Date(y, m - 1, 1));
-    }
-  }, [autoSelected, selectedDate]);
-
-  const activeDate = selectedDate ?? autoSelected;
-  const todayKey = toDateKey(new Date());
-  const year = viewMonth.getFullYear();
-  const month = viewMonth.getMonth();
-  const days = getCalendarDays(year, month);
-  const selectedBackups = activeDate ? (backupsByDate.get(activeDate) ?? []) : [];
+  const [restoreTarget, setRestoreTarget] = useState<{ snapshotId: string; tenantId: string } | null>(null);
 
   const backupConfig = app?.backup;
+  const sorted = backups ? [...backups].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()) : [];
+  const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
+  const pageBackups = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
-  if (appLoading) {
+  if (appLoading || statusLoading || summaryLoading) {
     return <div className="flex justify-center py-20"><span className="spinner" /></div>;
   }
 
@@ -107,53 +48,49 @@ export function BackupsPage() {
         {!backupConfig?.enabled ? (
           <p className="text-sm text-content-muted">Backups are not enabled for this app.</p>
         ) : (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-            <div>
-              <p className="text-xs text-content-faint">Status</p>
-              <p className={cn('mt-1 text-sm font-medium', status?.initialized ? 'text-green-400' : status?.configured ? 'text-yellow-400' : 'text-red-400')}>
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-content-faint">Status</span>
+              <span className={cn('font-medium', status?.initialized ? 'text-green-400' : status?.configured ? 'text-yellow-400' : 'text-red-400')}>
                 {status?.initialized ? 'Active' : status?.configured ? 'Not initialized' : 'Not configured'}
-              </p>
+              </span>
             </div>
-            <div>
-              <p className="text-xs text-content-faint">Provider</p>
-              <p className="mt-1 text-sm font-medium text-content-secondary">{backupConfig.provider.toUpperCase()}</p>
+            <div className="flex justify-between">
+              <span className="text-content-faint">Provider</span>
+              <span className="font-medium text-content-secondary">{backupConfig.provider.toUpperCase()}</span>
             </div>
-            <div>
-              <p className="text-xs text-content-faint">Schedule</p>
-              <p className="mt-1 text-sm font-medium text-content-secondary">{summary?.schedule ? formatCron(summary.schedule) : 'Manual only'}</p>
+            <div className="flex justify-between">
+              <span className="text-content-faint">Schedule</span>
+              <span className="font-medium text-content-secondary">{summary?.schedule ? formatCron(summary.schedule) : 'Manual only'}</span>
             </div>
             {summary?.bucket && (
-              <div>
-                <p className="text-xs text-content-faint">Bucket</p>
-                <p className="mt-1 text-sm font-mono text-content-secondary">{summary.bucket}</p>
+              <div className="flex justify-between gap-4">
+                <span className="shrink-0 text-content-faint">Bucket</span>
+                <span className="truncate font-mono text-content-secondary" title={summary.bucket}>{summary.bucket}</span>
               </div>
             )}
             {summary?.endpoint && (
-              <div>
-                <p className="text-xs text-content-faint">Endpoint</p>
-                <p className="mt-1 text-sm font-mono text-content-secondary">{summary.endpoint}</p>
+              <div className="flex justify-between gap-4">
+                <span className="shrink-0 text-content-faint">Endpoint</span>
+                <span className="truncate font-mono text-content-secondary" title={summary.endpoint}>{summary.endpoint}</span>
               </div>
             )}
-            <div>
-              <p className="text-xs text-content-faint">Last Backup</p>
-              <p className="mt-1 text-sm font-medium text-content-secondary">
-                {summary?.lastBackup ? formatRelativeTime(summary.lastBackup) : 'Never'}
-              </p>
+            <div className="flex justify-between">
+              <span className="text-content-faint">Last Backup</span>
+              <span className="font-medium text-content-secondary">{summary?.lastBackup ? formatRelativeTime(summary.lastBackup) : 'Never'}</span>
             </div>
-            <div>
-              <p className="text-xs text-content-faint">Total Snapshots</p>
-              <p className="mt-1 text-sm font-medium text-content-secondary">{summary?.totalSnapshots ?? 0}</p>
+            <div className="flex justify-between">
+              <span className="text-content-faint">Total Snapshots</span>
+              <span className="font-medium text-content-secondary">{summary?.totalSnapshots ?? 0}</span>
             </div>
             {summary?.isLocked && (
-              <div className="col-span-full">
-                <p className="text-xs text-yellow-400">Repository is currently locked by another operation.</p>
-              </div>
+              <p className="text-xs text-yellow-400">Repository is currently locked by another operation.</p>
             )}
           </div>
         )}
       </div>
 
-      {/* Calendar + Backups */}
+      {/* Snapshots */}
       {backupConfig?.enabled && status?.configured && (
         <div className="card">
           <div className="mb-4 flex items-center justify-between">
@@ -182,112 +119,68 @@ export function BackupsPage() {
 
           {backupsLoading ? (
             <div className="flex justify-center py-8"><span className="spinner" /></div>
+          ) : sorted.length === 0 ? (
+            <p className="py-4 text-center text-sm text-content-muted">No backups yet.</p>
           ) : (
             <>
-              {/* Calendar */}
-              <div className="mb-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <button className="btn btn-secondary btn-xs" onClick={() => setViewMonth(new Date(year, month - 1, 1))}>&#9664;</button>
-                  <span className="text-sm font-medium text-content-primary">{formatMonthYear(viewMonth)}</span>
-                  <button className="btn btn-secondary btn-xs" onClick={() => setViewMonth(new Date(year, month + 1, 1))}>&#9654;</button>
-                </div>
-
-                <div className="grid grid-cols-7 text-center text-xs text-content-muted">
-                  {WEEKDAYS.map((d) => <div key={d} className="py-1">{d}</div>)}
-                </div>
-
-                <div className="grid grid-cols-7 text-center text-sm">
-                  {days.map((day, i) => {
-                    if (day === null) return <div key={`empty-${i}`} />;
-                    const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                    const hasBackups = backupsByDate.has(dateKey);
-                    const isSelected = dateKey === activeDate;
-                    const isToday = dateKey === todayKey;
-                    return (
+              <div className="space-y-2">
+                {pageBackups.map((b) => (
+                  <div key={b.id} className="flex items-center justify-between rounded border border-border-subtle bg-surface-muted px-3 py-2">
+                    <div className="flex items-center gap-3">
+                      <div>
+                        <p className="text-sm text-content-secondary">{new Date(b.time).toLocaleString()}</p>
+                        <p className="text-xs text-content-faint">{b.shortId}</p>
+                      </div>
+                      {b.tenantId && (
+                        <span className="rounded bg-brand-600/20 px-1.5 py-0.5 text-xs font-medium text-brand-400">
+                          {b.tenantId}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-1">
+                      <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId: b.tenantId || '' })}>Restore</button>
                       <button
-                        key={dateKey}
-                        className={cn(
-                          'relative mx-auto flex h-9 w-9 flex-col items-center justify-center rounded-lg transition-colors',
-                          isSelected ? 'bg-brand text-white' : 'hover:bg-surface-muted',
-                          isToday && !isSelected && 'ring-1 ring-brand/40',
-                        )}
-                        onClick={() => setSelectedDate(dateKey)}
+                        className="btn btn-danger btn-xs"
+                        onClick={() => deleteBackup.mutate(b.id, {
+                          onSuccess: () => toast.success('Backup deleted'),
+                          onError: (err) => toast.error(err.message),
+                        })}
                       >
-                        <span>{day}</span>
-                        {hasBackups && (
-                          <span className={cn('absolute bottom-0.5 h-1 w-1 rounded-full', isSelected ? 'bg-white' : 'bg-brand')} />
-                        )}
+                        Delete
                       </button>
-                    );
-                  })}
-                </div>
+                    </div>
+                  </div>
+                ))}
               </div>
 
-              {/* Selected day backup list */}
-              {activeDate ? (
-                <div>
-                  <div className="mb-2 border-t border-border-subtle pt-3 text-center text-xs text-content-muted">
-                    {formatSelectedDate(activeDate)} ({selectedBackups.length} backup{selectedBackups.length !== 1 ? 's' : ''})
-                  </div>
-                  {selectedBackups.length > 0 ? (
-                    <div className="space-y-2">
-                      {selectedBackups.map((b) => (
-                        <div key={b.id} className="flex items-center justify-between rounded border border-border-subtle bg-surface-muted px-3 py-2">
-                          <div className="flex items-center gap-3">
-                            <div>
-                              <p className="text-sm text-content-secondary">
-                                {new Date(b.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
-                              </p>
-                              <p className="text-xs text-content-faint">{b.shortId}</p>
-                            </div>
-                            {b.tenantId && (
-                              <span className="rounded bg-brand-600/20 px-1.5 py-0.5 text-xs font-medium text-brand-400">
-                                {b.tenantId}
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex gap-1">
-                            <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId: b.tenantId || '' })}>Restore</button>
-                            <button
-                              className="btn btn-danger btn-xs"
-                              onClick={() => deleteBackup.mutate(b.id, {
-                                onSuccess: () => toast.success('Backup deleted'),
-                                onError: (err) => toast.error(err.message),
-                              })}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-center text-xs text-content-faint">No backups on this day.</p>
-                  )}
-                </div>
-              ) : (
-                <p className="border-t border-border-subtle pt-3 text-center text-xs text-content-faint">Click a day to view backups</p>
-              )}
-
-              {/* Restore flow */}
-              {restoreTarget && (
-                <div className="mt-4 border-t border-border-subtle pt-4">
-                  <h3 className="mb-2 text-sm font-medium text-content-secondary">Restore to:</h3>
-                  <select className="input mb-2" value={restoreTarget.tenantId} onChange={(e) => setRestoreTarget({ ...restoreTarget, tenantId: e.target.value })}>
-                    {tenants?.map((t) => <option key={t.tenantId} value={t.tenantId}>{t.tenantId}</option>)}
-                  </select>
-                  <div className="flex gap-2">
-                    <button className="btn btn-danger btn-sm" onClick={() => restoreBackup.mutate(restoreTarget, {
-                      onSuccess: () => { toast.success('Backup restored'); setRestoreTarget(null); },
-                      onError: (err) => toast.error(err.message),
-                    })} disabled={restoreBackup.isPending}>
-                      {restoreBackup.isPending ? 'Restoring...' : 'Restore'}
-                    </button>
-                    <button className="btn btn-secondary btn-sm" onClick={() => setRestoreTarget(null)}>Cancel</button>
-                  </div>
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div className="mt-4 flex items-center justify-center gap-2">
+                  <button className="btn btn-secondary btn-xs" disabled={page === 0} onClick={() => setPage(page - 1)}>&#9664; Prev</button>
+                  <span className="text-xs text-content-muted">{page + 1} / {totalPages}</span>
+                  <button className="btn btn-secondary btn-xs" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>Next &#9654;</button>
                 </div>
               )}
             </>
+          )}
+
+          {/* Restore flow */}
+          {restoreTarget && (
+            <div className="mt-4 border-t border-border-subtle pt-4">
+              <h3 className="mb-2 text-sm font-medium text-content-secondary">Restore to:</h3>
+              <select className="input mb-2" value={restoreTarget.tenantId} onChange={(e) => setRestoreTarget({ ...restoreTarget, tenantId: e.target.value })}>
+                {tenants?.map((t) => <option key={t.tenantId} value={t.tenantId}>{t.tenantId}</option>)}
+              </select>
+              <div className="flex gap-2">
+                <button className="btn btn-danger btn-sm" onClick={() => restoreBackup.mutate(restoreTarget, {
+                  onSuccess: () => { toast.success('Backup restored'); setRestoreTarget(null); },
+                  onError: (err) => toast.error(err.message),
+                })} disabled={restoreBackup.isPending}>
+                  {restoreBackup.isPending ? 'Restoring...' : 'Restore'}
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setRestoreTarget(null)}>Cancel</button>
+              </div>
+            </div>
           )}
         </div>
       )}

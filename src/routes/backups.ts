@@ -92,11 +92,23 @@ router.post('/unlock', asyncHandler(async (req, res) => {
   }
 }));
 
-// List all backup snapshots for an app
+// List backup snapshots for an app (optionally filtered by tenant and/or month)
 router.get('/', asyncHandler(async (req, res) => {
   const { appId } = req.params;
   const tenantId = req.query.tenantId as string | undefined;
-  const snapshots = await listSnapshots(appId, tenantId);
+  const year = req.query.year ? Number(req.query.year) : undefined;
+  const month = req.query.month ? Number(req.query.month) : undefined;
+
+  let snapshots = await listSnapshots(appId, tenantId);
+
+  // Filter by month if year and month are provided
+  if (year && month) {
+    snapshots = snapshots.filter(s => {
+      const d = new Date(s.time);
+      return d.getFullYear() === year && d.getMonth() + 1 === month;
+    });
+  }
+
   res.json(snapshots);
 }));
 

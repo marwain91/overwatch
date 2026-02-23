@@ -49,7 +49,7 @@ function formatSelectedDate(dateKey: string): string {
 }
 
 export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: string; tenantId: string; tenants: Tenant[]; onClose: () => void }) {
-  const { data: status } = useBackupStatus(appId);
+  const { data: status, isLoading: statusLoading } = useBackupStatus(appId);
   const { data: backups, isLoading } = useTenantBackups(appId, tenantId);
   const { data: summary } = useBackupSummary(appId);
   const createBackup = useCreateBackup(appId);
@@ -85,6 +85,10 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
   const days = getCalendarDays(year, month);
   const selectedBackups = activeDate ? (backupsByDate.get(activeDate) ?? []) : [];
 
+  if (statusLoading || isLoading) {
+    return <Modal title={`Backups: ${tenantId}`} onClose={onClose}><div className="flex justify-center py-8"><span className="spinner" /></div></Modal>;
+  }
+
   if (!status?.configured) {
     return <Modal title={`Backups: ${tenantId}`} onClose={onClose}><p className="text-content-muted">Backups not configured.</p></Modal>;
   }
@@ -108,107 +112,86 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
         </button>
       </div>
 
-      {isLoading ? (
-        <div className="flex justify-center py-8"><span className="spinner" /></div>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {/* Calendar */}
-          <div className="mb-4">
-            {/* Month navigation */}
-            <div className="mb-2 flex items-center justify-between">
-              <button
-                className="btn btn-secondary btn-xs"
-                onClick={() => setViewMonth(new Date(year, month - 1, 1))}
-              >
-                &#9664;
-              </button>
-              <span className="text-sm font-medium text-content-primary">{formatMonthYear(viewMonth)}</span>
-              <button
-                className="btn btn-secondary btn-xs"
-                onClick={() => setViewMonth(new Date(year, month + 1, 1))}
-              >
-                &#9654;
-              </button>
-            </div>
-
-            {/* Weekday headers */}
-            <div className="grid grid-cols-7 text-center text-xs text-content-muted">
-              {WEEKDAYS.map((d) => <div key={d} className="py-1">{d}</div>)}
-            </div>
-
-            {/* Day cells */}
-            <div className="grid grid-cols-7 text-center text-sm">
-              {days.map((day, i) => {
-                if (day === null) return <div key={`empty-${i}`} />;
-                const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                const hasBackups = backupsByDate.has(dateKey);
-                const isSelected = dateKey === activeDate;
-                const isToday = dateKey === todayKey;
-                return (
-                  <button
-                    key={dateKey}
-                    className={cn(
-                      'relative mx-auto flex h-9 w-9 flex-col items-center justify-center rounded-lg transition-colors',
-                      isSelected
-                        ? 'bg-brand text-white'
-                        : 'hover:bg-surface-muted',
-                      isToday && !isSelected && 'ring-1 ring-brand/40',
-                    )}
-                    onClick={() => setSelectedDate(dateKey)}
-                  >
-                    <span>{day}</span>
-                    {hasBackups && (
-                      <span className={cn(
-                        'absolute bottom-0.5 h-1 w-1 rounded-full',
-                        isSelected ? 'bg-white' : 'bg-brand',
-                      )} />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* Calendar */}
+        <div className="mb-4">
+          <div className="mb-2 flex items-center justify-between">
+            <button className="btn btn-secondary btn-xs" onClick={() => setViewMonth(new Date(year, month - 1, 1))}>&#9664;</button>
+            <span className="text-sm font-medium text-content-primary">{formatMonthYear(viewMonth)}</span>
+            <button className="btn btn-secondary btn-xs" onClick={() => setViewMonth(new Date(year, month + 1, 1))}>&#9654;</button>
           </div>
-
-          {/* Selected day backups */}
-          {activeDate ? (
-            <div>
-              <div className="mb-2 border-t border-border-subtle pt-3 text-center text-xs text-content-muted">
-                {formatSelectedDate(activeDate)} ({selectedBackups.length} backup{selectedBackups.length !== 1 ? 's' : ''})
-              </div>
-              {selectedBackups.length > 0 ? (
-                <div className="space-y-2">
-                  {selectedBackups.map((b) => (
-                    <div key={b.id} className="flex items-center justify-between rounded border border-border-subtle bg-surface-muted px-3 py-2">
-                      <div>
-                        <p className="text-sm text-content-secondary">
-                          {new Date(b.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
-                        </p>
-                        <p className="text-xs text-content-faint">{b.shortId}</p>
-                      </div>
-                      <div className="flex gap-1">
-                        <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId })}>Restore</button>
-                        <button
-                          className="btn btn-danger btn-xs"
-                          onClick={() => deleteBackup.mutate(b.id, {
-                            onSuccess: () => toast.success('Backup deleted'),
-                            onError: (err) => toast.error(err.message),
-                          })}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-center text-xs text-content-faint">No backups on this day.</p>
-              )}
-            </div>
-          ) : (
-            <p className="border-t border-border-subtle pt-3 text-center text-xs text-content-faint">Click a day to view backups</p>
-          )}
+          <div className="grid grid-cols-7 text-center text-xs text-content-muted">
+            {WEEKDAYS.map((d) => <div key={d} className="py-1">{d}</div>)}
+          </div>
+          <div className="grid grid-cols-7 text-center text-sm">
+            {days.map((day, i) => {
+              if (day === null) return <div key={`empty-${i}`} />;
+              const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const hasBackups = backupsByDate.has(dateKey);
+              const isSelected = dateKey === activeDate;
+              const isToday = dateKey === todayKey;
+              return (
+                <button
+                  key={dateKey}
+                  className={cn(
+                    'relative mx-auto flex h-9 w-9 flex-col items-center justify-center rounded-lg transition-colors',
+                    isSelected ? 'bg-brand text-white' : 'hover:bg-surface-muted',
+                    isToday && !isSelected && 'ring-1 ring-brand/40',
+                  )}
+                  onClick={() => setSelectedDate(dateKey)}
+                >
+                  <span>{day}</span>
+                  {hasBackups && (
+                    <span className={cn(
+                      'absolute bottom-0.5 h-1 w-1 rounded-full',
+                      isSelected ? 'bg-white' : 'bg-brand',
+                    )} />
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      )}
+
+        {/* Selected day backups */}
+        {activeDate ? (
+          <div>
+            <div className="mb-2 border-t border-border-subtle pt-3 text-center text-xs text-content-muted">
+              {formatSelectedDate(activeDate)} ({selectedBackups.length} backup{selectedBackups.length !== 1 ? 's' : ''})
+            </div>
+            {selectedBackups.length > 0 ? (
+              <div className="space-y-2">
+                {selectedBackups.map((b) => (
+                  <div key={b.id} className="flex items-center justify-between rounded border border-border-subtle bg-surface-muted px-3 py-2">
+                    <div>
+                      <p className="text-sm text-content-secondary">
+                        {new Date(b.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+                      </p>
+                      <p className="text-xs text-content-faint">{b.shortId}</p>
+                    </div>
+                    <div className="flex gap-1">
+                      <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId })}>Restore</button>
+                      <button
+                        className="btn btn-danger btn-xs"
+                        onClick={() => deleteBackup.mutate(b.id, {
+                          onSuccess: () => toast.success('Backup deleted'),
+                          onError: (err) => toast.error(err.message),
+                        })}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-center text-xs text-content-faint">No backups on this day.</p>
+            )}
+          </div>
+        ) : (
+          <p className="border-t border-border-subtle pt-3 text-center text-xs text-content-faint">Click a day to view backups</p>
+        )}
+      </div>
 
       {/* Restore flow */}
       {restoreTarget && (
