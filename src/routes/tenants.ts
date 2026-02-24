@@ -4,17 +4,10 @@ import { listTenants, startTenant, stopTenant, restartTenant, getTenantInfo } fr
 import { createTenant, deleteTenant, updateTenant, CreateTenantInput } from '../services/tenant';
 import { getApp } from '../services/app';
 import { asyncHandler } from '../utils/asyncHandler';
+import { isValidSlug } from '../utils/validators';
+import { validateTenantId } from '../middleware/validators';
 
 const router = Router({ mergeParams: true });
-
-// Validate tenantId format on all routes that use it
-const validateTenantId: import('express').RequestHandler = (req, res, next) => {
-  const { tenantId } = req.params;
-  if (tenantId && (tenantId.length > 63 || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(tenantId))) {
-    return res.status(400).json({ error: 'Invalid tenant ID format' });
-  }
-  next();
-};
 
 // List tenants for an app
 router.get('/', asyncHandler(async (req, res) => {
@@ -39,7 +32,7 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 
   // Validate tenantId from body (same rules as URL param)
-  if (input.tenantId.length > 63 || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(input.tenantId)) {
+  if (!isValidSlug(input.tenantId)) {
     return res.status(400).json({ error: 'Invalid tenant ID format' });
   }
 

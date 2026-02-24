@@ -1,28 +1,10 @@
 import { Router, Request, Response } from 'express';
-import jwt from 'jsonwebtoken';
 import { listAdminUsers, addAdminUser, removeAdminUser } from '../services/users';
 import { asyncHandler } from '../utils/asyncHandler';
+import { getCurrentUserEmail } from '../utils/jwt';
+import { isValidEmail } from '../utils/validators';
 
 const router = Router();
-
-// JWT_SECRET is validated at startup in index.ts
-const JWT_SECRET = process.env.JWT_SECRET!;
-
-// Helper to get current user email from token
-function getCurrentUserEmail(req: Request): string | null {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null;
-  }
-
-  try {
-    const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { email: string };
-    return decoded.email;
-  } catch {
-    return null;
-  }
-}
 
 // List all admin users
 router.get('/', asyncHandler(async (req: Request, res: Response) => {
@@ -39,7 +21,7 @@ router.post('/', asyncHandler(async (req: Request, res: Response) => {
   }
 
   const trimmed = email.trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+  if (!isValidEmail(trimmed)) {
     return res.status(400).json({ error: 'Invalid email format' });
   }
 
@@ -56,7 +38,7 @@ router.post('/', asyncHandler(async (req: Request, res: Response) => {
 router.delete('/:email', asyncHandler(async (req: Request, res: Response) => {
   const email = decodeURIComponent(req.params.email).trim().toLowerCase();
 
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (!isValidEmail(email)) {
     return res.status(400).json({ error: 'Invalid email format' });
   }
 

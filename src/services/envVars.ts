@@ -2,15 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getAppsDir, getDataDir } from '../config';
 import { withFileLock } from './fileLock';
-
-/** Verify that a resolved path stays within an expected parent directory */
-async function assertWithinDir(childPath: string, parentDir: string): Promise<void> {
-  const realChild = await fs.realpath(childPath);
-  const realParent = await fs.realpath(parentDir);
-  if (!realChild.startsWith(realParent + '/') && realChild !== realParent) {
-    throw new Error(`Path ${childPath} resolves outside of expected directory`);
-  }
-}
+import { assertWithinDir } from '../utils/security';
 
 function getEnvVarsFile(): string {
   return path.join(getDataDir(), 'env-vars.json');

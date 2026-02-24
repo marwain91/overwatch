@@ -1,37 +1,24 @@
 import mysql from 'mysql2/promise';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-import { createReadStream, createWriteStream } from 'fs';
-import { DatabaseAdapter, DatabaseAdapterConfig } from './types';
+import { createReadStream } from 'fs';
+import { DatabaseAdapterConfig } from './types';
+import { BaseDatabaseAdapter } from './base';
 
 const execFileAsync = promisify(execFile);
-
-/** Validate that a database/user name contains only safe characters */
-function assertSafeIdentifier(name: string): void {
-  if (!/^[a-z0-9_]+$/.test(name)) {
-    throw new Error(`Unsafe database identifier: ${name}`);
-  }
-  if (name.length > 64) {
-    throw new Error(`Database identifier too long: ${name}`);
-  }
-}
 
 /**
  * MySQL/MariaDB database adapter
  */
-export class MySQLAdapter implements DatabaseAdapter {
-  private pool: mysql.Pool | null = null;
-  private config: DatabaseAdapterConfig;
+export class MySQLAdapter extends BaseDatabaseAdapter {
+  protected declare pool: mysql.Pool | null;
 
-  constructor(config: DatabaseAdapterConfig) {
-    this.config = config;
+  protected get maxIdentifierLength(): number {
+    return 64;
   }
 
-  async initialize(): Promise<void> {
-    if (this.pool) {
-      return; // Already initialized
-    }
-    this.pool = mysql.createPool({
+  protected createPool(): mysql.Pool {
+    return mysql.createPool({
       host: this.config.host,
       port: this.config.port,
       user: this.config.rootUser,
@@ -41,24 +28,8 @@ export class MySQLAdapter implements DatabaseAdapter {
     });
   }
 
-  async close(): Promise<void> {
-    if (this.pool) {
-      await this.pool.end();
-      this.pool = null;
-    }
-  }
-
-  async testConnection(): Promise<boolean> {
-    try {
-      if (!this.pool) {
-        await this.initialize();
-      }
-      await this.pool!.query('SELECT 1');
-      return true;
-    } catch (error) {
-      console.error('MySQL connection failed:', error);
-      return false;
-    }
+  protected async executeTestQuery(): Promise<void> {
+    await this.pool!.query('SELECT 1');
   }
 
   async createDatabase(tenantId: string, password: string): Promise<void> {
@@ -69,9 +40,7 @@ export class MySQLAdapter implements DatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const userName = this.getUserName(tenantId);
 
-    // Validate identifiers contain only safe characters (a-z, 0-9, _)
-    assertSafeIdentifier(dbName);
-    assertSafeIdentifier(userName);
+    this.validateIdentifiers(dbName, userName);
 
     const connection = await this.pool!.getConnection();
 
@@ -100,8 +69,7 @@ export class MySQLAdapter implements DatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const userName = this.getUserName(tenantId);
 
-    assertSafeIdentifier(dbName);
-    assertSafeIdentifier(userName);
+    this.validateIdentifiers(dbName, userName);
 
     const connection = await this.pool!.getConnection();
 
@@ -161,17 +129,5 @@ export class MySQLAdapter implements DatabaseAdapter {
       });
       proc.on('error', reject);
     });
-  }
-
-  getDatabaseName(tenantId: string): string {
-    return `${this.config.dbPrefix}_${tenantId}`;
-  }
-
-  getUserName(tenantId: string): string {
-    return `${this.config.dbPrefix}_${tenantId}`;
-  }
-
-  getContainerName(): string {
-    return this.config.containerName;
   }
 }

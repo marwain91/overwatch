@@ -7,21 +7,13 @@ import { getDatabaseAdapter } from '../adapters/database';
 import { getTenantInfo, listTenants } from './docker';
 import { getApp, listApps } from './app';
 import { AppDefinition } from '../models/app';
+import { assertWithinDir } from '../utils/security';
 
 const execFileAsync = promisify(execFile);
 
 /** Validate that a path is safe for use in docker exec/cp (no shell metacharacters, no traversal) */
 function isValidContainerPath(p: string): boolean {
   return /^[a-zA-Z0-9/_\-]+$/.test(p) && !p.includes('..');
-}
-
-/** Verify a resolved path is within the expected parent directory (prevents symlink attacks) */
-async function assertWithinDir(childPath: string, parentDir: string): Promise<void> {
-  const realChild = await fs.realpath(childPath);
-  const realParent = await fs.realpath(parentDir);
-  if (!realChild.startsWith(realParent + '/') && realChild !== realParent) {
-    throw new Error(`Path ${childPath} resolves outside of expected directory ${parentDir}`);
-  }
 }
 
 function getBackupTempDir(): string {

@@ -10,12 +10,10 @@ import {
   sendTestNotification,
 } from '../services/alertEngine';
 import { loadConfig } from '../config';
+import { SLUG_RE, CONTAINER_NAME_RE, UUID_RE } from '../utils/validators';
+import { queryString, queryInt } from '../utils/query';
 
 const router = Router();
-
-const ID_RE = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
-const CONTAINER_NAME_RE = /^[a-z0-9][a-z0-9_.-]*$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function isValidWebhookUrl(url: string): string | null {
   try {
@@ -29,21 +27,10 @@ function isValidWebhookUrl(url: string): string | null {
   }
 }
 
-/** Safely extract a single string from a query param that may be an array */
-function queryString(val: unknown): string | undefined {
-  if (Array.isArray(val)) return typeof val[0] === 'string' ? val[0] : undefined;
-  return typeof val === 'string' ? val : undefined;
-}
-
-function queryInt(val: unknown, fallback: number, min: number, max: number): number {
-  const raw = parseInt(queryString(val) || '', 10);
-  return Number.isInteger(raw) ? Math.max(min, Math.min(raw, max)) : fallback;
-}
-
 // GET /api/monitoring/metrics — current + history for all containers
 router.get('/metrics', asyncHandler(async (req, res) => {
   const appId = queryString(req.query.appId);
-  if (appId && !ID_RE.test(appId)) {
+  if (appId && !SLUG_RE.test(appId)) {
     return res.status(400).json({ error: 'Invalid app ID format' });
   }
   const data = getMetrics(appId);
@@ -53,7 +40,7 @@ router.get('/metrics', asyncHandler(async (req, res) => {
 // GET /api/monitoring/metrics/:tenantId — metrics for specific tenant
 router.get('/metrics/:appId/:tenantId', asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
-  if (!ID_RE.test(appId) || !ID_RE.test(tenantId)) {
+  if (!SLUG_RE.test(appId) || !SLUG_RE.test(tenantId)) {
     return res.status(400).json({ error: 'Invalid app or tenant ID format' });
   }
   const data = getMetrics(appId, tenantId);
@@ -73,7 +60,7 @@ router.get('/metrics/history/:containerName', asyncHandler(async (req, res) => {
 // GET /api/monitoring/health — all health check states
 router.get('/health', asyncHandler(async (req, res) => {
   const appId = queryString(req.query.appId);
-  if (appId && !ID_RE.test(appId)) {
+  if (appId && !SLUG_RE.test(appId)) {
     return res.status(400).json({ error: 'Invalid app ID format' });
   }
   const states = getHealthStates();

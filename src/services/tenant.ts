@@ -9,17 +9,11 @@ import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
 import { getApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { AppDefinition } from '../models/app';
+import { assertWithinDir } from '../utils/security';
+import { isValidSlug } from '../utils/validators';
+import { parseEnv } from '../utils/env';
 
 const execFileAsync = promisify(execFile);
-
-/** Verify that a resolved path stays within an expected parent directory */
-async function assertWithinDir(childPath: string, parentDir: string): Promise<void> {
-  const realChild = await fs.realpath(childPath);
-  const realParent = await fs.realpath(parentDir);
-  if (!realChild.startsWith(realParent + '/') && realChild !== realParent) {
-    throw new Error(`Path ${childPath} resolves outside of expected directory`);
-  }
-}
 
 export interface CreateTenantInput {
   appId: string;
@@ -41,7 +35,7 @@ function generatePassword(length: number): string {
 }
 
 function validateTenantId(tenantId: string): boolean {
-  return tenantId.length <= 63 && /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(tenantId);
+  return isValidSlug(tenantId);
 }
 
 /**
@@ -338,19 +332,3 @@ CERT_RESOLVER=${certResolver}
 `;
 }
 
-function parseEnv(content: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  const lines = content.split('\n');
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    const [key, ...valueParts] = trimmed.split('=');
-    if (key && valueParts.length > 0) {
-      env[key] = valueParts.join('=');
-    }
-  }
-
-  return env;
-}

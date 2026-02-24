@@ -1,8 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import jwt from 'jsonwebtoken';
 import { getDataDir } from '../config';
+import { getCurrentUserEmail } from '../utils/jwt';
 
 interface AuditEntry {
   timestamp: string;
@@ -20,16 +20,7 @@ function getAuditLogFile(): string {
 }
 
 function getUserFromRequest(req: Request): string {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) return 'anonymous';
-
-  try {
-    const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!, { algorithms: ['HS256'] }) as { email?: string };
-    return decoded.email || 'unknown';
-  } catch {
-    return 'unknown';
-  }
+  return getCurrentUserEmail(req) || 'anonymous';
 }
 
 function describeAction(method: string, fullPath: string, body?: Record<string, unknown>): string {

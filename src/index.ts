@@ -7,6 +7,7 @@ import { listApps } from './services/app';
 import { authMiddleware } from './middleware/auth';
 import { rateLimit } from './middleware/rateLimit';
 import { auditLog } from './middleware/audit';
+import { validateAppId } from './middleware/validators';
 import appsRouter from './routes/apps';
 import tenantsRouter from './routes/tenants';
 import statusRouter from './routes/status';
@@ -107,15 +108,6 @@ async function start() {
 
   // App routes (with auth + appId validation for :appId sub-routes)
   app.use('/api/apps', authMiddleware, apiLimiter, auditLog, appsRouter);
-
-  // Validate appId format for all app-scoped routes
-  const validateAppId: express.RequestHandler = (req, res, next) => {
-    const { appId } = req.params;
-    if (appId && !/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(appId)) {
-      return res.status(400).json({ error: 'Invalid app ID format' });
-    }
-    next();
-  };
 
   // App-scoped routes
   app.use('/api/apps/:appId/tenants', authMiddleware, validateAppId, apiLimiter, auditLog, tenantsRouter);

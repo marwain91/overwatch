@@ -5,6 +5,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { loadConfig, getAppsDir } from '../config';
 import { listApps } from './app';
+import { assertWithinDir } from '../utils/security';
+import { parseEnv } from '../utils/env';
 
 const execFileAsync = promisify(execFile);
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
@@ -195,10 +197,12 @@ export async function listTenants(): Promise<TenantStatus[]> {
 }
 
 export async function getTenantInfo(appId: string, tenantId: string): Promise<{ appId: string; tenantId: string; domain: string; version: string } | null> {
-  const tenantPath = path.join(getAppsDir(), appId, 'tenants', tenantId);
+  const appsDir = getAppsDir();
+  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
   const envPath = path.join(tenantPath, '.env');
 
   try {
+    await assertWithinDir(tenantPath, appsDir);
     const envContent = await fs.readFile(envPath, 'utf-8');
     const env = parseEnv(envContent);
 
@@ -214,33 +218,26 @@ export async function getTenantInfo(appId: string, tenantId: string): Promise<{ 
 }
 
 export async function startTenant(appId: string, tenantId: string): Promise<void> {
-  const composePath = path.join(getAppsDir(), appId, 'tenants', tenantId, 'docker-compose.yml');
+  const appsDir = getAppsDir();
+  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
+  await assertWithinDir(tenantPath, appsDir);
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
   await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d']);
 }
 
 export async function stopTenant(appId: string, tenantId: string): Promise<void> {
-  const composePath = path.join(getAppsDir(), appId, 'tenants', tenantId, 'docker-compose.yml');
+  const appsDir = getAppsDir();
+  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
+  await assertWithinDir(tenantPath, appsDir);
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
   await execFileAsync('docker', ['compose', '-f', composePath, 'down']);
 }
 
 export async function restartTenant(appId: string, tenantId: string): Promise<void> {
-  const composePath = path.join(getAppsDir(), appId, 'tenants', tenantId, 'docker-compose.yml');
+  const appsDir = getAppsDir();
+  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
+  await assertWithinDir(tenantPath, appsDir);
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
   await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
 }
 
-function parseEnv(content: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  const lines = content.split('\n');
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    const [key, ...valueParts] = trimmed.split('=');
-    if (key && valueParts.length > 0) {
-      env[key] = valueParts.join('=');
-    }
-  }
-
-  return env;
-}

@@ -14,17 +14,9 @@ import { getApp } from '../services/app';
 import { createTenant } from '../services/tenant';
 import { getTenantInfo } from '../services/docker';
 import { asyncHandler } from '../utils/asyncHandler';
+import { isValidSlug, isValidSnapshotId } from '../utils/validators';
 
 const router = Router({ mergeParams: true });
-
-// Restic snapshot IDs are short hex strings
-function isValidSnapshotId(id: string): boolean {
-  return /^[a-f0-9]{8,64}$/.test(id);
-}
-
-function isValidTenantId(id: string): boolean {
-  return id.length <= 63 && /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(id);
-}
 
 // Get backup summary (status + latest snapshot info)
 router.get('/summary', asyncHandler(async (req, res) => {
@@ -98,7 +90,7 @@ router.get('/', asyncHandler(async (req, res) => {
   const rawTenantId = Array.isArray(req.query.tenantId) ? req.query.tenantId[0] : req.query.tenantId;
   const tenantId = typeof rawTenantId === 'string' ? rawTenantId : undefined;
 
-  if (tenantId && !isValidTenantId(tenantId)) {
+  if (tenantId && !isValidSlug(tenantId)) {
     return res.status(400).json({ error: 'Invalid tenant ID format' });
   }
 
@@ -125,7 +117,7 @@ router.post('/', asyncHandler(async (req, res) => {
   const { appId } = req.params;
   const { tenantId } = req.body;
 
-  if (!tenantId || !isValidTenantId(tenantId)) {
+  if (!tenantId || !isValidSlug(tenantId)) {
     return res.status(400).json({ error: 'Valid tenantId is required' });
   }
 
@@ -154,7 +146,7 @@ router.post('/:snapshotId/restore', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Invalid snapshot ID format' });
   }
 
-  if (!tenantId || !isValidTenantId(tenantId)) {
+  if (!tenantId || !isValidSlug(tenantId)) {
     return res.status(400).json({ error: 'Valid tenantId is required' });
   }
 
@@ -181,7 +173,7 @@ router.post('/:snapshotId/create-tenant', asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'Invalid snapshot ID format' });
   }
 
-  if (!tenantId || !domain || !isValidTenantId(tenantId)) {
+  if (!tenantId || !domain || !isValidSlug(tenantId)) {
     return res.status(400).json({ error: 'Valid tenantId and domain are required' });
   }
 

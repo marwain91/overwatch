@@ -3,17 +3,9 @@ import { listApps, getApp, createApp, updateApp, deleteApp } from '../services/a
 import { getImageTagsForApp } from '../adapters/registry';
 import { CreateAppSchema } from '../models/app';
 import { asyncHandler } from '../utils/asyncHandler';
+import { validateAppId } from '../middleware/validators';
 
 const router = Router();
-
-// Validate appId format on all routes that use it
-const validateAppId: import('express').RequestHandler = (req, res, next) => {
-  const { appId } = req.params;
-  if (appId && !/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/.test(appId)) {
-    return res.status(400).json({ error: 'Invalid app ID format' });
-  }
-  next();
-};
 
 // List all apps
 router.get('/', asyncHandler(async (req, res) => {

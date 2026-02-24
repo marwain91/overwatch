@@ -6,6 +6,7 @@ import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
 import { getBackupInfo, listSnapshots } from '../services/backup';
 import { asyncHandler } from '../utils/asyncHandler';
+import { isValidContainerId } from '../utils/validators';
 
 const router = Router();
 
@@ -14,11 +15,6 @@ router.get('/containers', asyncHandler(async (req, res) => {
   const containers = await listContainers();
   res.json(containers);
 }));
-
-// Validate Docker container ID (12 or 64 hex chars)
-function isValidContainerId(id: string): boolean {
-  return /^[a-f0-9]{12,64}$/.test(id);
-}
 
 // Get container logs
 router.get('/containers/:containerId/logs', asyncHandler(async (req, res) => {
