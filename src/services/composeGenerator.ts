@@ -122,13 +122,13 @@ export function generateComposeFile(options: GenerateOptions): string {
         const hcPath = hc.path || '/health';
         const hcPort = hc.port || service.ports?.internal || 80;
         if (hc.tool === 'curl') {
-          lines.push(`      test: ["CMD", "curl", "-f", "http://localhost:${hcPort}${hcPath}"]`);
+          lines.push(`      test: ["CMD", "curl", "-f", "http://127.0.0.1:${hcPort}${hcPath}"]`);
         } else {
-          lines.push(`      test: ["CMD", "wget", "--spider", "-q", "http://localhost:${hcPort}${hcPath}"]`);
+          lines.push(`      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:${hcPort}${hcPath}"]`);
         }
       } else {
         const hcPort = hc.port || service.ports?.internal || 80;
-        lines.push(`      test: ["CMD-SHELL", "nc -z localhost ${hcPort}"]`);
+        lines.push(`      test: ["CMD-SHELL", "nc -z 127.0.0.1 ${hcPort}"]`);
       }
       lines.push(`      interval: ${hc.interval || '30s'}`);
       lines.push('      timeout: 10s');
