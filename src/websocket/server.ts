@@ -61,22 +61,21 @@ export function createWebSocketServer(server: HTTPServer): WebSocketServer {
       return;
     }
 
-    // Validate origin — reject missing origin (non-browser bypass) and mismatched origin
+    // Validate origin — must match the Host header (same-origin) when present.
+    // Missing origin is allowed (non-browser clients, some proxy configs).
     const origin = request.headers.origin;
     const host = request.headers.host;
-    if (!origin) {
-      socket.destroy();
-      return;
-    }
-    try {
-      const originHost = new URL(origin).host;
-      if (originHost !== host) {
+    if (origin && host) {
+      try {
+        const originHost = new URL(origin).host;
+        if (originHost !== host) {
+          socket.destroy();
+          return;
+        }
+      } catch {
         socket.destroy();
         return;
       }
-    } catch {
-      socket.destroy();
-      return;
     }
 
     wss!.handleUpgrade(request, socket, head, (ws) => {
