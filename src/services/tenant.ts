@@ -171,7 +171,6 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
 }
 
 export async function updateTenant(appId: string, tenantId: string, newTag: string): Promise<void> {
-  const config = loadConfig();
   const tenantPath = getTenantPath(appId, tenantId);
   const envPath = path.join(tenantPath, '.env');
   const composePath = path.join(tenantPath, 'docker-compose.yml');
@@ -183,15 +182,8 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
     throw new Error(`Tenant '${tenantId}' not found in app '${appId}'`);
   }
 
-  // Load app definition
-  const app = await getApp(appId);
-  if (!app) {
-    throw new Error(`App '${appId}' not found`);
-  }
-
   // Read current .env
   const originalEnvContent = await fs.readFile(envPath, 'utf-8');
-  const originalComposeContent = await fs.readFile(composePath, 'utf-8');
 
   // Update IMAGE_TAG in .env
   const newEnvContent = originalEnvContent.replace(/^IMAGE_TAG=.*/m, `IMAGE_TAG=${newTag}`);
@@ -200,31 +192,12 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   // Regenerate shared.env
   await generateSharedEnvFile(appId, tenantId);
 
-  // Extract domain from .env
-  const domainMatch = originalEnvContent.match(/^TENANT_DOMAIN=(.*)$/m);
-  const domain = domainMatch ? domainMatch[1] : '';
-
-  // Regenerate docker-compose.yml from app definitions
-  try {
-    const composeContent = generateComposeFile({
-      app,
-      tenantId,
-      domain,
-      config,
-    });
-    await fs.writeFile(composePath, composeContent);
-  } catch (err) {
-    console.warn('Failed to regenerate docker-compose.yml:', err);
-    await fs.writeFile(composePath, originalComposeContent);
-  }
-
-  // Pull new images and restart - restore old files on failure
+  // Pull new images and restart - restore .env on failure
   try {
     await execFileAsync('docker', ['compose', '-f', composePath, 'pull']);
     await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
   } catch (error) {
     await fs.writeFile(envPath, originalEnvContent);
-    await fs.writeFile(composePath, originalComposeContent);
     throw error;
   }
 }
