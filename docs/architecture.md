@@ -45,9 +45,9 @@ Managed Infrastructure
 │   ├── {db_prefix}_{tenant2}
 │   └── ...
 ├── Shared Docker Network
-│   ├── {prefix}-{app1}-{tenant1}-backend
-│   ├── {prefix}-{app1}-{tenant1}-migrator
-│   ├── {prefix}-{app2}-{tenant1}-backend
+│   ├── {app1}-{tenant1}-backend
+│   ├── {app1}-{tenant1}-migrator
+│   ├── {app2}-{tenant1}-backend
 │   └── ...
 ├── Reverse Proxy (Traefik) — external
 └── Backup Storage (S3) — external, per app

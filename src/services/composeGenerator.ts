@@ -68,11 +68,12 @@ export function generateComposeFile(options: GenerateOptions): string {
       }
     }
 
-    // Environment variable mapping
+    // Environment variable mapping (auto-resolved where possible)
     if (service.env_mapping && Object.keys(service.env_mapping).length > 0) {
       lines.push('    environment:');
       for (const [key, value] of Object.entries(service.env_mapping)) {
-        lines.push(`      ${key}: "\${${value}}"`);
+        const resolved = resolveEnvValue(value, { config, domain, service });
+        lines.push(`      ${key}: "${resolved}"`);
       }
     }
 
@@ -238,4 +239,45 @@ export function generateComposeFile(options: GenerateOptions): string {
 
   lines.push('');
   return lines.join('\n');
+}
+
+interface ResolveContext {
+  config: OverwatchConfig;
+  domain: string;
+  service: AppService;
+}
+
+function resolveEnvValue(
+  value: string | { static: string },
+  ctx: ResolveContext,
+): string {
+  if (typeof value === 'object' && 'static' in value) {
+    return value.static;
+  }
+  const auto = getAutoResolvedValue(value, ctx);
+  if (auto !== undefined) return auto;
+  return `\${${value}}`;
+}
+
+function getAutoResolvedValue(
+  sourceName: string,
+  ctx: ResolveContext,
+): string | undefined {
+  switch (sourceName) {
+    case 'DB_HOST':
+      return ctx.config.database.host;
+    case 'DB_PORT':
+      return String(ctx.config.database.port);
+    case 'FRONTEND_URL':
+      return `https://${ctx.domain}`;
+    case 'BACKEND_URL':
+      return `https://${ctx.domain}`;
+    case 'PORT':
+    case 'BACKEND_PORT':
+      return ctx.service.ports ? String(ctx.service.ports.internal) : undefined;
+    case 'NODE_ENV':
+      return 'production';
+    default:
+      return undefined;
+  }
 }

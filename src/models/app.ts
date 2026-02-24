@@ -70,7 +70,7 @@ export const AppServiceSchema = z.object({
   health_check: AppHealthCheckSchema.optional(),
   backup: AppServiceBackupSchema.optional(),
   command: z.array(z.string()).optional(),
-  env_mapping: z.record(z.string()).optional(),
+  env_mapping: z.record(z.union([z.string(), z.object({ static: z.string() })])).optional(),
   routing: AppServiceRoutingSchema.optional(),
   volumes: z.array(AppServiceVolumeSchema).optional(),
   depends_on: z.array(z.string()).optional(),

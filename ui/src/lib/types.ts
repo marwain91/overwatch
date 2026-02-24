@@ -36,7 +36,7 @@ export interface AppService {
   health_check?: { type: string; path?: string; port?: number; interval?: number; start_period?: string };
   backup?: { enabled: boolean; paths?: Array<{ container: string; local: string }> };
   command?: string[];
-  env_mapping?: Record<string, string>;
+  env_mapping?: Record<string, string | { static: string }>;
   routing?: { enabled: boolean; path_prefix?: string; additional_path_prefixes?: string[]; priority?: number; strip_prefix?: boolean };
   volumes?: Array<{ name: string; container_path: string; name_template?: string; external?: boolean }>;
   depends_on?: string[];

@@ -14,9 +14,9 @@ project:
 ```
 
 **Naming conventions:**
-- Containers: `{prefix}-{appId}-{tenantId}-{service}` (e.g., `myapp-app1-acme-backend`)
-- Databases: `{db_prefix}_{tenantId}` (e.g., `myapp_acme`)
-- Users: `{db_prefix}_{tenantId}` (e.g., `myapp_acme`)
+- Containers: `{appId}-{tenantId}-{service}` (e.g., `myapp-acme-backend`)
+- Databases: `{db_prefix}_{appId}_{tenantId}` (e.g., `myapp_myapp_acme`)
+- Users: `{db_prefix}_{appId}_{tenantId}` (e.g., `myapp_myapp_acme`)
 
 ### Database Configuration
 
@@ -147,11 +147,19 @@ Apps are created and managed through the web UI or API (`POST /api/apps`). Each 
       "name": "backend",
       "required": true,
       "ports": { "internal": 3000 },
-      "health_check": { "type": "http", "path": "/health", "port": 3000, "tool": "curl" }
+      "health_check": { "type": "http", "path": "/health", "port": 3000, "tool": "curl", "start_period": "30s" },
+      "routing": { "path_prefix": "/api", "additional_path_prefixes": ["/uploads"], "priority": 10 },
+      "env_mapping": { "DB_HOST": "DB_HOST", "NODE_ENV": "NODE_ENV" },
+      "volumes": [{ "name": "uploads", "container_path": "/app/uploads", "name_template": "${appId}-${tenantId}-uploads", "external": true }],
+      "networks": ["external", "internal"],
+      "depends_on": ["migrator"]
     },
     {
       "name": "migrator",
-      "is_init_container": true
+      "is_init_container": true,
+      "user": "root",
+      "command": ["sh", "-c", "npm run db:migrate"],
+      "networks": ["external"]
     }
   ],
   "backup": {
@@ -182,15 +190,74 @@ Each service in an app defines a container that gets deployed per tenant:
 | `name` | Yes | Service name — also used as the image name in the registry |
 | `image_suffix` | No | Override image name if it differs from service name |
 | `required` | No | Must be running for tenant to be "healthy" (default: false) |
-| `is_init_container` | No | One-time setup container, e.g. migrations (default: false) |
+| `is_init_container` | No | One-time setup container, e.g. migrations (default: false). Gets `restart: "no"` |
+| `user` | No | Run container as specific user (e.g. `"root"`) |
 | `ports.internal` | No | Container port |
 | `ports.external` | No | Host-mapped port |
 | `health_check` | No | HTTP or TCP health check config |
 | `health_check.tool` | No | Binary to use for HTTP healthchecks: `"wget"` (default) or `"curl"` |
-| `routing.strip_prefix` | No | Add Traefik StripPrefix middleware for `path_prefix` routes (default: false) |
+| `health_check.start_period` | No | Grace period before health checks count (e.g. `"30s"`) |
 | `command` | No | Override container command |
 | `env_mapping` | No | Map environment variables to container vars |
+| `routing.path_prefix` | No | Traefik path prefix for routing (e.g. `"/api"`) |
+| `routing.additional_path_prefixes` | No | Extra path prefixes combined with OR (e.g. `["/uploads"]`) |
+| `routing.priority` | No | Traefik router priority |
+| `routing.strip_prefix` | No | Add Traefik StripPrefix middleware for path_prefix routes (default: false) |
+| `volumes[].name` | No | Volume name |
+| `volumes[].container_path` | No | Mount path inside container |
+| `volumes[].name_template` | No | Template for volume name with `${appId}` and `${tenantId}` substitution |
+| `volumes[].external` | No | Declare volume as external (default: false) |
 | `depends_on` | No | Other service names this service depends on |
+| `networks` | No | Network list: `["external"]` (default), `["external", "internal"]`, or `["internal"]` |
+
+### `env_mapping` — Environment Variable Mapping
+
+Maps environment variable names inside the container to their resolved values. Values are resolved in three modes:
+
+| Mode | Syntax | Behavior |
+|------|--------|----------|
+| Auto-resolved | `"DB_HOST": "DB_HOST"` | Known variable names are resolved at compose generation time to literal values from config/context |
+| `${VAR}` fallback | `"CUSTOM_KEY": "CUSTOM_KEY"` | Unknown variable names produce `${VAR}` for Docker Compose interpolation from `.env` |
+| Static | `"DB_HOST": { "static": "custom-db" }` | Always emits the literal value as-is |
+
+**Auto-resolvable variable names:**
+
+| Source name | Resolves to |
+|---|---|
+| `DB_HOST` | `config.database.host` |
+| `DB_PORT` | `config.database.port` |
+| `FRONTEND_URL` | `https://{tenant domain}` |
+| `BACKEND_URL` | `https://{tenant domain}` |
+| `PORT` | `service.ports.internal` (falls back to `${PORT}` if no ports defined) |
+| `BACKEND_PORT` | Same as `PORT` |
+| `NODE_ENV` | `"production"` |
+
+> **Warning:** Do not put variables that already exist in `shared.env` into `env_mapping`. The explicit `environment:` block in docker-compose overrides values from `env_file`, so the `shared.env` value would be ignored.
+
+**Example config:**
+
+```json
+"env_mapping": {
+  "DB_HOST": "DB_HOST",
+  "DB_PORT": "DB_PORT",
+  "FRONTEND_URL": "FRONTEND_URL",
+  "NODE_ENV": "NODE_ENV",
+  "CUSTOM_SECRET": "MY_SECRET",
+  "REDIS_HOST": { "static": "redis-server" }
+}
+```
+
+**Generated output** (assuming `database.host: "myapp-mariadb"`, `database.port: 3306`, tenant domain `acme.myapp.com`):
+
+```yaml
+environment:
+  DB_HOST: "myapp-mariadb"
+  DB_PORT: "3306"
+  FRONTEND_URL: "https://acme.myapp.com"
+  NODE_ENV: "production"
+  CUSTOM_SECRET: "${MY_SECRET}"
+  REDIS_HOST: "redis-server"
+```
 
 **Registry configuration per app:**
 
