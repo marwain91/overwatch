@@ -228,11 +228,11 @@ export function generateComposeFile(options: GenerateOptions): string {
     lines.push('');
     lines.push('volumes:');
     for (const vol of volumeDeclarations) {
+      lines.push(`  ${vol.name}:`);
       if (vol.external) {
-        lines.push(`  ${vol.name}:`);
         lines.push('    external: true');
       } else {
-        lines.push(`  ${vol.name}:`);
+        lines.push(`    name: ${vol.name}`);
       }
     }
   }
