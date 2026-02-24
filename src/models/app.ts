@@ -23,6 +23,7 @@ export const AppHealthCheckSchema = z.object({
   path: z.string().optional(),
   port: z.number().optional(),
   interval: z.string().default('30s'),
+  start_period: z.string().optional(),
   tool: z.enum(['wget', 'curl']).default('wget'),
 });
 
@@ -42,6 +43,7 @@ export const AppServiceBackupSchema = z.object({
 export const AppServiceRoutingSchema = z.object({
   enabled: z.boolean().default(true),
   path_prefix: z.string().optional(),
+  additional_path_prefixes: z.array(z.string()).optional(),
   priority: z.number().optional(),
   strip_prefix: z.boolean().default(false),
 });
@@ -50,6 +52,8 @@ export const AppServiceRoutingSchema = z.object({
 export const AppServiceVolumeSchema = z.object({
   name: z.string(),
   container_path: z.string(),
+  name_template: z.string().optional(),
+  external: z.boolean().optional(),
 });
 
 // Service definition within an app
@@ -58,6 +62,7 @@ export const AppServiceSchema = z.object({
   required: z.boolean().default(false),
   is_init_container: z.boolean().default(false),
   image_suffix: z.string().optional(),
+  user: z.string().optional(),
   ports: z.object({
     internal: z.number(),
     external: z.number().optional(),
@@ -69,6 +74,7 @@ export const AppServiceSchema = z.object({
   routing: AppServiceRoutingSchema.optional(),
   volumes: z.array(AppServiceVolumeSchema).optional(),
   depends_on: z.array(z.string()).optional(),
+  networks: z.array(z.enum(['external', 'internal'])).optional(),
 });
 
 // App-level backup configuration

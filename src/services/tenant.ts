@@ -266,6 +266,20 @@ function generateEnvContent(
   const sharedNetwork = config.networking?.external_network || `${config.project.prefix}-network`;
   const dbName = `${dbPrefix}_${app.id}_${tenantId}`;
 
+  // Determine cert resolver based on domain matching
+  const certResolvers = config.networking?.cert_resolvers;
+  let certResolver: string;
+  if (app.domain_template.startsWith('*.')) {
+    const baseDomain = app.domain_template.slice(2);
+    if (domain.endsWith(`.${baseDomain}`)) {
+      certResolver = certResolvers?.wildcard || 'letsencrypt';
+    } else {
+      certResolver = certResolvers?.default || 'letsencrypt-http';
+    }
+  } else {
+    certResolver = certResolvers?.default || 'letsencrypt-http';
+  }
+
   return `# ${config.project.name} Tenant Configuration
 # App: ${app.id} (${app.name})
 # Tenant: ${tenantId}
@@ -297,6 +311,9 @@ JWT_SECRET=${jwtSecret}
 
 # Network Configuration
 SHARED_NETWORK=${sharedNetwork}
+
+# TLS Configuration
+CERT_RESOLVER=${certResolver}
 `;
 }
 

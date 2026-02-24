@@ -16,6 +16,11 @@ export function generateComposeFile(options: GenerateOptions): string {
   const { app, tenantId, domain, config } = options;
   const prefix = config.project.prefix;
   const externalNetwork = config.networking?.external_network || `${prefix}-network`;
+  const internalNetworkTemplate = config.networking?.internal_network_template || `${prefix}-\${tenantId}-internal`;
+  const internalNetwork = internalNetworkTemplate
+    .replace(/\$\{prefix\}/g, prefix)
+    .replace(/\$\{tenantId\}/g, tenantId);
+  const needsInternalNetwork = app.services.some(s => s.networks?.includes('internal'));
   const imageRegistry = `${app.registry.url}/${app.registry.repository}`;
 
   const lines: string[] = [];
@@ -39,8 +44,15 @@ export function generateComposeFile(options: GenerateOptions): string {
     lines.push(`    image: ${image}`);
     lines.push(`    container_name: ${containerName}`);
 
-    if (!service.is_init_container) {
+    if (service.is_init_container) {
+      lines.push('    restart: "no"');
+    } else {
       lines.push('    restart: unless-stopped');
+    }
+
+    // User
+    if (service.user) {
+      lines.push(`    user: "${service.user}"`);
     }
 
     // Environment files
@@ -66,16 +78,22 @@ export function generateComposeFile(options: GenerateOptions): string {
 
     // Volumes
     const volumes: string[] = [];
+    const mountedPaths = new Set<string>();
     if (service.volumes) {
       for (const vol of service.volumes) {
-        volumes.push(`${vol.name}:${vol.container_path}`);
+        const resolvedName = vol.name_template
+          ? vol.name_template.replace(/\$\{appId\}/g, app.id).replace(/\$\{tenantId\}/g, tenantId)
+          : vol.name;
+        volumes.push(`${resolvedName}:${vol.container_path}`);
+        mountedPaths.add(vol.container_path);
       }
     }
     if (service.backup?.enabled && service.backup.paths) {
       for (const p of service.backup.paths) {
-        // Named volume for backup paths
+        if (mountedPaths.has(p.container)) continue;
         const volName = `${service.name}-${p.local}`;
         volumes.push(`${volName}:${p.container}`);
+        mountedPaths.add(p.container);
       }
     }
     if (volumes.length > 0) {
@@ -86,8 +104,14 @@ export function generateComposeFile(options: GenerateOptions): string {
     }
 
     // Networks
+    const serviceNetworks = service.networks || ['external'];
     lines.push('    networks:');
-    lines.push(`      - ${externalNetwork}`);
+    if (serviceNetworks.includes('external')) {
+      lines.push(`      - ${externalNetwork}`);
+    }
+    if (serviceNetworks.includes('internal') && needsInternalNetwork) {
+      lines.push(`      - ${internalNetwork}`);
+    }
 
     // Health check
     if (service.health_check && !service.is_init_container) {
@@ -108,6 +132,9 @@ export function generateComposeFile(options: GenerateOptions): string {
       lines.push(`      interval: ${hc.interval || '30s'}`);
       lines.push('      timeout: 10s');
       lines.push('      retries: 3');
+      if (hc.start_period) {
+        lines.push(`      start_period: ${hc.start_period}`);
+      }
     }
 
     // Depends on
@@ -127,9 +154,13 @@ export function generateComposeFile(options: GenerateOptions): string {
       lines.push('    labels:');
       lines.push('      - "traefik.enable=true"');
 
-      // Host rule with optional path prefix
+      // Host rule with optional path prefix(es)
       let rule = `Host(\`${domain}\`)`;
-      if (pathPrefix) {
+      const additionalPrefixes = service.routing?.additional_path_prefixes;
+      if (pathPrefix && additionalPrefixes && additionalPrefixes.length > 0) {
+        const allPrefixes = [pathPrefix, ...additionalPrefixes];
+        rule += ` && (${allPrefixes.map(p => `PathPrefix(\`${p}\`)`).join(' || ')})`;
+      } else if (pathPrefix) {
         rule += ` && PathPrefix(\`${pathPrefix}\`)`;
       }
       lines.push(`      - "traefik.http.routers.${routerName}.rule=${rule}"`);
@@ -140,23 +171,15 @@ export function generateComposeFile(options: GenerateOptions): string {
         lines.push(`      - "traefik.http.routers.${routerName}.priority=${priority}"`);
       }
 
-      // Determine cert resolver: wildcard domains use DNS, custom domains use HTTP
-      const certResolvers = config.networking?.cert_resolvers;
-      const domainTemplate = app.domain_template;
-      if (domainTemplate.startsWith('*.')) {
-        const baseDomain = domainTemplate.slice(2);
-        const resolver = certResolvers?.wildcard || 'letsencrypt';
-        lines.push(`      - "traefik.http.routers.${routerName}.tls.certresolver=${resolver}"`);
-        lines.push(`      - "traefik.http.routers.${routerName}.tls.domains[0].main=${baseDomain}"`);
-        lines.push(`      - "traefik.http.routers.${routerName}.tls.domains[0].sans=*.${baseDomain}"`);
-      } else {
-        const resolver = certResolvers?.default || 'letsencrypt-http';
-        lines.push(`      - "traefik.http.routers.${routerName}.tls.certresolver=${resolver}"`);
-      }
+      // Cert resolver: use env var set per-tenant based on domain matching
+      lines.push(`      - "traefik.http.routers.${routerName}.tls.certresolver=\${CERT_RESOLVER}"`);
 
       // StripPrefix middleware
       if (pathPrefix && service.routing?.strip_prefix) {
-        lines.push(`      - "traefik.http.middlewares.${routerName}-strip.stripprefix.prefixes=${pathPrefix}"`);
+        const allPrefixes = additionalPrefixes && additionalPrefixes.length > 0
+          ? [pathPrefix, ...additionalPrefixes].join(',')
+          : pathPrefix;
+        lines.push(`      - "traefik.http.middlewares.${routerName}-strip.stripprefix.prefixes=${allPrefixes}"`);
         lines.push(`      - "traefik.http.routers.${routerName}.middlewares=${routerName}-strip"`);
       }
 
@@ -169,27 +192,47 @@ export function generateComposeFile(options: GenerateOptions): string {
   lines.push('networks:');
   lines.push(`  ${externalNetwork}:`);
   lines.push('    external: true');
+  if (needsInternalNetwork) {
+    lines.push(`  ${internalNetwork}:`);
+  }
 
   // Volumes section (if any named volumes used)
-  const namedVolumes: string[] = [];
+  const volumeDeclarations: Array<{ name: string; external: boolean }> = [];
+  const declaredPaths = new Set<string>();
   for (const service of app.services) {
     if (service.volumes) {
       for (const vol of service.volumes) {
-        namedVolumes.push(vol.name);
+        const resolvedName = vol.name_template
+          ? vol.name_template.replace(/\$\{appId\}/g, app.id).replace(/\$\{tenantId\}/g, tenantId)
+          : vol.name;
+        if (!volumeDeclarations.find(v => v.name === resolvedName)) {
+          volumeDeclarations.push({ name: resolvedName, external: vol.external === true });
+          if (vol.container_path) declaredPaths.add(vol.container_path);
+        }
       }
     }
     if (service.backup?.enabled && service.backup.paths) {
       for (const p of service.backup.paths) {
-        namedVolumes.push(`${service.name}-${p.local}`);
+        if (declaredPaths.has(p.container)) continue;
+        const volName = `${service.name}-${p.local}`;
+        if (!volumeDeclarations.find(v => v.name === volName)) {
+          volumeDeclarations.push({ name: volName, external: false });
+          declaredPaths.add(p.container);
+        }
       }
     }
   }
 
-  if (namedVolumes.length > 0) {
+  if (volumeDeclarations.length > 0) {
     lines.push('');
     lines.push('volumes:');
-    for (const vol of namedVolumes) {
-      lines.push(`  ${vol}:`);
+    for (const vol of volumeDeclarations) {
+      if (vol.external) {
+        lines.push(`  ${vol.name}:`);
+        lines.push('    external: true');
+      } else {
+        lines.push(`  ${vol.name}:`);
+      }
     }
   }
 

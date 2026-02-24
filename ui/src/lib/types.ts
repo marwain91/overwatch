@@ -31,14 +31,16 @@ export interface AppService {
   required: boolean;
   is_init_container: boolean;
   image_suffix?: string;
+  user?: string;
   ports?: { internal: number; external?: number };
-  health_check?: { type: string; path?: string; port?: number; interval?: number };
+  health_check?: { type: string; path?: string; port?: number; interval?: number; start_period?: string };
   backup?: { enabled: boolean; paths?: Array<{ container: string; local: string }> };
   command?: string[];
   env_mapping?: Record<string, string>;
-  routing?: { enabled: boolean; path_prefix?: string; priority?: number };
-  volumes?: Array<{ name: string; container_path: string }>;
+  routing?: { enabled: boolean; path_prefix?: string; additional_path_prefixes?: string[]; priority?: number; strip_prefix?: boolean };
+  volumes?: Array<{ name: string; container_path: string; name_template?: string; external?: boolean }>;
   depends_on?: string[];
+  networks?: Array<'external' | 'internal'>;
 }
 
 export interface AppBackup {
