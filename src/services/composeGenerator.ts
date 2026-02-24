@@ -96,7 +96,11 @@ export function generateComposeFile(options: GenerateOptions): string {
       if (hc.type === 'http') {
         const hcPath = hc.path || '/health';
         const hcPort = hc.port || service.ports?.internal || 80;
-        lines.push(`      test: ["CMD", "wget", "--spider", "-q", "http://localhost:${hcPort}${hcPath}"]`);
+        if (hc.tool === 'curl') {
+          lines.push(`      test: ["CMD", "curl", "-f", "http://localhost:${hcPort}${hcPath}"]`);
+        } else {
+          lines.push(`      test: ["CMD", "wget", "--spider", "-q", "http://localhost:${hcPort}${hcPath}"]`);
+        }
       } else {
         const hcPort = hc.port || service.ports?.internal || 80;
         lines.push(`      test: ["CMD-SHELL", "nc -z localhost ${hcPort}"]`);
@@ -137,14 +141,23 @@ export function generateComposeFile(options: GenerateOptions): string {
       }
 
       // Determine cert resolver: wildcard domains use DNS, custom domains use HTTP
+      const certResolvers = config.networking?.cert_resolvers;
       const domainTemplate = app.domain_template;
       if (domainTemplate.startsWith('*.')) {
         const baseDomain = domainTemplate.slice(2);
-        lines.push(`      - "traefik.http.routers.${routerName}.tls.certresolver=letsencrypt"`);
+        const resolver = certResolvers?.wildcard || 'letsencrypt';
+        lines.push(`      - "traefik.http.routers.${routerName}.tls.certresolver=${resolver}"`);
         lines.push(`      - "traefik.http.routers.${routerName}.tls.domains[0].main=${baseDomain}"`);
         lines.push(`      - "traefik.http.routers.${routerName}.tls.domains[0].sans=*.${baseDomain}"`);
       } else {
-        lines.push(`      - "traefik.http.routers.${routerName}.tls.certresolver=letsencrypt-http"`);
+        const resolver = certResolvers?.default || 'letsencrypt-http';
+        lines.push(`      - "traefik.http.routers.${routerName}.tls.certresolver=${resolver}"`);
+      }
+
+      // StripPrefix middleware
+      if (pathPrefix && service.routing?.strip_prefix) {
+        lines.push(`      - "traefik.http.middlewares.${routerName}-strip.stripprefix.prefixes=${pathPrefix}"`);
+        lines.push(`      - "traefik.http.routers.${routerName}.middlewares=${routerName}-strip"`);
       }
 
       lines.push(`      - "traefik.http.services.${routerName}.loadbalancer.server.port=${service.ports.internal}"`);

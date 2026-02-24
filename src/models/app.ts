@@ -23,6 +23,7 @@ export const AppHealthCheckSchema = z.object({
   path: z.string().optional(),
   port: z.number().optional(),
   interval: z.string().default('30s'),
+  tool: z.enum(['wget', 'curl']).default('wget'),
 });
 
 // Backup path
@@ -42,6 +43,7 @@ export const AppServiceRoutingSchema = z.object({
   enabled: z.boolean().default(true),
   path_prefix: z.string().optional(),
   priority: z.number().optional(),
+  strip_prefix: z.boolean().default(false),
 });
 
 // Service volume configuration

@@ -37,6 +37,9 @@ networking:
   external_network: string        # Shared Docker network name
   apps_path: string               # Directory where app/tenant configs are stored
   internal_network_template: string  # Template for tenant networks (default: "${prefix}-${tenantId}-internal")
+  cert_resolvers:                 # Traefik TLS cert resolver names (optional)
+    wildcard: string              # Resolver for wildcard/DNS-challenge domains (default: "letsencrypt")
+    default: string               # Resolver for non-wildcard/HTTP-challenge domains (default: "letsencrypt-http")
 ```
 
 ### Credentials Configuration
@@ -102,6 +105,9 @@ database:
 networking:
   external_network: "myapp-network"
   apps_path: "/app/apps"
+  cert_resolvers:
+    wildcard: "letsencrypt-cf"      # e.g., Cloudflare DNS challenge resolver
+    default: "letsencrypt"          # e.g., HTTP challenge resolver
 
 monitoring:
   enabled: true
@@ -141,7 +147,7 @@ Apps are created and managed through the web UI or API (`POST /api/apps`). Each 
       "name": "backend",
       "required": true,
       "ports": { "internal": 3000 },
-      "health_check": { "type": "http", "path": "/health", "port": 3000 }
+      "health_check": { "type": "http", "path": "/health", "port": 3000, "tool": "curl" }
     },
     {
       "name": "migrator",
@@ -180,6 +186,8 @@ Each service in an app defines a container that gets deployed per tenant:
 | `ports.internal` | No | Container port |
 | `ports.external` | No | Host-mapped port |
 | `health_check` | No | HTTP or TCP health check config |
+| `health_check.tool` | No | Binary to use for HTTP healthchecks: `"wget"` (default) or `"curl"` |
+| `routing.strip_prefix` | No | Add Traefik StripPrefix middleware for `path_prefix` routes (default: false) |
 | `command` | No | Override container command |
 | `env_mapping` | No | Map environment variables to container vars |
 | `depends_on` | No | Other service names this service depends on |

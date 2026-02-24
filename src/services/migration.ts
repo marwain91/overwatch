@@ -93,7 +93,7 @@ export async function runMigration(): Promise<void> {
       is_init_container: s.is_init_container ?? false,
       image_suffix: s.image_suffix,
       ports: s.ports,
-      health_check: s.health_check,
+      health_check: s.health_check ? { ...s.health_check, tool: 'wget' as const } : undefined,
       backup: s.backup ? {
         enabled: s.backup.enabled ?? false,
         paths: s.backup.paths,

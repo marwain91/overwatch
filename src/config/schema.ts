@@ -46,11 +46,18 @@ export const CredentialsSchema = z.object({
   jwt_secret_length: z.number().default(64).describe('Length of auto-generated JWT secrets'),
 });
 
+// Cert resolver configuration
+export const CertResolversSchema = z.object({
+  wildcard: z.string().default('letsencrypt').describe('Cert resolver name for wildcard/DNS-challenge domains'),
+  default: z.string().default('letsencrypt-http').describe('Cert resolver name for non-wildcard/HTTP-challenge domains'),
+});
+
 // Networking configuration
 export const NetworkingSchema = z.object({
   external_network: z.string().describe('Shared Docker network name for inter-service communication'),
   internal_network_template: z.string().default('${prefix}-${tenantId}-internal').describe('Template for tenant-specific internal network names'),
   apps_path: z.string().optional().describe('Path where app/tenant directories are stored'),
+  cert_resolvers: CertResolversSchema.optional().describe('TLS cert resolver names for Traefik'),
 });
 
 // Main Overwatch configuration schema (slimmed — infrastructure only)
