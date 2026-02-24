@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { VERSION } from '../version';
 import { findConfigPath } from '../config/loader';
 
@@ -44,8 +44,8 @@ export function findDeployDir(): string {
   );
 }
 
-function compose(dir: string, args: string): void {
-  execSync(`docker compose ${args}`, { stdio: 'inherit', cwd: dir });
+function compose(dir: string, args: string[]): void {
+  execFileSync('docker', ['compose', ...args], { stdio: 'inherit', cwd: dir });
 }
 
 export async function runStart(): Promise<void> {
@@ -54,10 +54,10 @@ export async function runStart(): Promise<void> {
   const ow = path.join(base, 'overwatch');
 
   console.log(`${GREEN}Starting infrastructure...${NC}`);
-  compose(infra, 'up -d');
+  compose(infra, ['up', '-d']);
 
   console.log(`${GREEN}Starting Overwatch...${NC}`);
-  compose(ow, 'up -d');
+  compose(ow, ['up', '-d']);
 
   console.log(`\n${GREEN}All services started.${NC}`);
 }
@@ -68,10 +68,10 @@ export async function runStop(): Promise<void> {
   const infra = path.join(base, 'infrastructure');
 
   console.log(`${GREEN}Stopping Overwatch...${NC}`);
-  compose(ow, 'down');
+  compose(ow, ['down']);
 
   console.log(`${GREEN}Stopping infrastructure...${NC}`);
-  compose(infra, 'down');
+  compose(infra, ['down']);
 
   console.log(`\n${GREEN}All services stopped.${NC}`);
 }
@@ -82,10 +82,10 @@ export async function runRestart(): Promise<void> {
   const ow = path.join(base, 'overwatch');
 
   console.log(`${GREEN}Restarting infrastructure...${NC}`);
-  compose(infra, 'restart');
+  compose(infra, ['restart']);
 
   console.log(`${GREEN}Restarting Overwatch...${NC}`);
-  compose(ow, 'restart');
+  compose(ow, ['restart']);
 
   console.log(`\n${GREEN}All services restarted.${NC}`);
 }
@@ -95,7 +95,7 @@ export async function runRecreate(): Promise<void> {
   const ow = path.join(base, 'overwatch');
 
   console.log(`${GREEN}Recreating Overwatch containers...${NC}`);
-  compose(ow, 'up -d --force-recreate');
+  compose(ow, ['up', '-d', '--force-recreate']);
 
   console.log(`\n${GREEN}Containers recreated.${NC}`);
 }
@@ -109,9 +109,9 @@ interface ContainerInfo {
   health: string;
 }
 
-function execQuiet(cmd: string): string {
+function execQuiet(cmd: string, args: string[]): string {
   try {
-    return execSync(cmd, { stdio: 'pipe', encoding: 'utf-8' }).trim();
+    return execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8' }).trim();
   } catch {
     return '';
   }
@@ -119,9 +119,9 @@ function execQuiet(cmd: string): string {
 
 function parseContainers(filterNames: string[]): ContainerInfo[] {
   const unique = [...new Set(filterNames)];
-  const filters = unique.map(n => `--filter "name=${n}-"`).join(' ');
+  const filterArgs = unique.flatMap(n => ['--filter', `name=${n}-`]);
   const output = execQuiet(
-    `docker ps -a ${filters} --format "{{.Names}}\t{{.State}}\t{{.Status}}"`,
+    'docker', ['ps', '-a', ...filterArgs, '--format', '{{.Names}}\\t{{.State}}\\t{{.Status}}'],
   );
   if (!output) return [];
 
@@ -210,9 +210,9 @@ export async function runStatus(): Promise<void> {
 
   if (!config) {
     console.log(`${GREEN}Infrastructure:${NC}`);
-    compose(path.join(base, 'infrastructure'), 'ps');
+    compose(path.join(base, 'infrastructure'), ['ps']);
     console.log(`\n${GREEN}Overwatch:${NC}`);
-    compose(path.join(base, 'overwatch'), 'ps');
+    compose(path.join(base, 'overwatch'), ['ps']);
     return;
   }
 

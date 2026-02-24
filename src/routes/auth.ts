@@ -51,7 +51,7 @@ router.post('/google', asyncHandler(async (req: Request, res: Response) => {
       picture: payload.picture,
     },
     JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: '24h' }
   );
 
   console.log(`Admin login successful: ${email}`);

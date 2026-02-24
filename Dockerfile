@@ -36,8 +36,11 @@ COPY --from=ui-build /ui/dist ./ui/dist
 # Keep legacy public/ as fallback
 COPY public/ ./public/
 
-# Create data directory for admin users
-RUN mkdir -p /app/data
+# Create data directory and set ownership to node user
+RUN mkdir -p /app/data && chown -R node:node /app/data
+
+# Drop root privileges
+USER node
 
 # Expose port
 EXPOSE 3002

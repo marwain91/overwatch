@@ -10,9 +10,18 @@ import { AppDefinition } from '../models/app';
 
 const execFileAsync = promisify(execFile);
 
-/** Validate that a path is safe for use in docker exec/cp (no shell metacharacters) */
+/** Validate that a path is safe for use in docker exec/cp (no shell metacharacters, no traversal) */
 function isValidContainerPath(p: string): boolean {
-  return /^[a-zA-Z0-9/_.\-]+$/.test(p) && !p.includes('..');
+  return /^[a-zA-Z0-9/_\-]+$/.test(p) && !p.includes('..');
+}
+
+/** Verify a resolved path is within the expected parent directory (prevents symlink attacks) */
+async function assertWithinDir(childPath: string, parentDir: string): Promise<void> {
+  const realChild = await fs.realpath(childPath);
+  const realParent = await fs.realpath(parentDir);
+  if (!realChild.startsWith(realParent + '/') && realChild !== realParent) {
+    throw new Error(`Path ${childPath} resolves outside of expected directory ${parentDir}`);
+  }
 }
 
 function getBackupTempDir(): string {
@@ -245,7 +254,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
   const backupDir = path.join(getBackupTempDir(), `backup-${timestamp}`);
 
   try {
-    await fs.mkdir(backupDir, { recursive: true });
+    await fs.mkdir(backupDir, { recursive: true, mode: 0o700 });
 
     const tenant = await getTenantInfo(appId, tenantId);
     if (!tenant) {
@@ -253,7 +262,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     }
 
     const tenantBackupDir = path.join(backupDir, tenant.tenantId);
-    await fs.mkdir(tenantBackupDir, { recursive: true });
+    await fs.mkdir(tenantBackupDir, { recursive: true, mode: 0o700 });
 
     // Dump database using adapter
     const dbPrefix = config.project.db_prefix;
@@ -408,7 +417,7 @@ export async function restoreBackup(
   const restoreDir = path.join(getBackupTempDir(), `restore-${timestamp}`);
 
   try {
-    await fs.mkdir(restoreDir, { recursive: true });
+    await fs.mkdir(restoreDir, { recursive: true, mode: 0o700 });
 
     // Restore from restic (execFile avoids shell injection on snapshotId)
     await execFileAsync(
@@ -422,6 +431,9 @@ export async function restoreBackup(
     if (!metadataPath) {
       return { success: false, error: 'Invalid backup: metadata.json not found' };
     }
+
+    // Verify metadata path is within the restore directory (prevents symlink attacks)
+    await assertWithinDir(metadataPath, restoreDir);
 
     const backupDataDir = path.dirname(metadataPath);
     const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf-8'));
@@ -439,7 +451,12 @@ export async function restoreBackup(
     const tenantBackupDir = path.join(backupDataDir, sourceTenantId);
     try {
       await fs.access(tenantBackupDir);
-    } catch {
+      // Verify the resolved path is within the restore directory (prevents symlink attacks)
+      await assertWithinDir(tenantBackupDir, restoreDir);
+    } catch (e: any) {
+      if (e.message?.includes('resolves outside')) {
+        return { success: false, error: 'Backup contains unsafe symlinks' };
+      }
       return { success: false, error: `Tenant data not found in backup for ${sourceTenantId}` };
     }
 

@@ -2,7 +2,7 @@ import inquirer from 'inquirer';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@ function generateSecret(length: number): string {
 
 function commandExists(cmd: string): boolean {
   try {
-    execSync(`which ${cmd}`, { stdio: 'pipe' });
+    execFileSync('which', [cmd], { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -146,14 +146,14 @@ async function checkPrerequisites(): Promise<void> {
   }
 
   try {
-    execSync('docker compose version', { stdio: 'pipe' });
+    execFileSync('docker', ['compose', 'version'], { stdio: 'pipe' });
     success('Docker Compose is available');
   } catch {
     warn('Docker Compose not found (needed to start services)');
   }
 
   try {
-    execSync('docker ps', { stdio: 'pipe' });
+    execFileSync('docker', ['ps'], { stdio: 'pipe' });
   } catch {
     warn('Cannot connect to Docker daemon');
   }
@@ -671,11 +671,15 @@ async function startServices(config: InitConfig): Promise<void> {
 
   try {
     info('Creating Docker network...');
-    execSync(`docker network create ${network} 2>/dev/null || true`, { stdio: 'pipe' });
+    try {
+      execFileSync('docker', ['network', 'create', network], { stdio: 'pipe' });
+    } catch {
+      // Network may already exist — ignore
+    }
     success(`Network ${network} ready`);
 
     info('Starting infrastructure (Traefik + database)...');
-    execSync(`docker compose -f ${path.join(base, 'infrastructure', 'docker-compose.yml')} up -d`, {
+    execFileSync('docker', ['compose', '-f', path.join(base, 'infrastructure', 'docker-compose.yml'), 'up', '-d'], {
       stdio: 'inherit',
       cwd: base,
     });
@@ -689,8 +693,8 @@ async function startServices(config: InitConfig): Promise<void> {
     let healthy = false;
     for (let i = 0; i < 30; i++) {
       try {
-        const status = execSync(
-          `docker inspect --format='{{.State.Health.Status}}' ${dbContainer}`,
+        const status = execFileSync(
+          'docker', ['inspect', '--format', '{{.State.Health.Status}}', dbContainer],
           { stdio: 'pipe' },
         ).toString().trim();
         if (status === 'healthy') {
@@ -710,7 +714,7 @@ async function startServices(config: InitConfig): Promise<void> {
     }
 
     info('Starting Overwatch...');
-    execSync(`docker compose -f ${path.join(base, 'overwatch', 'docker-compose.yml')} up -d`, {
+    execFileSync('docker', ['compose', '-f', path.join(base, 'overwatch', 'docker-compose.yml'), 'up', '-d'], {
       stdio: 'inherit',
       cwd: base,
     });
