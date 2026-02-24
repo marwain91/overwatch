@@ -150,7 +150,13 @@ function TenantCard({
     setMenuOpen(false);
     action.mutate(
       { tenantId: tenant.tenantId, action: a },
-      { onError: (err) => toast.error(err.message) },
+      {
+        onSuccess: () => {
+          const labels = { start: 'started', stop: 'stopped', restart: 'restarting' } as const;
+          toast.success(`Tenant ${labels[a]}`);
+        },
+        onError: (err) => toast.error(err.message),
+      },
     );
   };
 

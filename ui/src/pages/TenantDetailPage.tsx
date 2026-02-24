@@ -41,7 +41,13 @@ export function TenantDetailPage() {
   const handleTenantAction = (action: 'start' | 'stop' | 'restart') => {
     tenantAction.mutate(
       { tenantId: tenantId!, action },
-      { onError: (err) => toast.error(err.message) },
+      {
+        onSuccess: () => {
+          const labels = { start: 'started', stop: 'stopped', restart: 'restarting' } as const;
+          toast.success(`Tenant ${labels[action]}`);
+        },
+        onError: (err) => toast.error(err.message),
+      },
     );
   };
 
