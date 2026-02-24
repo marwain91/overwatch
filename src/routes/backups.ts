@@ -95,14 +95,22 @@ router.post('/unlock', asyncHandler(async (req, res) => {
 // List backup snapshots for an app (optionally filtered by tenant and/or month)
 router.get('/', asyncHandler(async (req, res) => {
   const { appId } = req.params;
-  const tenantId = req.query.tenantId as string | undefined;
-  const year = req.query.year ? Number(req.query.year) : undefined;
-  const month = req.query.month ? Number(req.query.month) : undefined;
+  const rawTenantId = Array.isArray(req.query.tenantId) ? req.query.tenantId[0] : req.query.tenantId;
+  const tenantId = typeof rawTenantId === 'string' ? rawTenantId : undefined;
+
+  if (tenantId && !isValidTenantId(tenantId)) {
+    return res.status(400).json({ error: 'Invalid tenant ID format' });
+  }
+
+  const rawYear = Array.isArray(req.query.year) ? req.query.year[0] : req.query.year;
+  const rawMonth = Array.isArray(req.query.month) ? req.query.month[0] : req.query.month;
+  const year = rawYear ? parseInt(rawYear as string, 10) : undefined;
+  const month = rawMonth ? parseInt(rawMonth as string, 10) : undefined;
 
   let snapshots = await listSnapshots(appId, tenantId);
 
-  // Filter by month if year and month are provided
-  if (year && month) {
+  // Filter by month if valid year and month are provided
+  if (Number.isInteger(year) && Number.isInteger(month) && month! >= 1 && month! <= 12) {
     snapshots = snapshots.filter(s => {
       const d = new Date(s.time);
       return d.getFullYear() === year && d.getMonth() + 1 === month;

@@ -34,6 +34,10 @@ router.post('/google', asyncHandler(async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Invalid token payload' });
   }
 
+  if (!payload.email_verified) {
+    return res.status(401).json({ error: 'Email not verified' });
+  }
+
   const email = payload.email.toLowerCase();
 
   // Check if user is in allowed admins list
@@ -46,7 +50,7 @@ router.post('/google', asyncHandler(async (req: Request, res: Response) => {
   // Generate JWT for session
   const token = jwt.sign(
     {
-      email: payload.email,
+      email,
       name: payload.name,
       picture: payload.picture,
     },
@@ -59,7 +63,7 @@ router.post('/google', asyncHandler(async (req: Request, res: Response) => {
   res.json({
     token,
     user: {
-      email: payload.email,
+      email,
       name: payload.name,
       picture: payload.picture,
     },

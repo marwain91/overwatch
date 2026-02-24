@@ -3,6 +3,15 @@ import * as path from 'path';
 import { getAppsDir, getDataDir } from '../config';
 import { withFileLock } from './fileLock';
 
+/** Verify that a resolved path stays within an expected parent directory */
+async function assertWithinDir(childPath: string, parentDir: string): Promise<void> {
+  const realChild = await fs.realpath(childPath);
+  const realParent = await fs.realpath(parentDir);
+  if (!realChild.startsWith(realParent + '/') && realChild !== realParent) {
+    throw new Error(`Path ${childPath} resolves outside of expected directory`);
+  }
+}
+
 function getEnvVarsFile(): string {
   return path.join(getDataDir(), 'env-vars.json');
 }
@@ -16,7 +25,10 @@ const PROTECTED_KEYS = new Set([
   'DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME',
   'JWT_SECRET', 'JWT_EXPIRES_IN', 'TENANT_ID', 'TENANT_DOMAIN',
   'IMAGE_REGISTRY', 'IMAGE_TAG', 'PROJECT_PREFIX', 'SHARED_NETWORK',
-  'APP_ID',
+  'APP_ID', 'CERT_RESOLVER',
+  // Node.js / system vars that could alter runtime behavior
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS', 'NODE_TLS_REJECT_UNAUTHORIZED',
+  'LD_PRELOAD', 'LD_LIBRARY_PATH', 'PATH', 'HOME', 'SHELL',
 ]);
 
 export interface EnvVar {
@@ -322,6 +334,9 @@ export async function generateSharedEnvFile(appId: string, tenantId: string): Pr
   } catch {
     return; // Skip if tenant directory doesn't exist
   }
+
+  // Verify path hasn't been manipulated via symlinks
+  await assertWithinDir(tenantPath, appsDir);
 
   const effective = await getEffectiveEnvVars(appId, tenantId);
 

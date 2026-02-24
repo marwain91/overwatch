@@ -64,6 +64,9 @@ async function start() {
   const app = express();
   const PORT = process.env.PORT || 3002;
 
+  // Trust the first proxy hop (Traefik/nginx) for correct req.ip
+  app.set('trust proxy', 1);
+
   // Middleware
   app.use(express.json({ limit: '1mb' }));
 

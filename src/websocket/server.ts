@@ -8,17 +8,36 @@ import { createWSMessage, WSMessage } from './types';
 const JWT_SECRET = process.env.JWT_SECRET!;
 const HEARTBEAT_INTERVAL = 30_000;
 const AUTH_TIMEOUT = 5_000; // 5 seconds to authenticate after connecting
+const MAX_PAYLOAD = 4 * 1024; // 4 KB — auth messages only, no large payloads needed
+const MAX_CONNECTIONS_PER_USER = 5;
 
 let wss: WebSocketServer | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 const clients = new Set<WebSocket>();
+const connectionsByUser = new Map<string, number>();
 
-function verifyToken(token: string): boolean {
+function verifyToken(token: string): { valid: boolean; email?: string } {
   try {
-    jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-    return true;
+    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { email: string };
+    return { valid: true, email: decoded.email };
   } catch {
-    return false;
+    return { valid: false };
+  }
+}
+
+function trackConnection(email: string): boolean {
+  const count = connectionsByUser.get(email) || 0;
+  if (count >= MAX_CONNECTIONS_PER_USER) return false;
+  connectionsByUser.set(email, count + 1);
+  return true;
+}
+
+function untrackConnection(email: string): void {
+  const count = connectionsByUser.get(email) || 0;
+  if (count <= 1) {
+    connectionsByUser.delete(email);
+  } else {
+    connectionsByUser.set(email, count - 1);
   }
 }
 
@@ -32,7 +51,7 @@ function broadcast(msg: WSMessage): void {
 }
 
 export function createWebSocketServer(server: HTTPServer): WebSocketServer {
-  wss = new WebSocketServer({ noServer: true });
+  wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
 
   server.on('upgrade', (request, socket, head) => {
     // Only handle /ws path
@@ -40,6 +59,22 @@ export function createWebSocketServer(server: HTTPServer): WebSocketServer {
     if (pathname !== '/ws') {
       socket.destroy();
       return;
+    }
+
+    // Validate origin — must match the Host header (same-origin)
+    const origin = request.headers.origin;
+    const host = request.headers.host;
+    if (origin && host) {
+      try {
+        const originHost = new URL(origin).host;
+        if (originHost !== host) {
+          socket.destroy();
+          return;
+        }
+      } catch {
+        socket.destroy();
+        return;
+      }
     }
 
     wss!.handleUpgrade(request, socket, head, (ws) => {
@@ -54,10 +89,18 @@ export function createWebSocketServer(server: HTTPServer): WebSocketServer {
 
       ws.once('message', (data) => {
         clearTimeout(authTimer);
+        if ((ws as any).authenticated) return; // Already handled or closed
         try {
           const msg = JSON.parse(data.toString());
-          if (msg.type === 'auth' && msg.token && verifyToken(msg.token)) {
+          const result = verifyToken(msg.token);
+          if (msg.type === 'auth' && msg.token && result.valid && result.email) {
+            // Enforce per-user connection limit
+            if (!trackConnection(result.email)) {
+              ws.close(4029, 'Too many connections');
+              return;
+            }
             (ws as any).authenticated = true;
+            (ws as any).userEmail = result.email;
             clients.add(ws);
             (ws as any).isAlive = true;
             ws.send(JSON.stringify({ type: 'auth:ok' }));
@@ -79,10 +122,14 @@ export function createWebSocketServer(server: HTTPServer): WebSocketServer {
 
     ws.on('close', () => {
       clients.delete(ws);
+      const email = (ws as any).userEmail;
+      if (email) untrackConnection(email);
     });
 
     ws.on('error', () => {
       clients.delete(ws);
+      const email = (ws as any).userEmail;
+      if (email) untrackConnection(email);
     });
   });
 
@@ -137,6 +184,7 @@ export function stopWebSocketServer(): void {
     client.terminate();
   }
   clients.clear();
+  connectionsByUser.clear();
   if (wss) {
     wss.close();
     wss = null;

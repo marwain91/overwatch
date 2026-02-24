@@ -29,9 +29,20 @@ function isValidWebhookUrl(url: string): string | null {
   }
 }
 
+/** Safely extract a single string from a query param that may be an array */
+function queryString(val: unknown): string | undefined {
+  if (Array.isArray(val)) return typeof val[0] === 'string' ? val[0] : undefined;
+  return typeof val === 'string' ? val : undefined;
+}
+
+function queryInt(val: unknown, fallback: number, min: number, max: number): number {
+  const raw = parseInt(queryString(val) || '', 10);
+  return Number.isInteger(raw) ? Math.max(min, Math.min(raw, max)) : fallback;
+}
+
 // GET /api/monitoring/metrics — current + history for all containers
 router.get('/metrics', asyncHandler(async (req, res) => {
-  const appId = req.query.appId as string | undefined;
+  const appId = queryString(req.query.appId);
   if (appId && !ID_RE.test(appId)) {
     return res.status(400).json({ error: 'Invalid app ID format' });
   }
@@ -61,7 +72,7 @@ router.get('/metrics/history/:containerName', asyncHandler(async (req, res) => {
 
 // GET /api/monitoring/health — all health check states
 router.get('/health', asyncHandler(async (req, res) => {
-  const appId = req.query.appId as string | undefined;
+  const appId = queryString(req.query.appId);
   if (appId && !ID_RE.test(appId)) {
     return res.status(400).json({ error: 'Invalid app ID format' });
   }
@@ -72,7 +83,7 @@ router.get('/health', asyncHandler(async (req, res) => {
 
 // GET /api/monitoring/alerts — alert history (paginated)
 router.get('/alerts', asyncHandler(async (req, res) => {
-  const limit = Math.max(1, Math.min(parseInt(req.query.limit as string) || 50, 500));
+  const limit = queryInt(req.query.limit, 50, 1, 500);
   const history = await getAlertHistory(limit);
   res.json(history);
 }));

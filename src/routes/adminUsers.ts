@@ -54,7 +54,11 @@ router.post('/', asyncHandler(async (req: Request, res: Response) => {
 
 // Remove an admin user
 router.delete('/:email', asyncHandler(async (req: Request, res: Response) => {
-  const { email } = req.params;
+  const email = decodeURIComponent(req.params.email).trim().toLowerCase();
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'Invalid email format' });
+  }
 
   const currentUser = getCurrentUserEmail(req);
   if (!currentUser) {

@@ -6,6 +6,16 @@ import { DatabaseAdapter, DatabaseAdapterConfig } from './types';
 
 const execFileAsync = promisify(execFile);
 
+/** Validate that a database/user name contains only safe characters */
+function assertSafeIdentifier(name: string): void {
+  if (!/^[a-z0-9_]+$/.test(name)) {
+    throw new Error(`Unsafe database identifier: ${name}`);
+  }
+  if (name.length > 63) {
+    throw new Error(`Database identifier too long: ${name}`);
+  }
+}
+
 /**
  * PostgreSQL database adapter
  */
@@ -58,6 +68,10 @@ export class PostgresAdapter implements DatabaseAdapter {
 
     const dbName = this.getDatabaseName(tenantId);
     const userName = this.getUserName(tenantId);
+
+    assertSafeIdentifier(dbName);
+    assertSafeIdentifier(userName);
+
     const client = await this.pool!.connect();
 
     try {
@@ -100,6 +114,10 @@ export class PostgresAdapter implements DatabaseAdapter {
 
     const dbName = this.getDatabaseName(tenantId);
     const userName = this.getUserName(tenantId);
+
+    assertSafeIdentifier(dbName);
+    assertSafeIdentifier(userName);
+
     const client = await this.pool!.connect();
 
     try {

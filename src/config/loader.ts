@@ -79,12 +79,17 @@ export function loadConfig(): OverwatchConfig {
   return cachedConfig;
 }
 
+/** Allowed env var name pattern — prevents access to arbitrary process vars */
+const SAFE_ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+
 /**
  * Get a resolved configuration value, interpolating environment variables.
  * Supports ${ENV_VAR} and ${ENV_VAR:default} syntax.
+ * Single-pass only — resolved values are NOT re-expanded.
  */
 export function resolveEnvValue(template: string): string {
-  return template.replace(/\$\{([^}:]+)(?::([^}]*))?\}/g, (_, envVar, defaultValue) => {
+  return template.replace(/\$\{([^}:]+)(?::([^}]*))?\}/g, (match, envVar, defaultValue) => {
+    if (!SAFE_ENV_NAME.test(envVar)) return match; // skip invalid var names
     return process.env[envVar] || defaultValue || '';
   });
 }

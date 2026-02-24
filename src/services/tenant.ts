@@ -12,6 +12,15 @@ import { AppDefinition } from '../models/app';
 
 const execFileAsync = promisify(execFile);
 
+/** Verify that a resolved path stays within an expected parent directory */
+async function assertWithinDir(childPath: string, parentDir: string): Promise<void> {
+  const realChild = await fs.realpath(childPath);
+  const realParent = await fs.realpath(parentDir);
+  if (!realChild.startsWith(realParent + '/') && realChild !== realParent) {
+    throw new Error(`Path ${childPath} resolves outside of expected directory`);
+  }
+}
+
 export interface CreateTenantInput {
   appId: string;
   tenantId: string;
@@ -62,13 +71,20 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   const tag = imageTag || app.default_image_tag || 'latest';
   const tenantPath = getTenantPath(appId, tenantId);
 
-  // Check if tenant already exists
+  // Atomically create tenant directory — fails if already exists (prevents TOCTOU race)
+  const tenantsDir = path.join(getAppsDir(), appId, 'tenants');
+  await fs.mkdir(tenantsDir, { recursive: true });
   try {
-    await fs.access(tenantPath);
-    throw new Error(`Tenant '${tenantId}' already exists in app '${appId}'`);
+    await fs.mkdir(tenantPath); // NOT recursive — fails if exists
   } catch (err: any) {
-    if (err.code !== 'ENOENT') throw err;
+    if (err.code === 'EEXIST') {
+      throw new Error(`Tenant '${tenantId}' already exists in app '${appId}'`);
+    }
+    throw err;
   }
+
+  // Verify the path hasn't been manipulated via symlinks
+  await assertWithinDir(tenantPath, tenantsDir);
 
   // Get credential lengths from app or global config
   const dbPasswordLength = app.credentials?.db_password_length || config.credentials?.db_password_length || 32;
@@ -87,8 +103,6 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   let dbCreated = true;
 
   try {
-    // Create tenant directory
-    await fs.mkdir(tenantPath, { recursive: true });
 
     // Generate .env file
     const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
@@ -138,6 +152,10 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
     throw new Error(`Tenant '${tenantId}' not found in app '${appId}'`);
   }
 
+  // Verify path hasn't been manipulated via symlinks
+  const appsDir = getAppsDir();
+  await assertWithinDir(tenantPath, appsDir);
+
   // Read DB_NAME from tenant .env (may differ from constructed name for migrated tenants)
   let dbName = `${dbPrefix}_${appId}_${tenantId}`;
   try {
@@ -182,6 +200,9 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   } catch {
     throw new Error(`Tenant '${tenantId}' not found in app '${appId}'`);
   }
+
+  // Verify path hasn't been manipulated via symlinks
+  await assertWithinDir(tenantPath, getAppsDir());
 
   // Load app definition
   const app = await getApp(appId);

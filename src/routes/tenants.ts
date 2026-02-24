@@ -137,15 +137,16 @@ router.post('/:tenantId/access-token', validateTenantId, asyncHandler(async (req
 
   const urlTemplate = adminAccess.url_template || 'https://${domain}/admin-login?token=${token}';
   const accessUrl = urlTemplate
-    .replace('${domain}', tenantInfo.domain)
-    .replace('${token}', adminToken)
-    .replace('${tenantId}', tenantId);
+    .replace('${domain}', encodeURIComponent(tenantInfo.domain))
+    .replace('${token}', encodeURIComponent(adminToken))
+    .replace('${tenantId}', encodeURIComponent(tenantId));
 
   res.json({
     success: true,
     appId,
     tenantId,
     accessUrl,
+    token: adminToken,
     expiresIn: '1 hour',
   });
 }));

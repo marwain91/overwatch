@@ -1,6 +1,21 @@
 import { AppDefinition, AppService } from '../models/app';
 import { OverwatchConfig } from '../config/schema';
 
+/** Escape a value for safe use inside a double-quoted YAML string */
+function yamlEscape(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r');
+}
+
+/** Validate that a value is safe to embed in a Traefik backtick-delimited rule */
+function sanitizeTraefikValue(value: string): string {
+  // Backticks and double quotes would break the label structure
+  return value.replace(/[`"\\]/g, '');
+}
+
 interface GenerateOptions {
   app: AppDefinition;
   tenantId: string;
@@ -52,7 +67,7 @@ export function generateComposeFile(options: GenerateOptions): string {
 
     // User
     if (service.user) {
-      lines.push(`    user: "${service.user}"`);
+      lines.push(`    user: "${yamlEscape(service.user)}"`);
     }
 
     // Environment files
@@ -64,7 +79,7 @@ export function generateComposeFile(options: GenerateOptions): string {
     if (service.command && service.command.length > 0) {
       lines.push('    command:');
       for (const cmd of service.command) {
-        lines.push(`      - "${cmd}"`);
+        lines.push(`      - "${yamlEscape(cmd)}"`);
       }
     }
 
@@ -73,7 +88,7 @@ export function generateComposeFile(options: GenerateOptions): string {
       lines.push('    environment:');
       for (const [key, value] of Object.entries(service.env_mapping)) {
         const resolved = resolveEnvValue(value, { config, domain, service });
-        lines.push(`      ${key}: "${resolved}"`);
+        lines.push(`      ${key}: "${yamlEscape(resolved)}"`);
       }
     }
 
@@ -156,20 +171,24 @@ export function generateComposeFile(options: GenerateOptions): string {
       lines.push('      - "traefik.enable=true"');
 
       // Host rule with optional path prefix(es)
-      let rule = `Host(\`${domain}\`)`;
+      const safeDomain = sanitizeTraefikValue(domain);
+      let rule = `Host(\`${safeDomain}\`)`;
       const additionalPrefixes = service.routing?.additional_path_prefixes;
       if (pathPrefix && additionalPrefixes && additionalPrefixes.length > 0) {
         const allPrefixes = [pathPrefix, ...additionalPrefixes];
-        rule += ` && (${allPrefixes.map(p => `PathPrefix(\`${p}\`)`).join(' || ')})`;
+        rule += ` && (${allPrefixes.map(p => `PathPrefix(\`${sanitizeTraefikValue(p)}\`)`).join(' || ')})`;
       } else if (pathPrefix) {
-        rule += ` && PathPrefix(\`${pathPrefix}\`)`;
+        rule += ` && PathPrefix(\`${sanitizeTraefikValue(pathPrefix)}\`)`;
       }
       lines.push(`      - "traefik.http.routers.${routerName}.rule=${rule}"`);
       lines.push(`      - "traefik.http.routers.${routerName}.entrypoints=websecure"`);
       lines.push(`      - "traefik.http.routers.${routerName}.tls=true"`);
 
       if (priority !== undefined) {
-        lines.push(`      - "traefik.http.routers.${routerName}.priority=${priority}"`);
+        const safePriority = Number.isInteger(Number(priority)) ? Number(priority) : undefined;
+        if (safePriority !== undefined) {
+          lines.push(`      - "traefik.http.routers.${routerName}.priority=${safePriority}"`);
+        }
       }
 
       // Cert resolver: use env var set per-tenant based on domain matching
@@ -178,8 +197,8 @@ export function generateComposeFile(options: GenerateOptions): string {
       // StripPrefix middleware
       if (pathPrefix && service.routing?.strip_prefix) {
         const allPrefixes = additionalPrefixes && additionalPrefixes.length > 0
-          ? [pathPrefix, ...additionalPrefixes].join(',')
-          : pathPrefix;
+          ? [pathPrefix, ...additionalPrefixes].map(p => sanitizeTraefikValue(p)).join(',')
+          : sanitizeTraefikValue(pathPrefix);
         lines.push(`      - "traefik.http.middlewares.${routerName}-strip.stripprefix.prefixes=${allPrefixes}"`);
         lines.push(`      - "traefik.http.routers.${routerName}.middlewares=${routerName}-strip"`);
       }

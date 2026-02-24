@@ -6,6 +6,16 @@ import { DatabaseAdapter, DatabaseAdapterConfig } from './types';
 
 const execFileAsync = promisify(execFile);
 
+/** Validate that a database/user name contains only safe characters */
+function assertSafeIdentifier(name: string): void {
+  if (!/^[a-z0-9_]+$/.test(name)) {
+    throw new Error(`Unsafe database identifier: ${name}`);
+  }
+  if (name.length > 64) {
+    throw new Error(`Database identifier too long: ${name}`);
+  }
+}
+
 /**
  * MySQL/MariaDB database adapter
  */
@@ -58,21 +68,23 @@ export class MySQLAdapter implements DatabaseAdapter {
 
     const dbName = this.getDatabaseName(tenantId);
     const userName = this.getUserName(tenantId);
+
+    // Validate identifiers contain only safe characters (a-z, 0-9, _)
+    assertSafeIdentifier(dbName);
+    assertSafeIdentifier(userName);
+
     const connection = await this.pool!.getConnection();
 
     try {
-      // Escape identifiers as defense-in-depth
-      const safeDb = dbName.replace(/`/g, '``');
-      const safeUser = userName.replace(/'/g, "''");
       await connection.query(
-        `CREATE DATABASE IF NOT EXISTS \`${safeDb}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+        `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
       );
       await connection.query(
-        `CREATE USER IF NOT EXISTS '${safeUser}'@'%' IDENTIFIED BY ?`,
+        `CREATE USER IF NOT EXISTS '${userName}'@'%' IDENTIFIED BY ?`,
         [password]
       );
       await connection.query(
-        `GRANT ALL PRIVILEGES ON \`${safeDb}\`.* TO '${safeUser}'@'%'`
+        `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${userName}'@'%'`
       );
       await connection.query('FLUSH PRIVILEGES');
     } finally {
@@ -87,13 +99,15 @@ export class MySQLAdapter implements DatabaseAdapter {
 
     const dbName = this.getDatabaseName(tenantId);
     const userName = this.getUserName(tenantId);
+
+    assertSafeIdentifier(dbName);
+    assertSafeIdentifier(userName);
+
     const connection = await this.pool!.getConnection();
 
     try {
-      const safeDb = dbName.replace(/`/g, '``');
-      const safeUser = userName.replace(/'/g, "''");
-      await connection.query(`DROP DATABASE IF EXISTS \`${safeDb}\``);
-      await connection.query(`DROP USER IF EXISTS '${safeUser}'@'%'`);
+      await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
+      await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`);
       await connection.query('FLUSH PRIVILEGES');
     } finally {
       connection.release();

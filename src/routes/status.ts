@@ -26,7 +26,8 @@ router.get('/containers/:containerId/logs', asyncHandler(async (req, res) => {
   if (!isValidContainerId(containerId)) {
     return res.status(400).json({ error: 'Invalid container ID format' });
   }
-  const tail = Math.max(1, Math.min(parseInt(req.query.tail as string) || 100, 10000));
+  const tailParam = parseInt(req.query.tail as string, 10);
+  const tail = Number.isInteger(tailParam) ? Math.max(1, Math.min(tailParam, 10000)) : 100;
   const logs = await getContainerLogs(containerId, tail);
   res.json({ logs });
 }));

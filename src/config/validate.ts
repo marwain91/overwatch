@@ -16,6 +16,9 @@ export function validateEnvironment(config: OverwatchConfig): ValidationError[] 
 
   // --- Core ---
   requireEnv(errors, 'core', 'JWT_SECRET');
+  if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+    errors.push({ category: 'core', message: 'JWT_SECRET must be at least 32 characters for adequate security' });
+  }
   requireEnv(errors, 'core', 'GOOGLE_CLIENT_ID');
 
   // --- Database ---

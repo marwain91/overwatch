@@ -97,16 +97,29 @@ function describeAction(method: string, fullPath: string, body?: Record<string, 
   return `${method} ${fullPath}`;
 }
 
+const SENSITIVE_KEYS = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key'];
+
+function sanitizeValue(val: unknown, depth: number = 0): unknown {
+  if (depth > 5 || val === null || val === undefined) return val;
+  if (Array.isArray(val)) return val.map(v => sanitizeValue(v, depth + 1));
+  if (typeof val === 'object') {
+    const obj = val as Record<string, unknown>;
+    const sanitized: Record<string, unknown> = {};
+    for (const key of Object.keys(obj)) {
+      if (SENSITIVE_KEYS.some(s => key.toLowerCase().includes(s))) {
+        sanitized[key] = '[redacted]';
+      } else {
+        sanitized[key] = sanitizeValue(obj[key], depth + 1);
+      }
+    }
+    return sanitized;
+  }
+  return val;
+}
+
 function sanitizeBody(body: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (!body) return undefined;
-  const sanitized = { ...body };
-  const sensitiveKeys = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key'];
-  for (const key of Object.keys(sanitized)) {
-    if (sensitiveKeys.some(s => key.toLowerCase().includes(s))) {
-      sanitized[key] = '[redacted]';
-    }
-  }
-  return sanitized;
+  return sanitizeValue(body) as Record<string, unknown>;
 }
 
 export function auditLog(req: Request, res: Response, next: NextFunction) {
