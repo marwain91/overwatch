@@ -217,11 +217,26 @@ export async function getTenantInfo(appId: string, tenantId: string): Promise<{ 
   }
 }
 
+export async function ensureExternalVolumes(composePath: string): Promise<void> {
+  const content = await fs.readFile(composePath, 'utf-8');
+  const volumeRegex = /^  ([^\s:]+):\s*\n\s+external:\s*true/gm;
+  let match;
+  while ((match = volumeRegex.exec(content)) !== null) {
+    const volumeName = match[1];
+    try {
+      await execFileAsync('docker', ['volume', 'inspect', volumeName]);
+    } catch {
+      await execFileAsync('docker', ['volume', 'create', volumeName]);
+    }
+  }
+}
+
 export async function startTenant(appId: string, tenantId: string): Promise<void> {
   const appsDir = getAppsDir();
   const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
   await assertWithinDir(tenantPath, appsDir);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
+  await ensureExternalVolumes(composePath);
   await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d']);
 }
 
@@ -238,6 +253,7 @@ export async function restartTenant(appId: string, tenantId: string): Promise<vo
   const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
   await assertWithinDir(tenantPath, appsDir);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
+  await ensureExternalVolumes(composePath);
   await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
 }
 

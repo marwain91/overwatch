@@ -8,6 +8,7 @@ import { getDatabaseAdapter } from '../adapters/database';
 import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
 import { getApp } from './app';
 import { generateComposeFile } from './composeGenerator';
+import { ensureExternalVolumes } from './docker';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
 import { isValidSlug } from '../utils/validators';
@@ -114,8 +115,10 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     });
     await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), composeContent);
 
-    // Start tenant
-    await execFileAsync('docker', ['compose', '-f', path.join(tenantPath, 'docker-compose.yml'), 'up', '-d']);
+    // Create external volumes and start tenant
+    const composePath = path.join(tenantPath, 'docker-compose.yml');
+    await ensureExternalVolumes(composePath);
+    await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d']);
   } catch (error) {
     // Cleanup on failure - remove directory and database
     await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
@@ -236,6 +239,7 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   // Pull new images and restart - restore old files on failure
   try {
     await execFileAsync('docker', ['compose', '-f', composePath, 'pull']);
+    await ensureExternalVolumes(composePath);
     await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
   } catch (error) {
     await fs.writeFile(envPath, originalEnvContent);
