@@ -257,8 +257,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     await fs.mkdir(tenantBackupDir, { recursive: true, mode: 0o700 });
 
     // Dump database using adapter
-    const dbPrefix = config.project.db_prefix;
-    const dbName = `${dbPrefix}_${appId}_${tenantId}`;
+    const dbName = `${appId}_${tenantId}`;
     try {
       await db.initialize();
       await db.dumpDatabase(dbName, path.join(tenantBackupDir, 'database.sql'));
@@ -457,8 +456,7 @@ export async function restoreBackup(
     }
 
     // Restore database using adapter
-    const dbPrefix = config.project.db_prefix;
-    const dbName = `${dbPrefix}_${appId}_${targetTenantId}`;
+    const dbName = `${appId}_${targetTenantId}`;
     const sqlFile = path.join(tenantBackupDir, 'database.sql');
     try {
       await fs.access(sqlFile);

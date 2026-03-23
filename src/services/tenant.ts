@@ -90,10 +90,10 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   const jwtSecret = generatePassword(jwtSecretLength);
 
   // Initialize database adapter and create database
-  // DB name: {db_prefix}_{appId}_{tenantId}
-  const dbName = `${dbPrefix}_${appId}_${tenantId}`;
+  // Adapter prepends db_prefix, so pass appId_tenantId
+  const dbTenantId = `${appId}_${tenantId}`;
   await db.initialize();
-  await db.createDatabase(dbName, dbPassword);
+  await db.createDatabase(dbTenantId, dbPassword);
 
   let dbCreated = true;
 
@@ -123,7 +123,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     // Cleanup on failure - remove directory and database
     await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
     if (dbCreated) {
-      await db.dropDatabase(dbName).catch(() => {});
+      await db.dropDatabase(dbTenantId).catch(() => {});
     }
     throw new Error(`Failed to create tenant: ${error instanceof Error ? error.message : error}`);
   }
@@ -154,12 +154,15 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   await assertWithinDir(tenantPath, appsDir);
 
   // Read DB_NAME from tenant .env (may differ from constructed name for migrated tenants)
-  let dbName = `${dbPrefix}_${appId}_${tenantId}`;
+  // The adapter prepends db_prefix, so we pass appId_tenantId as the identifier
+  let dbTenantId = `${appId}_${tenantId}`;
   try {
     const envContent = await fs.readFile(path.join(tenantPath, '.env'), 'utf-8');
     const env = parseEnv(envContent);
     if (env.DB_NAME) {
-      dbName = env.DB_NAME;
+      // Strip the db_prefix if present, since the adapter adds it
+      const prefix = `${dbPrefix}_`;
+      dbTenantId = env.DB_NAME.startsWith(prefix) ? env.DB_NAME.slice(prefix.length) : env.DB_NAME;
     }
   } catch {
     // Fall back to constructed name
@@ -178,7 +181,7 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   // Drop database unless keeping data
   if (!keepData) {
     await db.initialize();
-    await db.dropDatabase(dbName);
+    await db.dropDatabase(dbTenantId);
   }
 
   // Remove tenant directory
@@ -280,10 +283,10 @@ function generateEnvContent(
   dbPassword: string,
   jwtSecret: string
 ): string {
-  const dbPrefix = config.project.db_prefix;
   const imageRegistry = `${app.registry.url}/${app.registry.repository}`;
   const sharedNetwork = config.networking?.external_network || `${config.project.prefix}-network`;
-  const dbName = `${dbPrefix}_${app.id}_${tenantId}`;
+  const db = getDatabaseAdapter();
+  const dbName = db.getDatabaseName(`${app.id}_${tenantId}`);
 
   // Determine cert resolver based on domain matching
   const certResolvers = config.networking?.cert_resolvers;
