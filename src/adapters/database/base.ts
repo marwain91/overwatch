@@ -1,4 +1,4 @@
-import { DatabaseAdapter, DatabaseAdapterConfig } from './types';
+import { DatabaseAdapter, DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from './types';
 import { assertSafeIdentifier } from '../../utils/security';
 
 /**
@@ -72,4 +72,9 @@ export abstract class BaseDatabaseAdapter implements DatabaseAdapter {
   abstract listDatabases(): Promise<string[]>;
   abstract dumpDatabase(tenantId: string, outputPath: string): Promise<void>;
   abstract restoreDatabase(tenantId: string, inputPath: string): Promise<void>;
+  abstract getServerInfo(): Promise<DatabaseServerInfo>;
+  abstract getServerStats(): Promise<DatabaseServerStats>;
+  abstract getDatabasesWithDetails(): Promise<DatabaseDetail[]>;
+  abstract getProcessList(): Promise<DatabaseProcess[]>;
+  abstract killProcess(id: number): Promise<void>;
 }

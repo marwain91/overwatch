@@ -203,6 +203,40 @@ export interface BackupSummary {
   endpoint?: string | null;
 }
 
+// Database Management
+export interface DatabaseServerInfo {
+  type: string;
+  version: string;
+  uptime: number;
+  host: string;
+  port: number;
+}
+
+export interface DatabaseServerStats {
+  connections: { active: number; max: number; total: number };
+  queries: { total: number; perSecond: number };
+  threads: { running: number; cached: number; connected: number };
+  memory: { bufferPoolSize: number; bufferPoolUsed: number };
+}
+
+export interface DatabaseDetail {
+  name: string;
+  sizeBytes: number;
+  tableCount: number;
+  isTenantDb: boolean;
+}
+
+export interface DatabaseProcess {
+  id: number;
+  user: string;
+  database: string | null;
+  host: string;
+  command: string;
+  time: number;
+  state: string;
+  query: string | null;
+}
+
 // Auth
 export interface AuthUser {
   email: string;

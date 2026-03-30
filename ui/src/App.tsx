@@ -11,6 +11,7 @@ import { ActivityPage } from './pages/ActivityPage';
 import { EnvironmentPage } from './pages/EnvironmentPage';
 import { BackupsPage } from './pages/BackupsPage';
 import { AdminsPage } from './pages/AdminsPage';
+import { DatabasePage } from './pages/DatabasePage';
 import { TenantDetailPage } from './pages/TenantDetailPage';
 
 export default function App() {
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="apps/:appId/backups" element={<BackupsPage />} />
         <Route path="apps/:appId/environment" element={<EnvironmentPage />} />
         <Route path="admins" element={<AdminsPage />} />
+        <Route path="database" element={<DatabasePage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

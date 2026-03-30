@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { createReadStream } from 'fs';
-import { DatabaseAdapterConfig } from './types';
+import { DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from './types';
 import { BaseDatabaseAdapter } from './base';
 
 const execFileAsync = promisify(execFile);
@@ -159,5 +159,130 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       });
       proc.on('error', reject);
     });
+  }
+
+  async getServerInfo(): Promise<DatabaseServerInfo> {
+    if (!this.pool) await this.initialize();
+
+    const versionResult = await this.pool!.query('SELECT version()');
+    const uptimeResult = await this.pool!.query('SELECT pg_postmaster_start_time()');
+
+    const version = versionResult.rows[0]?.version || 'unknown';
+    const startTime = new Date(uptimeResult.rows[0]?.pg_postmaster_start_time);
+    const uptime = Math.floor((Date.now() - startTime.getTime()) / 1000);
+
+    return {
+      type: 'postgres',
+      version,
+      uptime,
+      host: this.config.host,
+      port: this.config.port,
+    };
+  }
+
+  async getServerStats(): Promise<DatabaseServerStats> {
+    if (!this.pool) await this.initialize();
+
+    const connResult = await this.pool!.query(`
+      SELECT
+        (SELECT count(*) FROM pg_stat_activity) AS active,
+        (SELECT setting::int FROM pg_settings WHERE name = 'max_connections') AS max_conn
+    `);
+
+    const statsResult = await this.pool!.query(`
+      SELECT
+        SUM(xact_commit + xact_rollback) AS total_queries,
+        SUM(numbackends) AS backends
+      FROM pg_stat_database
+    `);
+
+    const uptimeResult = await this.pool!.query('SELECT pg_postmaster_start_time()');
+    const startTime = new Date(uptimeResult.rows[0]?.pg_postmaster_start_time);
+    const uptime = Math.max(1, Math.floor((Date.now() - startTime.getTime()) / 1000));
+
+    const memResult = await this.pool!.query(`
+      SELECT
+        (SELECT setting::bigint * 8192 FROM pg_settings WHERE name = 'shared_buffers') AS shared_buffers
+    `);
+
+    const totalQueries = parseInt(statsResult.rows[0]?.total_queries || '0', 10);
+    const active = parseInt(connResult.rows[0]?.active || '0', 10);
+    const maxConn = parseInt(connResult.rows[0]?.max_conn || '0', 10);
+
+    return {
+      connections: {
+        active,
+        max: maxConn,
+        total: totalQueries,
+      },
+      queries: {
+        total: totalQueries,
+        perSecond: Math.round((totalQueries / uptime) * 100) / 100,
+      },
+      threads: {
+        running: active,
+        cached: 0,
+        connected: active,
+      },
+      memory: {
+        bufferPoolSize: parseInt(memResult.rows[0]?.shared_buffers || '0', 10),
+        bufferPoolUsed: 0,
+      },
+    };
+  }
+
+  async getDatabasesWithDetails(): Promise<DatabaseDetail[]> {
+    if (!this.pool) await this.initialize();
+
+    const result = await this.pool!.query(`
+      SELECT
+        d.datname AS name,
+        pg_database_size(d.datname) AS "sizeBytes"
+      FROM pg_database d
+      WHERE d.datistemplate = false
+      ORDER BY pg_database_size(d.datname) DESC
+    `);
+
+    const prefix = this.config.dbPrefix + '_';
+    return result.rows.map((row) => ({
+      name: row.name,
+      sizeBytes: parseInt(row.sizeBytes, 10),
+      tableCount: 0,
+      isTenantDb: row.name.startsWith(prefix),
+    }));
+  }
+
+  async getProcessList(): Promise<DatabaseProcess[]> {
+    if (!this.pool) await this.initialize();
+
+    const result = await this.pool!.query(`
+      SELECT
+        pid,
+        usename,
+        datname,
+        client_addr,
+        state,
+        COALESCE(EXTRACT(EPOCH FROM now() - query_start)::int, 0) AS time,
+        query
+      FROM pg_stat_activity
+      WHERE pid <> pg_backend_pid()
+      ORDER BY COALESCE(query_start, backend_start) ASC
+    `);
+
+    return result.rows.map((row) => ({
+      id: row.pid,
+      user: row.usename || '',
+      database: row.datname || null,
+      host: row.client_addr || 'local',
+      command: row.state || 'unknown',
+      time: row.time || 0,
+      state: row.state || '',
+      query: row.query || null,
+    }));
+  }
+
+  async killProcess(id: number): Promise<void> {
+    if (!this.pool) await this.initialize();
+    await this.pool!.query('SELECT pg_terminate_backend($1)', [id]);
   }
 }

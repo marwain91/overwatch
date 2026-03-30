@@ -1,5 +1,40 @@
 import { DatabaseConfig } from '../../config';
 
+// Database management types
+
+export interface DatabaseServerInfo {
+  type: 'mysql' | 'mariadb' | 'postgres';
+  version: string;
+  uptime: number;
+  host: string;
+  port: number;
+}
+
+export interface DatabaseServerStats {
+  connections: { active: number; max: number; total: number };
+  queries: { total: number; perSecond: number };
+  threads: { running: number; cached: number; connected: number };
+  memory: { bufferPoolSize: number; bufferPoolUsed: number };
+}
+
+export interface DatabaseDetail {
+  name: string;
+  sizeBytes: number;
+  tableCount: number;
+  isTenantDb: boolean;
+}
+
+export interface DatabaseProcess {
+  id: number;
+  user: string;
+  database: string | null;
+  host: string;
+  command: string;
+  time: number;
+  state: string;
+  query: string | null;
+}
+
 /**
  * Interface for database adapters.
  * Each adapter handles database operations for a specific database engine.
@@ -59,6 +94,31 @@ export interface DatabaseAdapter {
    * Get the container name for Docker exec commands
    */
   getContainerName(): string;
+
+  /**
+   * Get server info (type, version, uptime)
+   */
+  getServerInfo(): Promise<DatabaseServerInfo>;
+
+  /**
+   * Get server statistics (connections, queries, threads, memory)
+   */
+  getServerStats(): Promise<DatabaseServerStats>;
+
+  /**
+   * List all databases with size and table count details
+   */
+  getDatabasesWithDetails(): Promise<DatabaseDetail[]>;
+
+  /**
+   * Get active processes/queries
+   */
+  getProcessList(): Promise<DatabaseProcess[]>;
+
+  /**
+   * Kill a running process by ID
+   */
+  killProcess(id: number): Promise<void>;
 }
 
 /**

@@ -17,6 +17,7 @@ import backupsRouter from './routes/backups';
 import envVarsRouter from './routes/envVars';
 import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
+import databaseRouter from './routes/database';
 import { regenerateAllSharedEnvFiles } from './services/envVars';
 import { startAllBackupSchedulers, stopBackupScheduler } from './services/scheduler';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
@@ -119,6 +120,7 @@ async function start() {
   app.use('/api/status', authMiddleware, apiLimiter, statusRouter);
   app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
   app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
+  app.use('/api/database', authMiddleware, apiLimiter, auditLog, databaseRouter);
 
   // Serve frontend for all other routes (SPA fallback)
   app.get('*', (_req, res) => {
