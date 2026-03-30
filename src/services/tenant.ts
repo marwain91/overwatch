@@ -239,16 +239,19 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
     await fs.writeFile(composePath, originalComposeContent);
   }
 
-  // Pull new images and restart - restore old files on failure
+  // Pull new images - roll back .env only if pull fails (tag may be invalid)
   try {
     await execFileAsync('docker', ['compose', '-f', composePath, 'pull']);
     await ensureExternalVolumes(composePath);
-    await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
   } catch (error) {
     await fs.writeFile(envPath, originalEnvContent);
     await fs.writeFile(composePath, originalComposeContent);
     throw error;
   }
+
+  // Restart containers with new images - do NOT roll back .env on failure,
+  // because docker may have already recreated containers with the new image
+  await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
 }
 
 export async function getTenantConfig(appId: string, tenantId: string): Promise<TenantConfig | null> {
