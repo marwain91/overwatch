@@ -148,7 +148,7 @@ Apps are created and managed through the web UI or API (`POST /api/apps`). Each 
       "required": true,
       "ports": { "internal": 3000 },
       "health_check": { "type": "http", "path": "/health", "port": 3000, "tool": "curl", "start_period": "30s" },
-      "routing": { "path_prefix": "/api", "additional_path_prefixes": ["/uploads"], "priority": 10 },
+      "routing": { "path_prefix": "/api", "additional_path_prefixes": ["/uploads"], "priority": 50 },
       "env_mapping": { "DB_HOST": "DB_HOST", "NODE_ENV": "NODE_ENV" },
       "volumes": [{ "name": "uploads", "container_path": "/app/uploads", "name_template": "${appId}-${tenantId}-uploads", "external": true }],
       "networks": ["external", "internal"],
@@ -201,7 +201,7 @@ Each service in an app defines a container that gets deployed per tenant:
 | `env_mapping` | No | Map environment variables to container vars |
 | `routing.path_prefix` | No | Traefik path prefix for routing (e.g. `"/api"`) |
 | `routing.additional_path_prefixes` | No | Extra path prefixes combined with OR (e.g. `["/uploads"]`) |
-| `routing.priority` | No | Traefik router priority |
+| `routing.priority` | No | Explicit Traefik router priority (set higher than frontend catch-all to ensure path-based routes win; omit to let Traefik auto-calculate from rule length) |
 | `routing.strip_prefix` | No | Add Traefik StripPrefix middleware for path_prefix routes (default: false) |
 | `volumes[].name` | No | Volume name |
 | `volumes[].container_path` | No | Mount path inside container |

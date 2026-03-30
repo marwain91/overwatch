@@ -64,7 +64,7 @@ services:
       - "traefik.http.routers.${TENANT_ID}-uploads.tls=true"
       - "traefik.http.routers.${TENANT_ID}-uploads.tls.certresolver=letsencrypt"
       - "traefik.http.routers.${TENANT_ID}-uploads.service=${TENANT_ID}-api"
-      - "traefik.http.routers.${TENANT_ID}-uploads.priority=10"
+      - "traefik.http.routers.${TENANT_ID}-uploads.priority=50"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/health"]
       interval: 30s
