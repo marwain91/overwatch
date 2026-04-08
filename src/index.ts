@@ -132,12 +132,11 @@ async function start() {
     }
   });
 
-  // Global error handler — log full error server-side, return sanitized message to client
+  // Global error handler — log full error server-side, return message to client
   app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(`Error in ${req.method} ${req.path}:`, err);
     const status = err.status || err.statusCode || 500;
-    // Only expose error messages for client errors (4xx); use generic message for server errors (5xx)
-    const message = status < 500 ? (err.message || 'Bad request') : 'Internal server error';
+    const message = err.message || (status < 500 ? 'Bad request' : 'Internal server error');
     res.status(status).json({ error: message });
   });
 
