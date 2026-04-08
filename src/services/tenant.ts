@@ -118,7 +118,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     // Create external volumes and start tenant
     const composePath = path.join(tenantPath, 'docker-compose.yml');
     await ensureExternalVolumes(composePath);
-    await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d']);
+    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d']);
   } catch (error) {
     // Cleanup on failure - remove directory and database
     await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
@@ -173,7 +173,7 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
 
   // Stop containers
   try {
-    await execFileAsync('docker', ['compose', '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
+    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
   } catch {
     // Ignore errors
   }
@@ -241,7 +241,7 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
 
   // Pull new images - roll back .env only if pull fails (tag may be invalid)
   try {
-    await execFileAsync('docker', ['compose', '-f', composePath, 'pull']);
+    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'pull']);
     await ensureExternalVolumes(composePath);
   } catch (error) {
     await fs.writeFile(envPath, originalEnvContent);
@@ -251,7 +251,7 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
 
   // Restart containers with new images - do NOT roll back .env on failure,
   // because docker may have already recreated containers with the new image
-  await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
+  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']);
 }
 
 export async function getTenantConfig(appId: string, tenantId: string): Promise<TenantConfig | null> {

@@ -237,7 +237,7 @@ export async function startTenant(appId: string, tenantId: string): Promise<void
   await assertWithinDir(tenantPath, appsDir);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
-  await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d']);
+  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d']);
 }
 
 export async function stopTenant(appId: string, tenantId: string): Promise<void> {
@@ -245,7 +245,7 @@ export async function stopTenant(appId: string, tenantId: string): Promise<void>
   const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
   await assertWithinDir(tenantPath, appsDir);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
-  await execFileAsync('docker', ['compose', '-f', composePath, 'down']);
+  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down']);
 }
 
 export async function restartTenant(appId: string, tenantId: string): Promise<void> {
@@ -254,6 +254,6 @@ export async function restartTenant(appId: string, tenantId: string): Promise<vo
   await assertWithinDir(tenantPath, appsDir);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
-  await execFileAsync('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate']);
+  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']);
 }
 
