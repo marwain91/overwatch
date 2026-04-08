@@ -185,7 +185,7 @@ export async function runMigration(): Promise<void> {
       // Copy tenant directory
       await fs.cp(oldPath, newPath, { recursive: true });
 
-      // Update .env with APP_ID
+      // Update .env with APP_ID and COMPOSE_PROJECT_NAME
       const envPath = path.join(newPath, '.env');
       try {
         let envContent = await fs.readFile(envPath, 'utf-8');
@@ -198,6 +198,10 @@ export async function runMigration(): Promise<void> {
           if (!envContent.includes('APP_ID=')) {
             envContent = `APP_ID=${appId}\n${envContent}`;
           }
+        }
+
+        if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
+          envContent = `COMPOSE_PROJECT_NAME=${appId}-${tenantId}\n${envContent}`;
         }
 
         await fs.writeFile(envPath, envContent);

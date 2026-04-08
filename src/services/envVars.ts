@@ -360,6 +360,59 @@ export async function generateSharedEnvFile(appId: string, tenantId: string): Pr
   await fs.writeFile(sharedEnvPath, lines.join('\n'));
 }
 
+/**
+ * Backfill COMPOSE_PROJECT_NAME into tenant .env files that don't have it.
+ * This prevents Docker Compose project name collisions when two apps
+ * have tenants with the same ID (e.g. both kwoutr and goalmaster have "daktela").
+ */
+export async function backfillComposeProjectNames(): Promise<number> {
+  const appsDir = getAppsDir();
+  let count = 0;
+
+  try {
+    const appDirs = await fs.readdir(appsDir, { withFileTypes: true });
+    for (const appEntry of appDirs) {
+      if (!appEntry.isDirectory()) continue;
+      const appId = appEntry.name;
+      const tenantsDir = path.join(appsDir, appId, 'tenants');
+
+      try {
+        const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
+        for (const tenantEntry of tenantDirs) {
+          if (!tenantEntry.isDirectory()) continue;
+          const tenantId = tenantEntry.name;
+          const envPath = path.join(tenantsDir, tenantId, '.env');
+
+          try {
+            let envContent = await fs.readFile(envPath, 'utf-8');
+            if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
+              envContent = envContent.replace(
+                /^(# App Identification)/m,
+                `# Docker Compose Project Name (must be unique across all apps)\nCOMPOSE_PROJECT_NAME=${appId}-${tenantId}\n\n$1`
+              );
+              // If the header wasn't found, just prepend it
+              if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
+                envContent = `COMPOSE_PROJECT_NAME=${appId}-${tenantId}\n${envContent}`;
+              }
+              await fs.writeFile(envPath, envContent);
+              count++;
+            }
+          } catch {
+            // No .env file, skip
+          }
+        }
+      } catch {
+        // No tenants dir for this app
+      }
+    }
+  } catch (error: any) {
+    if (error.code === 'ENOENT') return 0;
+    throw error;
+  }
+
+  return count;
+}
+
 export async function regenerateAllSharedEnvFiles(): Promise<number> {
   const appsDir = getAppsDir();
   let count = 0;

@@ -310,6 +310,9 @@ function generateEnvContent(
 # Tenant: ${tenantId}
 # Generated: ${new Date().toISOString()}
 
+# Docker Compose Project Name (must be unique across all apps)
+COMPOSE_PROJECT_NAME=${app.id}-${tenantId}
+
 # App Identification
 APP_ID=${app.id}
 

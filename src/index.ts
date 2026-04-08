@@ -18,7 +18,7 @@ import envVarsRouter from './routes/envVars';
 import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
 import databaseRouter from './routes/database';
-import { regenerateAllSharedEnvFiles } from './services/envVars';
+import { regenerateAllSharedEnvFiles, backfillComposeProjectNames } from './services/envVars';
 import { startAllBackupSchedulers, stopBackupScheduler } from './services/scheduler';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
 import { startDockerEventListener, stopDockerEventListener } from './services/dockerEvents';
@@ -151,6 +151,16 @@ async function start() {
     }
   } catch (error) {
     console.error('Warning: Registry login failed:', error);
+  }
+
+  // Backfill COMPOSE_PROJECT_NAME for existing tenants (prevents project name collisions)
+  try {
+    const backfilled = await backfillComposeProjectNames();
+    if (backfilled > 0) {
+      console.log(`Backfilled COMPOSE_PROJECT_NAME for ${backfilled} tenant(s)`);
+    }
+  } catch (error) {
+    console.error('Warning: Failed to backfill COMPOSE_PROJECT_NAME:', error);
   }
 
   // Generate shared.env files for all existing tenants
