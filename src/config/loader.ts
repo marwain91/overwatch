@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { OverwatchConfigSchema, OverwatchConfig } from './schema';
+import type { AppDefinition } from '../models/app';
 
 let cachedConfig: OverwatchConfig | null = null;
 
@@ -121,6 +122,18 @@ export function getContainerPrefix(): string {
  * Get the database name/user prefix from config
  */
 export function getDatabasePrefix(): string {
+  return loadConfig().project.db_prefix;
+}
+
+/**
+ * Resolve the effective database prefix for an app.
+ * When app.db_prefix is defined (including empty string), it overrides the project prefix.
+ * When undefined or no app is passed, falls back to project.db_prefix.
+ */
+export function resolveAppDbPrefix(app?: Pick<AppDefinition, 'db_prefix'>): string {
+  if (app && app.db_prefix !== undefined) {
+    return app.db_prefix;
+  }
   return loadConfig().project.db_prefix;
 }
 

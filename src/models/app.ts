@@ -119,6 +119,9 @@ export const AppDefinitionSchema = z.object({
   backup: AppBackupSchema.optional(),
   admin_access: AppAdminAccessSchema.optional(),
   credentials: AppCredentialsSchema.optional(),
+  db_prefix: z.string().optional().describe(
+    'Override project-level db_prefix for this app. Empty string means no prefix (DB name = ${appId}_${tenantId}). Omit to inherit project.db_prefix.'
+  ),
   default_image_tag: z.string().default('latest'),
   createdAt: z.string(),
   updatedAt: z.string(),

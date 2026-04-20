@@ -115,9 +115,9 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       await this.initialize();
     }
 
-    const pattern = `${this.config.dbPrefix}_%`;
+    const pattern = this.config.dbPrefix ? `${this.config.dbPrefix}_%` : '%';
     const result = await this.pool!.query(
-      `SELECT datname FROM pg_database WHERE datname LIKE $1`,
+      `SELECT datname FROM pg_database WHERE datname LIKE $1 AND datname NOT IN ('postgres', 'template0', 'template1')`,
       [pattern]
     );
     return result.rows.map(row => row.datname);
@@ -243,12 +243,13 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       ORDER BY pg_database_size(d.datname) DESC
     `);
 
-    const prefix = this.config.dbPrefix + '_';
+    const prefix = this.config.dbPrefix ? this.config.dbPrefix + '_' : '';
+    const systemDbs = new Set(['postgres', 'template0', 'template1']);
     return result.rows.map((row) => ({
       name: row.name,
       sizeBytes: parseInt(row.sizeBytes, 10),
       tableCount: 0,
-      isTenantDb: row.name.startsWith(prefix),
+      isTenantDb: prefix ? row.name.startsWith(prefix) : !systemDbs.has(row.name),
     }));
   }
 

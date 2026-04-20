@@ -1,13 +1,14 @@
-import { loadConfig } from '../../config';
+import { loadConfig, resolveAppDbPrefix } from '../../config';
 import { DatabaseAdapter, DatabaseAdapterConfig, toAdapterConfig } from './types';
 import { MySQLAdapter } from './mysql';
 import { PostgresAdapter } from './postgres';
+import type { AppDefinition } from '../../models/app';
 
 export * from './types';
 export { MySQLAdapter } from './mysql';
 export { PostgresAdapter } from './postgres';
 
-let cachedAdapter: DatabaseAdapter | null = null;
+const adapterCache = new Map<string, DatabaseAdapter>();
 
 /**
  * Create a database adapter based on the configuration
@@ -27,20 +28,27 @@ export function createDatabaseAdapter(adapterConfig?: DatabaseAdapterConfig): Da
 }
 
 /**
- * Get a singleton database adapter instance based on the Overwatch configuration
+ * Get a cached database adapter for the given app's effective db_prefix.
+ * When no app is provided, returns an adapter scoped to the project-level prefix.
+ * Adapters are cached per effective prefix so multi-app deployments don't share
+ * a single incorrect prefix across apps.
  */
-export function getDatabaseAdapter(): DatabaseAdapter {
-  if (!cachedAdapter) {
-    cachedAdapter = createDatabaseAdapter();
+export function getDatabaseAdapter(app?: Pick<AppDefinition, 'db_prefix'>): DatabaseAdapter {
+  const prefix = resolveAppDbPrefix(app);
+  let adapter = adapterCache.get(prefix);
+  if (!adapter) {
+    const config = loadConfig();
+    adapter = createDatabaseAdapter(toAdapterConfig(config.database, prefix));
+    adapterCache.set(prefix, adapter);
   }
-  return cachedAdapter;
+  return adapter;
 }
 
 /**
- * Clear the cached adapter (useful for testing or config changes)
+ * Clear all cached adapters (useful for testing or config changes)
  */
 export function clearAdapterCache(): void {
-  cachedAdapter = null;
+  adapterCache.clear();
 }
 
 /**

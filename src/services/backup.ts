@@ -231,7 +231,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
   }
 
   const config = loadConfig();
-  const db = getDatabaseAdapter();
+  const db = getDatabaseAdapter(app);
   const appsDir = getAppsDir();
 
   // Get backup-enabled services from app definition
@@ -256,14 +256,13 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     const tenantBackupDir = path.join(backupDir, tenant.tenantId);
     await fs.mkdir(tenantBackupDir, { recursive: true, mode: 0o700 });
 
-    // Dump database using adapter
+    // Dump database using adapter. DB-dump failures throw out to the outer
+    // try/catch so the backup is reported as failed — do NOT swallow, or restic
+    // will happily archive a folder without database.sql and the scheduler will
+    // report success while the backup is silently unrestorable.
     const dbName = `${appId}_${tenantId}`;
-    try {
-      await db.initialize();
-      await db.dumpDatabase(dbName, path.join(tenantBackupDir, 'database.sql'));
-    } catch (error: any) {
-      console.error(`Failed to dump database for ${tenant.tenantId}:`, error.message);
-    }
+    await db.initialize();
+    await db.dumpDatabase(dbName, path.join(tenantBackupDir, 'database.sql'));
 
     // Copy tenant config
     const tenantConfigDir = path.join(appsDir, appId, 'tenants', tenant.tenantId);
@@ -394,7 +393,7 @@ export async function restoreBackup(
   }
 
   const config = loadConfig();
-  const db = getDatabaseAdapter();
+  const db = getDatabaseAdapter(app);
 
   // Get backup-enabled services from app definition
   const backupServices = app.services

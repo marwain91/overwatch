@@ -56,11 +56,11 @@ export abstract class BaseDatabaseAdapter implements DatabaseAdapter {
   }
 
   getDatabaseName(tenantId: string): string {
-    return `${this.config.dbPrefix}_${tenantId}`;
+    return this.config.dbPrefix ? `${this.config.dbPrefix}_${tenantId}` : tenantId;
   }
 
   getUserName(tenantId: string): string {
-    return `${this.config.dbPrefix}_${tenantId}`;
+    return this.config.dbPrefix ? `${this.config.dbPrefix}_${tenantId}` : tenantId;
   }
 
   getContainerName(): string {

@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { loadConfig, getDatabasePrefix, getAppsDir } from '../config';
+import { loadConfig, getAppsDir, resolveAppDbPrefix } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
 import { getApp } from './app';
@@ -49,19 +49,18 @@ export function getTenantPath(appId: string, tenantId: string): string {
 export async function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
   const { appId, tenantId, domain, imageTag } = input;
   const config = loadConfig();
-  const db = getDatabaseAdapter();
-  const dbPrefix = getDatabasePrefix();
 
   // Validate tenant ID
   if (!validateTenantId(tenantId)) {
     throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
 
-  // Load app definition
+  // Load app definition first — adapter is scoped to the app's effective db_prefix
   const app = await getApp(appId);
   if (!app) {
     throw new Error(`App '${appId}' not found`);
   }
+  const db = getDatabaseAdapter(app);
 
   const tag = imageTag || app.default_image_tag || 'latest';
   const tenantPath = getTenantPath(appId, tenantId);
@@ -89,8 +88,8 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   const dbPassword = generatePassword(dbPasswordLength);
   const jwtSecret = generatePassword(jwtSecretLength);
 
-  // Initialize database adapter and create database
-  // Adapter prepends db_prefix, so pass appId_tenantId
+  // Initialize database adapter and create database.
+  // Adapter prepends the app's effective db_prefix (empty prefix → no prepend).
   const dbTenantId = `${appId}_${tenantId}`;
   await db.initialize();
   await db.createDatabase(dbTenantId, dbPassword);
@@ -138,9 +137,10 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
 }
 
 export async function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
-  const dbPrefix = getDatabasePrefix();
   const tenantPath = getTenantPath(appId, tenantId);
-  const db = getDatabaseAdapter();
+  const app = await getApp(appId);
+  const db = getDatabaseAdapter(app ?? undefined);
+  const effectivePrefix = resolveAppDbPrefix(app ?? undefined);
 
   // Check if tenant exists
   try {
@@ -154,15 +154,20 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   await assertWithinDir(tenantPath, appsDir);
 
   // Read DB_NAME from tenant .env (may differ from constructed name for migrated tenants)
-  // The adapter prepends db_prefix, so we pass appId_tenantId as the identifier
+  // The adapter prepends the app's effective db_prefix, so we pass appId_tenantId as the identifier
   let dbTenantId = `${appId}_${tenantId}`;
   try {
     const envContent = await fs.readFile(path.join(tenantPath, '.env'), 'utf-8');
     const env = parseEnv(envContent);
     if (env.DB_NAME) {
-      // Strip the db_prefix if present, since the adapter adds it
-      const prefix = `${dbPrefix}_`;
-      dbTenantId = env.DB_NAME.startsWith(prefix) ? env.DB_NAME.slice(prefix.length) : env.DB_NAME;
+      // Strip the effective prefix if present, since the adapter re-adds it.
+      // When the app has an empty prefix, pass DB_NAME through as-is.
+      if (effectivePrefix) {
+        const prefix = `${effectivePrefix}_`;
+        dbTenantId = env.DB_NAME.startsWith(prefix) ? env.DB_NAME.slice(prefix.length) : env.DB_NAME;
+      } else {
+        dbTenantId = env.DB_NAME;
+      }
     }
   } catch {
     // Fall back to constructed name
@@ -288,7 +293,7 @@ function generateEnvContent(
 ): string {
   const imageRegistry = `${app.registry.url}/${app.registry.repository}`;
   const sharedNetwork = config.networking?.external_network || `${config.project.prefix}-network`;
-  const db = getDatabaseAdapter();
+  const db = getDatabaseAdapter(app);
   const dbName = db.getDatabaseName(`${app.id}_${tenantId}`);
 
   // Determine cert resolver based on domain matching

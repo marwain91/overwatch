@@ -87,7 +87,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       await this.initialize();
     }
 
-    const pattern = `${this.config.dbPrefix}_%`;
+    const pattern = this.config.dbPrefix ? `${this.config.dbPrefix}_%` : '%';
     const [rows] = await this.pool!.query('SHOW DATABASES LIKE ?', [pattern]);
     return (rows as any[]).map(row => Object.values(row)[0] as string);
   }
@@ -204,12 +204,12 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       ORDER BY sizeBytes DESC
     `);
 
-    const prefix = this.config.dbPrefix + '_';
+    const prefix = this.config.dbPrefix ? this.config.dbPrefix + '_' : '';
     return (rows as any[]).map((row) => ({
       name: row.name,
       sizeBytes: parseInt(row.sizeBytes, 10),
       tableCount: parseInt(row.tableCount, 10),
-      isTenantDb: row.name.startsWith(prefix),
+      isTenantDb: prefix ? row.name.startsWith(prefix) : true,
     }));
   }
 
