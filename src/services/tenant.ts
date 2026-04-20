@@ -10,7 +10,7 @@ import { getApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { AppDefinition } from '../models/app';
-import { assertWithinDir } from '../utils/security';
+import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { isValidSlug } from '../utils/validators';
 import { parseEnv } from '../utils/env';
 
@@ -100,7 +100,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
 
     // Generate .env file
     const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
-    await fs.writeFile(path.join(tenantPath, '.env'), envContent);
+    await writeSecretFile(path.join(tenantPath, '.env'), envContent);
 
     // Generate shared.env for this tenant
     await generateSharedEnvFile(appId, tenantId);
@@ -221,7 +221,7 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
 
   // Update IMAGE_TAG in .env
   const newEnvContent = originalEnvContent.replace(/^IMAGE_TAG=.*/m, `IMAGE_TAG=${newTag}`);
-  await fs.writeFile(envPath, newEnvContent);
+  await writeSecretFile(envPath, newEnvContent);
 
   // Regenerate shared.env
   await generateSharedEnvFile(appId, tenantId);
@@ -249,7 +249,7 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
     await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'pull']);
     await ensureExternalVolumes(composePath);
   } catch (error) {
-    await fs.writeFile(envPath, originalEnvContent);
+    await writeSecretFile(envPath, originalEnvContent);
     await fs.writeFile(composePath, originalComposeContent);
     throw error;
   }

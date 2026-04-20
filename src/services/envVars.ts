@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getAppsDir, getDataDir } from '../config';
 import { withFileLock } from './fileLock';
-import { assertWithinDir } from '../utils/security';
+import { assertWithinDir, writeSecretFile } from '../utils/security';
 
 function getEnvVarsFile(): string {
   return path.join(getDataDir(), 'env-vars.json');
@@ -81,7 +81,7 @@ async function readEnvVarsStore(): Promise<EnvVarsStore> {
 
 async function saveEnvVarsStore(store: EnvVarsStore): Promise<void> {
   await ensureDataDir();
-  await fs.writeFile(getEnvVarsFile(), JSON.stringify(store, null, 2));
+  await writeSecretFile(getEnvVarsFile(), JSON.stringify(store, null, 2));
 }
 
 async function readTenantOverridesStore(): Promise<TenantOverridesStore> {
@@ -104,7 +104,7 @@ async function readTenantOverridesStore(): Promise<TenantOverridesStore> {
 
 async function saveTenantOverridesStore(store: TenantOverridesStore): Promise<void> {
   await ensureDataDir();
-  await fs.writeFile(getTenantOverridesFile(), JSON.stringify(store, null, 2));
+  await writeSecretFile(getTenantOverridesFile(), JSON.stringify(store, null, 2));
 }
 
 export function validateEnvVarKey(key: string): { valid: boolean; error?: string } {
@@ -357,7 +357,7 @@ export async function generateSharedEnvFile(appId: string, tenantId: string): Pr
     // File doesn't exist yet, that's fine
   }
 
-  await fs.writeFile(sharedEnvPath, lines.join('\n'));
+  await writeSecretFile(sharedEnvPath, lines.join('\n'));
 }
 
 /**
@@ -394,7 +394,7 @@ export async function backfillComposeProjectNames(): Promise<number> {
               if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
                 envContent = `COMPOSE_PROJECT_NAME=${appId}-${tenantId}\n${envContent}`;
               }
-              await fs.writeFile(envPath, envContent);
+              await writeSecretFile(envPath, envContent);
               count++;
             }
           } catch {
@@ -408,6 +408,55 @@ export async function backfillComposeProjectNames(): Promise<number> {
   } catch (error: any) {
     if (error.code === 'ENOENT') return 0;
     throw error;
+  }
+
+  return count;
+}
+
+/**
+ * One-time cleanup for deployments created before perm-hardening.
+ * Walks every known secret file and chmod 0600 if permissions are looser.
+ * Covers apps/<appId>/tenants/<tenantId>/{shared.env,.env} and data/{env-vars.json,tenant-env-overrides.json}.
+ */
+export async function tightenSecretFilePermissions(): Promise<number> {
+  const appsDir = getAppsDir();
+  const dataDir = getDataDir();
+  let count = 0;
+
+  const tighten = async (filePath: string): Promise<void> => {
+    try {
+      const stat = await fs.stat(filePath);
+      if ((stat.mode & 0o777) !== 0o600) {
+        await fs.chmod(filePath, 0o600);
+        count++;
+      }
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  };
+
+  await tighten(path.join(dataDir, 'env-vars.json'));
+  await tighten(path.join(dataDir, 'tenant-env-overrides.json'));
+
+  try {
+    const appDirs = await fs.readdir(appsDir, { withFileTypes: true });
+    for (const appEntry of appDirs) {
+      if (!appEntry.isDirectory()) continue;
+      const tenantsDir = path.join(appsDir, appEntry.name, 'tenants');
+      try {
+        const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
+        for (const tenantEntry of tenantDirs) {
+          if (!tenantEntry.isDirectory()) continue;
+          const tenantPath = path.join(tenantsDir, tenantEntry.name);
+          await tighten(path.join(tenantPath, '.env'));
+          await tighten(path.join(tenantPath, 'shared.env'));
+        }
+      } catch {
+        // no tenants dir for this app
+      }
+    }
+  } catch (error: any) {
+    if (error.code !== 'ENOENT') throw error;
   }
 
   return count;

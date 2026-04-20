@@ -18,7 +18,7 @@ import envVarsRouter from './routes/envVars';
 import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
 import databaseRouter from './routes/database';
-import { regenerateAllSharedEnvFiles, backfillComposeProjectNames } from './services/envVars';
+import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions } from './services/envVars';
 import { startAllBackupSchedulers, stopBackupScheduler } from './services/scheduler';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
 import { startDockerEventListener, stopDockerEventListener } from './services/dockerEvents';
@@ -150,6 +150,16 @@ async function start() {
     }
   } catch (error) {
     console.error('Warning: Registry login failed:', error);
+  }
+
+  // Tighten permissions on any pre-existing secret files (one-time cleanup for older deployments)
+  try {
+    const tightened = await tightenSecretFilePermissions();
+    if (tightened > 0) {
+      console.log(`Tightened permissions (0600) on ${tightened} secret file(s)`);
+    }
+  } catch (error) {
+    console.error('Warning: Failed to tighten secret file permissions:', error);
   }
 
   // Backfill COMPOSE_PROJECT_NAME for existing tenants (prevents project name collisions)

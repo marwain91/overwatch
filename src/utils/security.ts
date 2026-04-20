@@ -9,6 +9,15 @@ export async function assertWithinDir(childPath: string, parentDir: string): Pro
   }
 }
 
+/**
+ * Write a file containing secrets with 0600 (owner-only) permissions.
+ * mode: in writeFile only applies on create, so we chmod to also tighten existing files.
+ */
+export async function writeSecretFile(filePath: string, content: string | Buffer): Promise<void> {
+  await fs.writeFile(filePath, content, { mode: 0o600 });
+  await fs.chmod(filePath, 0o600);
+}
+
 /** Validate that a database/user name contains only safe characters */
 export function assertSafeIdentifier(name: string, maxLength: number = 63): void {
   if (!/^[a-z0-9_]+$/.test(name)) {
