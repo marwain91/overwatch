@@ -12,19 +12,57 @@ import {
 import { loadConfig } from '../config';
 import { SLUG_RE, CONTAINER_NAME_RE, UUID_RE } from '../utils/validators';
 import { queryString, queryInt } from '../utils/query';
+import { requireRole } from '../middleware/requireRole';
 
 const router = Router();
 
-function isValidWebhookUrl(url: string): string | null {
+// SSRF guard for webhook URLs. Blocks loopback, private/link-local ranges, and
+// the common cloud metadata endpoint (169.254.169.254). Escape hatch for
+// on-prem setups that route alerts to an internal collector:
+// OVERWATCH_ALLOW_PRIVATE_WEBHOOK=1.
+export function isValidWebhookUrl(url: string): string | null {
+  let parsed: URL;
   try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return 'Webhook URL must use http or https';
-    }
-    return null;
+    parsed = new URL(url);
   } catch {
     return 'Invalid webhook URL';
   }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return 'Webhook URL must use http or https';
+  }
+  if (process.env.OVERWATCH_ALLOW_PRIVATE_WEBHOOK === '1') {
+    return null;
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0') {
+    return 'Webhook URL must not target localhost';
+  }
+  // IPv4 — numeric dotted-quad. Refuse if in loopback / private / link-local / reserved.
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 10) return 'Webhook URL must not target private network (10/8)';
+    if (a === 127) return 'Webhook URL must not target loopback (127/8)';
+    if (a === 169 && b === 254) return 'Webhook URL must not target link-local / metadata endpoint';
+    if (a === 172 && b >= 16 && b <= 31) return 'Webhook URL must not target private network (172.16/12)';
+    if (a === 192 && b === 168) return 'Webhook URL must not target private network (192.168/16)';
+    if (a === 0) return 'Webhook URL must not target reserved range (0/8)';
+    if (a >= 224) return 'Webhook URL must not target multicast/reserved range';
+  }
+  // IPv6 — any form of loopback / link-local / unique-local.
+  if (host.includes(':')) {
+    const stripped = host.replace(/^\[|\]$/g, '');
+    if (stripped === '::1' || stripped === '::') {
+      return 'Webhook URL must not target IPv6 loopback';
+    }
+    if (/^fe[89ab][0-9a-f]?:/i.test(stripped)) {
+      return 'Webhook URL must not target IPv6 link-local (fe80::/10)';
+    }
+    if (/^f[cd][0-9a-f]{2}:/i.test(stripped)) {
+      return 'Webhook URL must not target IPv6 unique-local (fc00::/7)';
+    }
+  }
+  return null;
 }
 
 // GET /api/monitoring/metrics — current + history for all containers
@@ -87,8 +125,8 @@ router.get('/notifications', asyncHandler(async (req, res) => {
   res.json(channels);
 }));
 
-// POST /api/monitoring/notifications — add channel
-router.post('/notifications', asyncHandler(async (req, res) => {
+// POST /api/monitoring/notifications — add channel (admin-only: webhooks can exfiltrate)
+router.post('/notifications', requireRole('admin'), asyncHandler(async (req, res) => {
   const { name, type, enabled, config: channelConfig } = req.body;
 
   if (!name || !channelConfig?.url) {
@@ -96,15 +134,9 @@ router.post('/notifications', asyncHandler(async (req, res) => {
     return;
   }
 
-  // Validate URL format
-  try {
-    const parsed = new URL(channelConfig.url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      res.status(400).json({ error: 'Webhook URL must use http or https' });
-      return;
-    }
-  } catch {
-    res.status(400).json({ error: 'Invalid webhook URL' });
+  const urlError = isValidWebhookUrl(channelConfig.url);
+  if (urlError) {
+    res.status(400).json({ error: urlError });
     return;
   }
 
@@ -121,8 +153,8 @@ router.post('/notifications', asyncHandler(async (req, res) => {
   res.json(newChannel);
 }));
 
-// PUT /api/monitoring/notifications/:id — update channel
-router.put('/notifications/:id', asyncHandler(async (req, res) => {
+// PUT /api/monitoring/notifications/:id — update channel (admin-only)
+router.put('/notifications/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!UUID_RE.test(id)) {
     res.status(400).json({ error: 'Invalid channel ID format' });
@@ -159,8 +191,8 @@ router.put('/notifications/:id', asyncHandler(async (req, res) => {
   res.json(channels[index]);
 }));
 
-// DELETE /api/monitoring/notifications/:id — delete channel
-router.delete('/notifications/:id', asyncHandler(async (req, res) => {
+// DELETE /api/monitoring/notifications/:id — delete channel (admin-only)
+router.delete('/notifications/:id', requireRole('admin'), asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!UUID_RE.test(id)) {
     res.status(400).json({ error: 'Invalid channel ID format' });
@@ -178,8 +210,8 @@ router.delete('/notifications/:id', asyncHandler(async (req, res) => {
   res.json({ success: true });
 }));
 
-// POST /api/monitoring/notifications/:id/test — send test notification
-router.post('/notifications/:id/test', asyncHandler(async (req, res) => {
+// POST /api/monitoring/notifications/:id/test — send test notification (admin-only: fires outbound HTTP to channel URL)
+router.post('/notifications/:id/test', requireRole('admin'), asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!UUID_RE.test(id)) {
     res.status(400).json({ error: 'Invalid channel ID format' });

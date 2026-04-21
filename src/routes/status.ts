@@ -7,6 +7,7 @@ import { listApps } from '../services/app';
 import { getBackupInfo, listSnapshots } from '../services/backup';
 import { asyncHandler } from '../utils/asyncHandler';
 import { isValidContainerId } from '../utils/validators';
+import { requireRole } from '../middleware/requireRole';
 
 const router = Router();
 
@@ -28,8 +29,8 @@ router.get('/containers/:containerId/logs', asyncHandler(async (req, res) => {
   res.json({ logs });
 }));
 
-// Restart a container
-router.post('/containers/:containerId/restart', asyncHandler(async (req, res) => {
+// Restart a container — admin-only (operational impact; can mask outages).
+router.post('/containers/:containerId/restart', requireRole('admin'), asyncHandler(async (req, res) => {
   const { containerId } = req.params;
   if (!isValidContainerId(containerId)) {
     return res.status(400).json({ error: 'Invalid container ID format' });

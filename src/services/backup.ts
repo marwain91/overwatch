@@ -447,6 +447,12 @@ export async function restoreBackup(
     const backupDataDir = path.dirname(metadataPath);
     const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf-8'));
 
+    // Refuse archives that don't belong to this app — prevents restoring a
+    // snapshot from a sibling/attacker-controlled app into the target tree.
+    if (metadata.appId && metadata.appId !== appId) {
+      return { success: false, error: `Backup appId mismatch: archive is for '${metadata.appId}', not '${appId}'` };
+    }
+
     // Find the tenant data in the backup
     let sourceTenantId = targetTenantId;
     if (metadata.tenants && metadata.tenants.length > 0) {
