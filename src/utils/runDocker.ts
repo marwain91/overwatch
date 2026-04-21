@@ -33,7 +33,8 @@ export class DockerCommandError extends Error {
   }
 }
 
-function classifyError(stderr: string, code: number | null, signal: NodeJS.Signals | null): DockerErrorKind {
+/** Exported for direct unit testing — avoids spawning `docker` on CI runners that lack it. */
+export function classifyError(stderr: string, code: number | null, signal: NodeJS.Signals | null): DockerErrorKind {
   if (signal === 'SIGTERM' || signal === 'SIGKILL') return 'timeout';
   const s = stderr.toLowerCase();
   if (s.includes('cannot connect to the docker daemon') || s.includes('is the docker daemon running')) {

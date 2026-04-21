@@ -92,23 +92,41 @@ describe('R6 requireRole middleware gates by JWT email + admin-users role', () =
   });
 });
 
-describe('R4 runDocker — timeout + structured errors', () => {
-  it('returns a structured error with kind + stderr when docker call fails', async () => {
-    const { runDocker } = await import('../utils/runDocker');
-    let caught: any = null;
-    try {
-      await runDocker('docker' as any, ['--definitely-not-a-flag-that-exists-anywhere-zzz'], { timeoutMs: 5_000 });
-    } catch (err: any) {
-      caught = err;
-    }
-    expect(caught).not.toBeNull();
-    // We assert structural shape rather than prototype: the error carries the
-    // fields runDocker promises. (vi.resetModules() in afterEach can re-import
-    // the module and break instanceof across files.)
-    expect(typeof caught.kind).toBe('string');
-    expect(['cli_missing', 'unknown', 'daemon_unreachable', 'permission']).toContain(caught.kind);
-    expect(typeof caught.stderr).toBe('string');
-    expect(caught.command).toBe('docker');
-    expect(Array.isArray(caught.args)).toBe(true);
+describe('R4 runDocker — error classification (unit, no subprocess)', () => {
+  // Avoid actually spawning `docker` — CI runners (alpine node image) don't have
+  // the docker CLI and hit vitest's timeout before ENOENT propagates.
+  it('SIGTERM / SIGKILL → timeout', async () => {
+    const { classifyError } = await import('../utils/runDocker');
+    expect(classifyError('', null, 'SIGTERM')).toBe('timeout');
+    expect(classifyError('', null, 'SIGKILL')).toBe('timeout');
+  });
+
+  it('"Cannot connect to the Docker daemon" → daemon_unreachable', async () => {
+    const { classifyError } = await import('../utils/runDocker');
+    expect(classifyError('Cannot connect to the Docker daemon at unix:///var/run/docker.sock.', 1, null))
+      .toBe('daemon_unreachable');
+  });
+
+  it('"No such container" → unknown_container', async () => {
+    const { classifyError } = await import('../utils/runDocker');
+    expect(classifyError('Error: No such container: kwoutr-daktela-web', 1, null))
+      .toBe('unknown_container');
+  });
+
+  it('exit 126 / "permission denied" → permission', async () => {
+    const { classifyError } = await import('../utils/runDocker');
+    expect(classifyError('', 126, null)).toBe('permission');
+    expect(classifyError('permission denied while trying to connect', 1, null)).toBe('permission');
+  });
+
+  it('exit 127 / "not found" → cli_missing', async () => {
+    const { classifyError } = await import('../utils/runDocker');
+    expect(classifyError('', 127, null)).toBe('cli_missing');
+    expect(classifyError('sh: docker: not found', 127, null)).toBe('cli_missing');
+  });
+
+  it('anything else → unknown', async () => {
+    const { classifyError } = await import('../utils/runDocker');
+    expect(classifyError('some generic failure', 1, null)).toBe('unknown');
   });
 });
