@@ -91,10 +91,19 @@ export const AppBackupSchema = z.object({
   restic_password_env: z.string().optional(),
 });
 
-// Admin access configuration
+// Admin access configuration.
+// Default template uses a URL fragment (`#token=`) rather than a query param so the
+// token does not appear in HTTP access logs, proxy logs, or Referer headers. Tenant
+// apps must parse the fragment client-side. Legacy query-based templates are still
+// accepted if explicitly configured.
 export const AppAdminAccessSchema = z.object({
   enabled: z.boolean().default(false),
-  url_template: z.string().default('https://${domain}/admin-login?token=${token}'),
+  url_template: z.string()
+    .refine(
+      (v) => /^https:\/\/\$\{domain\}/.test(v),
+      { message: 'url_template must start with "https://${domain}" — arbitrary hosts are refused to prevent token exfiltration.' }
+    )
+    .default('https://${domain}/admin-login#token=${token}'),
   secret_env: z.string().default('AUTH_SERVICE_SECRET'),
   token_payload: z.object({
     admin_flag: z.string().default('isSystemAdmin'),

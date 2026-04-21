@@ -15,6 +15,8 @@ import { createTenant } from '../services/tenant';
 import { getTenantInfo } from '../services/docker';
 import { asyncHandler } from '../utils/asyncHandler';
 import { isValidSlug, isValidSnapshotId } from '../utils/validators';
+import { requireRole } from '../middleware/requireRole';
+import { requireConfirmId } from '../middleware/confirmDestructive';
 
 const router = Router({ mergeParams: true });
 
@@ -66,15 +68,15 @@ router.get('/status', asyncHandler(async (req, res) => {
   res.json(info);
 }));
 
-// Initialize backup repository for an app
-router.post('/init', asyncHandler(async (req, res) => {
+// Initialize backup repository for an app — admin (touches encryption setup).
+router.post('/init', requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId } = req.params;
   await initializeRepository(appId);
   res.json({ success: true, message: 'Repository initialized' });
 }));
 
-// Unlock repository
-router.post('/unlock', asyncHandler(async (req, res) => {
+// Unlock repository — admin (break-glass operation).
+router.post('/unlock', requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId } = req.params;
   const result = await unlockRepository(appId);
   if (result.success) {
@@ -112,8 +114,8 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json(snapshots);
 }));
 
-// Create a new backup for a specific tenant
-router.post('/', asyncHandler(async (req, res) => {
+// Create a new backup for a specific tenant — editor+
+router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
   const { appId } = req.params;
   const { tenantId } = req.body;
 
@@ -130,15 +132,15 @@ router.post('/', asyncHandler(async (req, res) => {
   }
 }));
 
-// Backup all tenants for an app
-router.post('/all', asyncHandler(async (req, res) => {
+// Backup all tenants for an app — editor+
+router.post('/all', requireRole('editor'), asyncHandler(async (req, res) => {
   const { appId } = req.params;
   const result = await backupAllTenants(appId);
   res.json(result);
 }));
 
-// Restore a backup to existing tenant
-router.post('/:snapshotId/restore', asyncHandler(async (req, res) => {
+// Restore a backup to existing tenant — admin (overwrites live tenant data).
+router.post('/:snapshotId/restore', requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId, snapshotId } = req.params;
   const { tenantId } = req.body;
 
@@ -164,8 +166,8 @@ router.post('/:snapshotId/restore', asyncHandler(async (req, res) => {
   }
 }));
 
-// Create new tenant from backup
-router.post('/:snapshotId/create-tenant', asyncHandler(async (req, res) => {
+// Create new tenant from backup — admin (creates resources, writes DB creds).
+router.post('/:snapshotId/create-tenant', requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId, snapshotId } = req.params;
   const { tenantId, domain, imageTag } = req.body;
 
@@ -200,8 +202,8 @@ router.post('/:snapshotId/create-tenant', asyncHandler(async (req, res) => {
   }
 }));
 
-// Delete a backup snapshot
-router.delete('/:snapshotId', asyncHandler(async (req, res) => {
+// Delete a backup snapshot — admin + typed confirmation.
+router.delete('/:snapshotId', requireRole('admin'), requireConfirmId('snapshotId'), asyncHandler(async (req, res) => {
   const { appId, snapshotId } = req.params;
 
   if (!isValidSnapshotId(snapshotId)) {
@@ -217,8 +219,8 @@ router.delete('/:snapshotId', asyncHandler(async (req, res) => {
   }
 }));
 
-// Prune old backups
-router.post('/prune', asyncHandler(async (req, res) => {
+// Prune old backups — admin (irreversibly drops snapshots).
+router.post('/prune', requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId } = req.params;
   const keepDaily = Math.max(0, Math.min(Number(req.body.keepDaily) || 7, 365));
   const keepWeekly = Math.max(0, Math.min(Number(req.body.keepWeekly) || 4, 52));

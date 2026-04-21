@@ -18,7 +18,12 @@ async function drainQueue(): Promise<void> {
     // append syscall; new arrivals during the await re-trigger the loop.
     const chunk = auditQueue.splice(0, auditQueue.length).join('');
     try {
-      await fs.appendFile(getAuditLogFile(), chunk);
+      const file = getAuditLogFile();
+      // Audit log contains admin email + action history. Mode 0600 on create
+      // (umask may loosen to 0644 otherwise); also chmod on each write so
+      // a historically 0644 file on disk gets tightened on next entry.
+      await fs.appendFile(file, chunk, { mode: 0o600 });
+      await fs.chmod(file, 0o600).catch(() => {});
       flushErrorLogged = false;
     } catch (err: any) {
       // Re-queue so we don't lose entries; log once per outage.

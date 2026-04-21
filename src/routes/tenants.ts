@@ -19,8 +19,8 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json(appTenants);
 }));
 
-// Create a new tenant
-router.post('/', asyncHandler(async (req, res) => {
+// Create a new tenant — editor+
+router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
   const { appId } = req.params;
   const input: CreateTenantInput = {
     appId,
@@ -42,8 +42,8 @@ router.post('/', asyncHandler(async (req, res) => {
   res.status(201).json(tenant);
 }));
 
-// Update tenant version
-router.patch('/:tenantId', validateTenantId, asyncHandler(async (req, res) => {
+// Update tenant version — editor+
+router.patch('/:tenantId', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   const { imageTag } = req.body;
 
@@ -64,29 +64,31 @@ router.delete('/:tenantId', validateTenantId, requireRole('admin'), requireConfi
   res.json({ success: true, appId, tenantId });
 }));
 
-// Start tenant containers
-router.post('/:tenantId/start', validateTenantId, asyncHandler(async (req, res) => {
+// Start tenant containers — editor+
+router.post('/:tenantId/start', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   await startTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
 
-// Stop tenant containers
-router.post('/:tenantId/stop', validateTenantId, asyncHandler(async (req, res) => {
+// Stop tenant containers — editor+
+router.post('/:tenantId/stop', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   await stopTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
 
-// Restart tenant containers
-router.post('/:tenantId/restart', validateTenantId, asyncHandler(async (req, res) => {
+// Restart tenant containers — editor+
+router.post('/:tenantId/restart', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   await restartTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
 
-// Generate admin access token for a tenant
-router.post('/:tenantId/access-token', validateTenantId, asyncHandler(async (req, res) => {
+// Generate admin access token for a tenant — ADMIN ONLY. Mints a signed JWT
+// that logs the bearer in as system-admin of the tenant app. Highest-privilege
+// operation in the system; never expose to non-admin roles.
+router.post('/:tenantId/access-token', validateTenantId, requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
 
   const app = await getApp(appId);
@@ -130,7 +132,14 @@ router.post('/:tenantId/access-token', validateTenantId, asyncHandler(async (req
     { expiresIn: '1h' }
   );
 
-  const urlTemplate = adminAccess.url_template || 'https://${domain}/admin-login?token=${token}';
+  const urlTemplate = adminAccess.url_template || 'https://${domain}/admin-login#token=${token}';
+  // Defence in depth: re-validate the pinned prefix at token-mint time. The schema
+  // enforces it at write, but this catches any template reaching the mint path
+  // that somehow bypassed schema validation (e.g. hand-edited apps.json).
+  if (!/^https:\/\/\$\{domain\}/.test(urlTemplate)) {
+    console.error(`[AdminAccess] url_template rejected at runtime for ${appId}: ${urlTemplate}`);
+    return res.status(500).json({ error: 'Admin access URL template is invalid; contact administrator.' });
+  }
   const accessUrl = urlTemplate
     .replace('${domain}', encodeURIComponent(tenantInfo.domain))
     .replace('${token}', encodeURIComponent(adminToken))

@@ -6,6 +6,7 @@ import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
 import { getAppsDir } from '../config';
 import { parseEnv } from '../utils/env';
+import { requireRole } from '../middleware/requireRole';
 
 const router = Router();
 
@@ -83,8 +84,8 @@ router.get('/processes', asyncHandler(async (_req, res) => {
   res.json(processes);
 }));
 
-// POST /api/database/processes/:id/kill
-router.post('/processes/:id/kill', asyncHandler(async (req, res) => {
+// POST /api/database/processes/:id/kill — admin only (can disrupt running workloads).
+router.post('/processes/:id/kill', requireRole('admin'), asyncHandler(async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id) || id <= 0) {
     res.status(400).json({ error: 'Invalid process ID' });

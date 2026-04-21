@@ -11,6 +11,7 @@ import {
 } from '../services/envVars';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validateTenantId } from '../middleware/validators';
+import { requireRole } from '../middleware/requireRole';
 
 const router = Router({ mergeParams: true });
 
@@ -25,8 +26,8 @@ router.get('/', asyncHandler(async (req: Request, res: Response) => {
   res.json(masked);
 }));
 
-// Create or update a global env var for an app
-router.post('/', asyncHandler(async (req: Request, res: Response) => {
+// Create or update a global env var for an app — editor+
+router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
   const { appId } = req.params;
   const { key, value, sensitive, description } = req.body;
 
@@ -59,8 +60,8 @@ router.post('/', asyncHandler(async (req: Request, res: Response) => {
   });
 }));
 
-// Delete a global env var for an app
-router.delete('/:key', asyncHandler(async (req: Request, res: Response) => {
+// Delete a global env var for an app — editor+
+router.delete('/:key', requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
   const { appId, key } = req.params;
   await deleteEnvVar(appId, key);
   const tenantsAffected = await regenerateAllSharedEnvFiles();
@@ -78,8 +79,8 @@ router.get('/tenants/:tenantId', validateTenantId, asyncHandler(async (req: Requ
   res.json(masked);
 }));
 
-// Set a tenant override
-router.post('/tenants/:tenantId/overrides', validateTenantId, asyncHandler(async (req: Request, res: Response) => {
+// Set a tenant override — editor+
+router.post('/tenants/:tenantId/overrides', validateTenantId, requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
   const { appId, tenantId } = req.params;
   const { key, value, sensitive } = req.body;
 
@@ -93,8 +94,8 @@ router.post('/tenants/:tenantId/overrides', validateTenantId, asyncHandler(async
   res.json({ success: true });
 }));
 
-// Delete a tenant override
-router.delete('/tenants/:tenantId/overrides/:key', validateTenantId, asyncHandler(async (req: Request, res: Response) => {
+// Delete a tenant override — editor+
+router.delete('/tenants/:tenantId/overrides/:key', validateTenantId, requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
   const { appId, tenantId, key } = req.params;
   await deleteTenantOverride(appId, tenantId, key);
   await generateSharedEnvFile(appId, tenantId);

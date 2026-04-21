@@ -150,11 +150,30 @@ export function validateEnvVarKey(key: string): { valid: boolean; error?: string
   if (!key) {
     return { valid: false, error: 'Key is required' };
   }
-  if (!/^[A-Z][A-Z0-9_]*$/.test(key)) {
+  // Normalise before the key-format and protected-key checks so whitespace /
+  // case tricks can't bypass PROTECTED_KEYS.
+  const normalised = key.trim();
+  if (!/^[A-Z][A-Z0-9_]*$/.test(normalised)) {
     return { valid: false, error: 'Key must match format: starts with uppercase letter, followed by uppercase letters, digits, or underscores' };
   }
-  if (PROTECTED_KEYS.has(key)) {
-    return { valid: false, error: `Key "${key}" is a protected core variable and cannot be used` };
+  if (PROTECTED_KEYS.has(normalised) || PROTECTED_KEYS.has(normalised.toUpperCase())) {
+    return { valid: false, error: `Key "${normalised}" is a protected core variable and cannot be used` };
+  }
+  return { valid: true };
+}
+
+/**
+ * Validate an env var value: reject characters that would break the shared.env
+ * line format (newlines, CR, NUL). Without this a caller with setEnvVar access
+ * can inject additional KEY=VALUE lines and override protected core vars (DB_PASSWORD,
+ * JWT_SECRET etc.) that docker-compose loads from the same env_file.
+ */
+export function validateEnvVarValue(value: string): { valid: boolean; error?: string } {
+  if (typeof value !== 'string') {
+    return { valid: false, error: 'Value must be a string' };
+  }
+  if (/[\r\n\0]/.test(value)) {
+    return { valid: false, error: 'Value must not contain newlines, carriage returns, or NUL bytes' };
   }
   return { valid: true };
 }
@@ -173,9 +192,13 @@ export async function setEnvVar(
   sensitive: boolean = false,
   description?: string
 ): Promise<EnvVar> {
-  const validation = validateEnvVarKey(key);
-  if (!validation.valid) {
-    throw new Error(validation.error);
+  const keyValidation = validateEnvVarKey(key);
+  if (!keyValidation.valid) {
+    throw new Error(keyValidation.error);
+  }
+  const valueValidation = validateEnvVarValue(value);
+  if (!valueValidation.valid) {
+    throw new Error(valueValidation.error);
   }
 
   return withFileLock('env-vars', async () => {
@@ -238,9 +261,13 @@ export async function setTenantOverride(
   value: string,
   sensitive: boolean = false
 ): Promise<void> {
-  const validation = validateEnvVarKey(key);
-  if (!validation.valid) {
-    throw new Error(validation.error);
+  const keyValidation = validateEnvVarKey(key);
+  if (!keyValidation.valid) {
+    throw new Error(keyValidation.error);
+  }
+  const valueValidation = validateEnvVarValue(value);
+  if (!valueValidation.valid) {
+    throw new Error(valueValidation.error);
   }
 
   return withFileLock('tenant-overrides', async () => {

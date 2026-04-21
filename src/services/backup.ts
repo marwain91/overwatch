@@ -36,13 +36,26 @@ function getResticEnv(app: AppDefinition): NodeJS.ProcessEnv {
   if (backup.s3?.endpoint_env && backup.s3?.bucket_env) {
     const endpoint = process.env[backup.s3.endpoint_env!];
     const bucket = process.env[backup.s3.bucket_env!];
+    // Refuse plaintext S3 endpoints — credentials in headers would travel unencrypted.
+    // Escape hatch for dev/localstack: OVERWATCH_ALLOW_INSECURE_S3=1.
+    if (endpoint && endpoint.startsWith('http://') && process.env.OVERWATCH_ALLOW_INSECURE_S3 !== '1') {
+      throw new Error(
+        `S3 endpoint '${endpoint}' uses http:// — refusing. Set OVERWATCH_ALLOW_INSECURE_S3=1 if you really intend this (e.g. localstack).`
+      );
+    }
     repository = `s3:${endpoint}/${bucket}`;
   } else {
     throw new Error(`Invalid backup S3 configuration for app '${app.id}'`);
   }
 
+  // Allowlist, not spread. `...process.env` leaked JWT_SECRET / GOOGLE_CLIENT_ID
+  // / DB_ROOT_PASSWORD etc. into every restic/docker/mysqldump child, readable
+  // via /proc/<pid>/environ to anyone in the same PID namespace.
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
     RESTIC_REPOSITORY: repository,
     RESTIC_PASSWORD: process.env[backup.restic_password_env || 'RESTIC_PASSWORD'],
   };

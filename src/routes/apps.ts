@@ -16,8 +16,9 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json(apps);
 }));
 
-// Create a new app
-router.post('/', asyncHandler(async (req, res) => {
+// Create a new app. Admin-only because the payload includes registry credentials
+// and optional admin_access / backup configs.
+router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   const parseResult = CreateAppSchema.safeParse(req.body);
   if (!parseResult.success) {
     const errors = parseResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
@@ -37,8 +38,9 @@ router.get('/:appId', validateAppId, asyncHandler(async (req, res) => {
   res.json(app);
 }));
 
-// Update app config
-router.put('/:appId', validateAppId, asyncHandler(async (req, res) => {
+// Update app config. Admin-only — update payload can change registry creds,
+// admin_access (token-mint URL template), and backup targets.
+router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
   const app = await updateApp({ ...req.body, id: req.params.appId });
   res.json(app);
 }));
@@ -81,8 +83,8 @@ router.get('/:appId/tags', validateAppId, asyncHandler(async (req, res) => {
   res.json({ tags });
 }));
 
-// Test registry connection for an app
-router.post('/:appId/registry/test', validateAppId, asyncHandler(async (req, res) => {
+// Test registry connection for an app — editor+ (reads non-secret status).
+router.post('/:appId/registry/test', validateAppId, requireRole('editor'), asyncHandler(async (req, res) => {
   const app = await getApp(req.params.appId);
   if (!app) {
     return res.status(404).json({ error: 'App not found' });

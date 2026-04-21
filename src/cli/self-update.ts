@@ -2,7 +2,10 @@ import * as https from 'https';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { VERSION } from '../version';
+
+const MAX_REDIRECTS = 5;
 
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
@@ -61,7 +64,7 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-function fetchJSON(url: string): Promise<GitHubRelease> {
+function fetchJSON(url: string, redirectsLeft: number = MAX_REDIRECTS): Promise<GitHubRelease> {
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
       headers: {
@@ -69,11 +72,14 @@ function fetchJSON(url: string): Promise<GitHubRelease> {
         'Accept': 'application/vnd.github+json',
       },
     }, (res) => {
-      // Follow redirects
       if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+        if (redirectsLeft <= 0) {
+          reject(new Error('Too many redirects while fetching release metadata'));
+          return;
+        }
         const location = res.headers.location;
         if (location) {
-          fetchJSON(location).then(resolve, reject);
+          fetchJSON(location, redirectsLeft - 1).then(resolve, reject);
           return;
         }
       }
@@ -102,14 +108,48 @@ function fetchJSON(url: string): Promise<GitHubRelease> {
   });
 }
 
+/** Download a small text resource (checksum file) following bounded redirects. */
+function fetchText(url: string, redirectsLeft: number = MAX_REDIRECTS): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': `overwatch-cli/${VERSION}` } }, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+        if (redirectsLeft <= 0) return reject(new Error('Too many redirects fetching checksum'));
+        const location = res.headers.location;
+        if (location) return fetchText(location, redirectsLeft - 1).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) return reject(new Error(`Checksum download returned ${res.statusCode}`));
+      let data = '';
+      res.on('data', c => (data += c));
+      res.on('end', () => resolve(data));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Checksum download timed out')); });
+  });
+}
+
+function sha256File(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+}
+
 function downloadFile(url: string, dest: string, totalSize: number): Promise<void> {
   return new Promise((resolve, reject) => {
+    let redirectsLeft = MAX_REDIRECTS;
     const doDownload = (downloadUrl: string) => {
       const req = https.get(downloadUrl, {
         headers: { 'User-Agent': `overwatch-cli/${VERSION}` },
       }, (res) => {
-        // Follow redirects
+        // Follow redirects (bounded).
         if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+          if (--redirectsLeft < 0) {
+            reject(new Error('Too many redirects while downloading binary'));
+            return;
+          }
           const location = res.headers.location;
           if (location) {
             doDownload(location);
@@ -241,6 +281,22 @@ export async function runSelfUpdate(args: string[]): Promise<void> {
     );
   }
 
+  // SHA256 integrity check. We require a companion `<asset>.sha256` asset in
+  // every release; refuse to install if it's missing or the hash differs.
+  // TLS alone is not enough — it proves the bytes came from GitHub, not that
+  // they are the bytes a maintainer intended to publish.
+  const shaAsset = release.assets.find(a => a.name === `${assetName}.sha256`);
+  if (!shaAsset) {
+    const skip = process.env.OVERWATCH_SKIP_CHECKSUM === '1';
+    if (!skip) {
+      throw new Error(
+        `No checksum (${assetName}.sha256) found in release ${release.tag_name}. ` +
+        `Refusing to install an unverified binary. Set OVERWATCH_SKIP_CHECKSUM=1 to override (not recommended).`
+      );
+    }
+    console.log(`  ${YELLOW}!${NC} OVERWATCH_SKIP_CHECKSUM=1 — skipping integrity check`);
+  }
+
   // Lockfile prevents two concurrent self-updates from racing on the binary path.
   const lockPath = `${binaryPath}.lock`;
   let lockFd: number | null = null;
@@ -263,11 +319,32 @@ export async function runSelfUpdate(args: string[]): Promise<void> {
   try {
     await downloadFile(asset.browser_download_url, tmpPath, asset.size);
 
+    // Verify SHA256 before promoting the tmp file. On mismatch: delete and abort.
+    if (shaAsset) {
+      const expectedLine = await fetchText(shaAsset.browser_download_url);
+      // Checksum files typically look like: "<hex>  <filename>". Take the first hex token.
+      const expected = (expectedLine.trim().split(/\s+/)[0] || '').toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(expected)) {
+        throw new Error(`Checksum asset ${shaAsset.name} did not contain a valid SHA256`);
+      }
+      const actual = (await sha256File(tmpPath)).toLowerCase();
+      if (actual !== expected) {
+        throw new Error(
+          `SHA256 mismatch for ${assetName}:\n  expected ${expected}\n  actual   ${actual}\n` +
+          `Refusing to install. If you trust this release, re-publish with a matching ${assetName}.sha256.`
+        );
+      }
+      console.log(`  ${GREEN}✓${NC} SHA256 verified`);
+    }
+
     // Make executable
     fs.chmodSync(tmpPath, 0o755);
 
-    // Atomic replace
-    fs.renameSync(tmpPath, binaryPath);
+    // Atomic replace — realpath the target first to resolve any symlinks, so a
+    // symlinked `overwatch` in a user-writable dir can't redirect the rename.
+    let resolvedBinary = binaryPath;
+    try { resolvedBinary = fs.realpathSync(binaryPath); } catch { /* not a symlink */ }
+    fs.renameSync(tmpPath, resolvedBinary);
 
     console.log('');
     console.log(`  ${GREEN}✓${NC} Updated to ${BOLD}${latestVersion}${NC}`);

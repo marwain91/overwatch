@@ -88,8 +88,11 @@ async function start() {
   app.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://accounts.google.com wss:; frame-src https://accounts.google.com");
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    // script-src dropped 'unsafe-inline': a XSS sink in our React bundle or a dep
+    // must not be able to execute inline. Style still needs 'unsafe-inline' for
+    // Tailwind's runtime style injection; styles cannot exfiltrate tokens.
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://accounts.google.com wss:; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'");
     next();
   });
 
@@ -105,15 +108,11 @@ async function start() {
   const authLimiter = rateLimit({ windowMs: 60_000, maxRequests: 10, message: 'Too many login attempts, please try again later' });
   const destructiveLimiter = destructiveRateLimit({ windowMs: 60_000, maxRequests: 5, message: 'Too many destructive requests, slow down.' });
 
-  // Health check (no auth)
+  // Health check (no auth). Returns only liveness; project name and build
+  // metadata are gated behind auth via /api/status so unauthenticated probes
+  // (and docker HEALTHCHECK) don't leak target fingerprinting info.
   app.get('/health', (_req, res) => {
-    res.json({
-      status: 'ok',
-      project: config.project.name,
-      timestamp: new Date().toISOString(),
-      buildTime: process.env.BUILD_TIME || 'dev',
-      buildCommit: process.env.BUILD_COMMIT || 'dev',
-    });
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
   // Auth routes — login gets strict rate limit, verify/config get regular limit
