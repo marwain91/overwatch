@@ -45,3 +45,19 @@ export function rateLimit(options: RateLimitOptions) {
     next();
   };
 }
+
+/**
+ * Apply a tighter rate limiter only when the request is destructive (DELETE or ?force=true).
+ * Non-destructive requests pass through without consuming from the destructive quota.
+ */
+export function destructiveRateLimit(options: RateLimitOptions) {
+  const limiter = rateLimit(options);
+  return (req: Request, res: Response, next: NextFunction) => {
+    const isDestructive =
+      req.method === 'DELETE' ||
+      req.query?.force === 'true' ||
+      (req.body && typeof req.body === 'object' && req.body.force === true);
+    if (!isDestructive) return next();
+    return limiter(req, res, next);
+  };
+}

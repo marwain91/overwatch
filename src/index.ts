@@ -5,7 +5,7 @@ import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationError
 import { loginToAllRegistries } from './adapters/registry';
 import { listApps } from './services/app';
 import { authMiddleware } from './middleware/auth';
-import { rateLimit } from './middleware/rateLimit';
+import { rateLimit, destructiveRateLimit } from './middleware/rateLimit';
 import { auditLog } from './middleware/audit';
 import { validateAppId } from './middleware/validators';
 import appsRouter from './routes/apps';
@@ -91,6 +91,7 @@ async function start() {
   // Rate limiting
   const apiLimiter = rateLimit({ windowMs: 60_000, maxRequests: 100 });
   const authLimiter = rateLimit({ windowMs: 60_000, maxRequests: 10, message: 'Too many login attempts, please try again later' });
+  const destructiveLimiter = destructiveRateLimit({ windowMs: 60_000, maxRequests: 5, message: 'Too many destructive requests, slow down.' });
 
   // Health check (no auth)
   app.get('/health', (_req, res) => {
@@ -108,15 +109,15 @@ async function start() {
   app.use('/api/auth', apiLimiter, authRouter);
 
   // App routes (with auth + appId validation for :appId sub-routes)
-  app.use('/api/apps', authMiddleware, apiLimiter, auditLog, appsRouter);
+  app.use('/api/apps', authMiddleware, apiLimiter, destructiveLimiter, auditLog, appsRouter);
 
   // App-scoped routes
-  app.use('/api/apps/:appId/tenants', authMiddleware, validateAppId, apiLimiter, auditLog, tenantsRouter);
-  app.use('/api/apps/:appId/env-vars', authMiddleware, validateAppId, apiLimiter, auditLog, envVarsRouter);
-  app.use('/api/apps/:appId/backups', authMiddleware, validateAppId, apiLimiter, auditLog, backupsRouter);
+  app.use('/api/apps/:appId/tenants', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, tenantsRouter);
+  app.use('/api/apps/:appId/env-vars', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, envVarsRouter);
+  app.use('/api/apps/:appId/backups', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, backupsRouter);
 
   // Global routes
-  app.use('/api/admin-users', authMiddleware, apiLimiter, auditLog, adminUsersRouter);
+  app.use('/api/admin-users', authMiddleware, apiLimiter, destructiveLimiter, auditLog, adminUsersRouter);
   app.use('/api/status', authMiddleware, apiLimiter, statusRouter);
   app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
   app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
@@ -140,54 +141,58 @@ async function start() {
     res.status(status).json({ error: message });
   });
 
-  // Login to container registries for all apps
-  try {
-    const apps = await listApps();
-    if (apps.length > 0) {
-      await loginToAllRegistries(apps);
+  // Helper: run a startup step with typed error handling.
+  // critical=true aborts boot if the step throws (fail-fast). critical=false logs and continues.
+  const runStartupStep = async (
+    name: string,
+    fn: () => Promise<unknown>,
+    opts: { critical: boolean } = { critical: false }
+  ): Promise<void> => {
+    try {
+      await fn();
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (opts.critical) {
+        console.error(`[startup] FATAL: ${name} — ${msg}`);
+        console.error(err?.stack || '');
+        process.exit(1);
+      }
+      console.error(`[startup] Warning: ${name} — ${msg}`);
+    }
+  };
+
+  // Critical: if listApps() throws, apps.json is corrupt or unreadable — abort boot,
+  // don't start schedulers/metrics with a silently empty list.
+  let bootApps: Awaited<ReturnType<typeof listApps>> = [];
+  await runStartupStep('list apps', async () => {
+    bootApps = await listApps();
+    console.log(`[startup] Loaded ${bootApps.length} app(s)`);
+  }, { critical: true });
+
+  await runStartupStep('registry login', async () => {
+    if (bootApps.length > 0) {
+      await loginToAllRegistries(bootApps);
     } else {
       console.log('No apps configured yet. Registry login skipped.');
     }
-  } catch (error) {
-    console.error('Warning: Registry login failed:', error);
-  }
+  });
 
-  // Tighten permissions on any pre-existing secret files (one-time cleanup for older deployments)
-  try {
+  await runStartupStep('tighten secret file permissions', async () => {
     const tightened = await tightenSecretFilePermissions();
-    if (tightened > 0) {
-      console.log(`Tightened permissions (0600) on ${tightened} secret file(s)`);
-    }
-  } catch (error) {
-    console.error('Warning: Failed to tighten secret file permissions:', error);
-  }
+    if (tightened > 0) console.log(`Tightened permissions (0600) on ${tightened} secret file(s)`);
+  });
 
-  // Backfill COMPOSE_PROJECT_NAME for existing tenants (prevents project name collisions)
-  try {
+  await runStartupStep('backfill COMPOSE_PROJECT_NAME', async () => {
     const backfilled = await backfillComposeProjectNames();
-    if (backfilled > 0) {
-      console.log(`Backfilled COMPOSE_PROJECT_NAME for ${backfilled} tenant(s)`);
-    }
-  } catch (error) {
-    console.error('Warning: Failed to backfill COMPOSE_PROJECT_NAME:', error);
-  }
+    if (backfilled > 0) console.log(`Backfilled COMPOSE_PROJECT_NAME for ${backfilled} tenant(s)`);
+  });
 
-  // Generate shared.env files for all existing tenants
-  try {
+  await runStartupStep('regenerate shared.env', async () => {
     const count = await regenerateAllSharedEnvFiles();
-    if (count > 0) {
-      console.log(`Generated shared.env for ${count} tenant(s)`);
-    }
-  } catch (error) {
-    console.error('Warning: Failed to generate shared.env files:', error);
-  }
+    if (count > 0) console.log(`Generated shared.env for ${count} tenant(s)`);
+  });
 
-  // Start per-app backup schedulers
-  try {
-    await startAllBackupSchedulers();
-  } catch (error) {
-    console.error('Warning: Failed to start backup schedulers:', error);
-  }
+  await runStartupStep('start backup schedulers', () => startAllBackupSchedulers());
 
   const server = app.listen(PORT, () => {
     console.log(`Overwatch running on port ${PORT}`);

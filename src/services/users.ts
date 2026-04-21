@@ -1,7 +1,15 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { z } from 'zod';
 import { getDataDir } from '../config';
 import { withFileLock } from './fileLock';
+
+const AdminUserSchema = z.object({
+  email: z.string().email(),
+  addedAt: z.string(),
+  addedBy: z.string(),
+});
+const AdminUsersFileSchema = z.array(AdminUserSchema);
 
 function getAdminUsersFile(): string {
   return path.join(getDataDir(), 'admin-users.json');
@@ -28,9 +36,9 @@ async function ensureDataDir(): Promise<void> {
 }
 
 async function readAdminUsers(): Promise<AdminUser[]> {
+  let data: string;
   try {
-    const data = await fs.readFile(getAdminUsersFile(), 'utf-8');
-    return JSON.parse(data);
+    data = await fs.readFile(getAdminUsersFile(), 'utf-8');
   } catch (error: any) {
     if (error.code === 'ENOENT') {
       // File doesn't exist, initialize with env var emails
@@ -44,6 +52,18 @@ async function readAdminUsers(): Promise<AdminUser[]> {
     }
     throw error;
   }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch (err: any) {
+    throw new Error(`admin-users.json is not valid JSON (${err.message}). Refusing to auto-reset.`);
+  }
+  const parsed = AdminUsersFileSchema.safeParse(raw);
+  if (!parsed.success) {
+    const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    throw new Error(`admin-users.json failed validation: ${errors}`);
+  }
+  return parsed.data;
 }
 
 async function saveAdminUsers(users: AdminUser[]): Promise<void> {

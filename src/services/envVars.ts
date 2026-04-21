@@ -1,8 +1,30 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { z } from 'zod';
 import { getAppsDir, getDataDir } from '../config';
 import { withFileLock } from './fileLock';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
+
+const EnvVarSchema = z.object({
+  key: z.string(),
+  value: z.string(),
+  sensitive: z.boolean(),
+  description: z.string().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+const TenantOverrideItemSchema = z.object({
+  key: z.string(),
+  value: z.string(),
+  sensitive: z.boolean(),
+  updatedAt: z.string(),
+});
+const TenantOverrideSchema = z.object({
+  tenantId: z.string(),
+  overrides: z.array(TenantOverrideItemSchema),
+});
+const EnvVarsStoreSchema = z.record(z.array(EnvVarSchema));
+const TenantOverridesStoreSchema = z.record(z.array(TenantOverrideSchema));
 
 function getEnvVarsFile(): string {
   return path.join(getDataDir(), 'env-vars.json');
@@ -62,14 +84,9 @@ async function ensureDataDir(): Promise<void> {
 }
 
 async function readEnvVarsStore(): Promise<EnvVarsStore> {
+  let data: string;
   try {
-    const data = await fs.readFile(getEnvVarsFile(), 'utf-8');
-    const parsed = JSON.parse(data);
-    // Handle legacy format (flat array) — treat as no apps
-    if (Array.isArray(parsed)) {
-      return {};
-    }
-    return parsed;
+    data = await fs.readFile(getEnvVarsFile(), 'utf-8');
   } catch (error: any) {
     if (error.code === 'ENOENT') {
       await saveEnvVarsStore({});
@@ -77,6 +94,20 @@ async function readEnvVarsStore(): Promise<EnvVarsStore> {
     }
     throw error;
   }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch (err: any) {
+    throw new Error(`env-vars.json is not valid JSON (${err.message}). Refusing to auto-reset.`);
+  }
+  // Handle legacy format (flat array) — treat as no apps, do NOT overwrite silently.
+  if (Array.isArray(raw)) return {};
+  const parsed = EnvVarsStoreSchema.safeParse(raw);
+  if (!parsed.success) {
+    const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    throw new Error(`env-vars.json failed validation: ${errors}`);
+  }
+  return parsed.data;
 }
 
 async function saveEnvVarsStore(store: EnvVarsStore): Promise<void> {
@@ -85,14 +116,9 @@ async function saveEnvVarsStore(store: EnvVarsStore): Promise<void> {
 }
 
 async function readTenantOverridesStore(): Promise<TenantOverridesStore> {
+  let data: string;
   try {
-    const data = await fs.readFile(getTenantOverridesFile(), 'utf-8');
-    const parsed = JSON.parse(data);
-    // Handle legacy format (flat array)
-    if (Array.isArray(parsed)) {
-      return {};
-    }
-    return parsed;
+    data = await fs.readFile(getTenantOverridesFile(), 'utf-8');
   } catch (error: any) {
     if (error.code === 'ENOENT') {
       await saveTenantOverridesStore({});
@@ -100,6 +126,19 @@ async function readTenantOverridesStore(): Promise<TenantOverridesStore> {
     }
     throw error;
   }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch (err: any) {
+    throw new Error(`tenant-env-overrides.json is not valid JSON (${err.message}). Refusing to auto-reset.`);
+  }
+  if (Array.isArray(raw)) return {};
+  const parsed = TenantOverridesStoreSchema.safeParse(raw);
+  if (!parsed.success) {
+    const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    throw new Error(`tenant-env-overrides.json failed validation: ${errors}`);
+  }
+  return parsed.data;
 }
 
 async function saveTenantOverridesStore(store: TenantOverridesStore): Promise<void> {

@@ -9,11 +9,9 @@ function getAppsFile(): string {
 }
 
 async function readApps(): Promise<AppDefinition[]> {
+  let data: string;
   try {
-    const data = await fs.readFile(getAppsFile(), 'utf-8');
-    const raw = JSON.parse(data);
-    if (!Array.isArray(raw)) return [];
-    return raw;
+    data = await fs.readFile(getAppsFile(), 'utf-8');
   } catch (error: any) {
     if (error.code === 'ENOENT') {
       await saveApps([]);
@@ -21,6 +19,29 @@ async function readApps(): Promise<AppDefinition[]> {
     }
     throw error;
   }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch (err: any) {
+    throw new Error(
+      `apps.json is not valid JSON (${err.message}). Refusing to auto-reset — inspect and restore from backup.`
+    );
+  }
+  if (!Array.isArray(raw)) {
+    throw new Error(`apps.json must be an array; got ${typeof raw}. Refusing to auto-reset.`);
+  }
+  // Validate every entry; fail loudly on structural drift rather than silently degrading.
+  const apps: AppDefinition[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const parsed = AppDefinitionSchema.safeParse(raw[i]);
+    if (!parsed.success) {
+      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      throw new Error(`apps.json[${i}] failed validation: ${errors}`);
+    }
+    apps.push(parsed.data);
+  }
+  return apps;
 }
 
 async function saveApps(apps: AppDefinition[]): Promise<void> {

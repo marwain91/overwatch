@@ -10,7 +10,9 @@ interface AuditEntry {
   action: string;
   method: string;
   path: string;
+  query?: Record<string, unknown>;
   body?: Record<string, unknown>;
+  force?: boolean;
   status: number;
   ip: string;
 }
@@ -23,18 +25,25 @@ function getUserFromRequest(req: Request): string {
   return getCurrentUserEmail(req) || 'anonymous';
 }
 
-function describeAction(method: string, fullPath: string, body?: Record<string, unknown>): string {
+function describeAction(
+  method: string,
+  fullPath: string,
+  body?: Record<string, unknown>,
+  query?: Record<string, unknown>
+): string {
   // Split into segments: ['', 'api', 'apps', appId, resource, id, action, ...]
   //                   or: ['', 'api', 'admin-users', ...]
   const decode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
   const seg = fullPath.split('/').filter(Boolean);
+  const force = query?.force === 'true' || body?.force === true;
+  const forceTag = force ? ' (force=true)' : '';
   // seg[0] = 'api', seg[1] = 'apps'|'admin-users', seg[2] = appId, seg[3] = resource, seg[4] = id, seg[5] = action
 
   // App operations: /api/apps, /api/apps/:appId, /api/apps/:appId/registry/test
   if (seg[1] === 'apps' && !seg[3]) {
     if (method === 'POST' && !seg[2]) return 'create app';
     if (method === 'PUT' && seg[2]) return `update app ${seg[2]}`;
-    if (method === 'DELETE' && seg[2]) return `delete app ${seg[2]}`;
+    if (method === 'DELETE' && seg[2]) return `delete app ${seg[2]}${forceTag}`;
   }
   if (seg[1] === 'apps' && seg[3] === 'registry' && seg[4] === 'test' && method === 'POST') {
     return 'test registry';
@@ -44,9 +53,10 @@ function describeAction(method: string, fullPath: string, body?: Record<string, 
   if (seg[3] === 'tenants') {
     const id = seg[4];
     const action = seg[5];
+    const keepDataTag = query?.keepData === 'true' ? ' (keepData=true)' : '';
     if (!id && method === 'POST') return `create tenant ${body?.tenantId || ''}`;
     if (id && !action && method === 'PATCH') return `update tenant ${id}`;
-    if (id && !action && method === 'DELETE') return `delete tenant ${id}`;
+    if (id && !action && method === 'DELETE') return `delete tenant ${id}${keepDataTag}`;
     if (id && action === 'start' && method === 'POST') return `start tenant ${id}`;
     if (id && action === 'stop' && method === 'POST') return `stop tenant ${id}`;
     if (id && action === 'restart' && method === 'POST') return `restart tenant ${id}`;
@@ -120,13 +130,17 @@ export function auditLog(req: Request, res: Response, next: NextFunction) {
   const originalJson = res.json.bind(res);
   res.json = function (body: unknown) {
     const fullPath = req.baseUrl + req.path;
+    const query = req.query as Record<string, unknown>;
+    const force = query?.force === 'true' || req.body?.force === true;
     const entry: AuditEntry = {
       timestamp: new Date().toISOString(),
       user: getUserFromRequest(req),
-      action: describeAction(req.method, fullPath, req.body),
+      action: describeAction(req.method, fullPath, req.body, query),
       method: req.method,
       path: fullPath,
+      query: Object.keys(query || {}).length > 0 ? sanitizeValue(query) as Record<string, unknown> : undefined,
       body: sanitizeBody(req.body),
+      ...(force ? { force: true } : {}),
       status: res.statusCode,
       ip: req.ip || req.socket.remoteAddress || 'unknown',
     };

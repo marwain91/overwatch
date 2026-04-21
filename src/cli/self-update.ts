@@ -241,6 +241,22 @@ export async function runSelfUpdate(args: string[]): Promise<void> {
     );
   }
 
+  // Lockfile prevents two concurrent self-updates from racing on the binary path.
+  const lockPath = `${binaryPath}.lock`;
+  let lockFd: number | null = null;
+  try {
+    lockFd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+    fs.writeSync(lockFd, `${process.pid}\n`);
+  } catch (err: any) {
+    if (err.code === 'EEXIST') {
+      throw new Error(
+        `Another self-update is in progress (lockfile at ${lockPath}).\n` +
+        `  If no update is running, remove the lockfile and retry.`
+      );
+    }
+    throw new Error(`Failed to acquire self-update lock: ${err.message}`);
+  }
+
   // Download to temp file in same directory (for atomic rename)
   const tmpPath = `${binaryPath}.tmp`;
 
@@ -260,5 +276,10 @@ export async function runSelfUpdate(args: string[]): Promise<void> {
     // Clean up temp file on failure
     try { fs.unlinkSync(tmpPath); } catch {}
     throw new Error(`Update failed: ${err.message}`);
+  } finally {
+    if (lockFd !== null) {
+      try { fs.closeSync(lockFd); } catch {}
+      try { fs.unlinkSync(lockPath); } catch {}
+    }
   }
 }

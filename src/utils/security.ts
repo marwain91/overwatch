@@ -1,4 +1,6 @@
 import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as crypto from 'crypto';
 
 /** Verify that a resolved path stays within an expected parent directory */
 export async function assertWithinDir(childPath: string, parentDir: string): Promise<void> {
@@ -11,11 +13,21 @@ export async function assertWithinDir(childPath: string, parentDir: string): Pro
 
 /**
  * Write a file containing secrets with 0600 (owner-only) permissions.
- * mode: in writeFile only applies on create, so we chmod to also tighten existing files.
+ * Atomic: writes to tmp then renames. The chmod before rename eliminates the
+ * window where the final file exists at 0644 (umask) before being tightened.
  */
 export async function writeSecretFile(filePath: string, content: string | Buffer): Promise<void> {
-  await fs.writeFile(filePath, content, { mode: 0o600 });
-  await fs.chmod(filePath, 0o600);
+  const dir = path.dirname(filePath);
+  const tmp = path.join(dir, `.${path.basename(filePath)}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`);
+  try {
+    await fs.writeFile(tmp, content, { mode: 0o600 });
+    await fs.chmod(tmp, 0o600);
+    await fs.rename(tmp, filePath);
+    await fs.chmod(filePath, 0o600);
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 /** Validate that a database/user name contains only safe characters */
