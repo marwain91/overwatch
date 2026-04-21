@@ -5,6 +5,8 @@ import { runStart, runStop, runRestart, runRecreate, runStatus } from './cli/lif
 import { runConfig } from './cli/config';
 import { runSelfUpdate } from './cli/self-update';
 import { runAdmins } from './cli/admins';
+import { runMigrate } from './cli/migrate';
+import { runSnapshot } from './cli/snapshot';
 import { VERSION } from './version';
 
 const command = process.argv[2];
@@ -57,6 +59,14 @@ switch (command) {
     run(runAdmins);
     break;
 
+  case 'migrate':
+    run(runMigrate);
+    break;
+
+  case 'snapshot':
+    run(runSnapshot);
+    break;
+
   case '--version':
   case '-v':
     console.log(VERSION);
@@ -78,6 +88,8 @@ switch (command) {
     console.log('    recreate                Force-recreate Overwatch containers');
     console.log('    status                  Show service status');
     console.log('    admins                  List, add, or remove admin users');
+    console.log('    migrate status|up       Inspect / run pending data migrations');
+    console.log('    snapshot <sub>          Create / list / restore / prune config snapshots');
     console.log('    config                  View, edit, validate, and explore configuration');
     console.log('    update [--check]        Pull latest image and restart (--self-update to also update CLI)');
     console.log('    self-update [--check]   Update the CLI binary itself');

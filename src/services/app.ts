@@ -3,6 +3,7 @@ import * as path from 'path';
 import { getDataDir } from '../config';
 import { AppDefinition, AppDefinitionSchema, CreateAppInput, UpdateAppInput } from '../models/app';
 import { withFileLock } from './fileLock';
+import { writeJsonAtomic } from '../utils/atomicJson';
 
 function getAppsFile(): string {
   return path.join(getDataDir(), 'apps.json');
@@ -45,9 +46,7 @@ async function readApps(): Promise<AppDefinition[]> {
 }
 
 async function saveApps(apps: AppDefinition[]): Promise<void> {
-  const dir = getDataDir();
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getAppsFile(), JSON.stringify(apps, null, 2));
+  await writeJsonAtomic(getAppsFile(), apps, { mode: 0o644 });
 }
 
 export async function listApps(): Promise<AppDefinition[]> {

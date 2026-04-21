@@ -19,7 +19,8 @@ import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
 import databaseRouter from './routes/database';
 import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions } from './services/envVars';
-import { startAllBackupSchedulers, stopBackupScheduler } from './services/scheduler';
+import { startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns } from './services/scheduler';
+import { flushAuditLog } from './middleware/audit';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
 import { startDockerEventListener, stopDockerEventListener } from './services/dockerEvents';
 import { startMetricsCollector, stopMetricsCollector } from './services/metricsCollector';
@@ -27,22 +28,33 @@ import { startHealthChecker, stopHealthChecker } from './services/healthChecker'
 import { startAlertEngine, stopAlertEngine } from './services/alertEngine';
 import { startRetention, stopRetention } from './services/retention';
 import { isLegacyFormat, runMigration } from './services/migration';
+import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitialised } from './services/schemaVersions';
+import { createSnapshot, pruneOldSnapshots } from './services/configSnapshots';
+import cron from 'node-cron';
 
 // Load environment variables
 dotenv.config();
 
 // Initialize and start server
 async function start() {
-  // Run migration if legacy format detected (before loading config)
+  // Migration is now explicit: run `overwatch migrate up` out-of-band.
+  // Auto-run on boot is opt-in via OVERWATCH_AUTO_MIGRATE=1 for environments
+  // (like container images) where a separate step is inconvenient.
   if (isLegacyFormat()) {
-    console.log('Legacy configuration detected. Running migration...');
-    try {
-      await runMigration();
-      clearConfigCache();
-      console.log('Migration completed successfully.');
-    } catch (error: any) {
-      console.error('Migration failed:', error.message);
-      console.error('Continuing with existing config...');
+    if (process.env.OVERWATCH_AUTO_MIGRATE === '1') {
+      console.log('Legacy configuration detected. OVERWATCH_AUTO_MIGRATE=1 — running migration...');
+      try {
+        await runMigration();
+        clearConfigCache();
+        console.log('Migration completed successfully.');
+      } catch (error: any) {
+        console.error('Migration failed:', error.message);
+        process.exit(1);
+      }
+    } else {
+      console.error('Legacy configuration detected but OVERWATCH_AUTO_MIGRATE is not set.');
+      console.error('Run `overwatch migrate up` to migrate, or set OVERWATCH_AUTO_MIGRATE=1 and restart.');
+      process.exit(1);
     }
   }
 
@@ -169,6 +181,22 @@ async function start() {
     console.log(`[startup] Loaded ${bootApps.length} app(s)`);
   }, { critical: true });
 
+  // Critical: refuse to boot if any data store is at a newer version than this
+  // binary knows — that would silently downgrade. If pending migrations exist,
+  // require explicit opt-in (same gate as legacy migration above).
+  await runStartupStep('schema versions', async () => {
+    const stored = await readSchemaVersions();
+    const pending = findPendingMigrations(stored);
+    if (pending.length > 0) {
+      if (process.env.OVERWATCH_AUTO_MIGRATE !== '1') {
+        const list = pending.map(p => `${p.store} v${p.from}→v${p.to}`).join(', ');
+        throw new Error(`Pending data migrations (${list}). Run 'overwatch migrate up' or set OVERWATCH_AUTO_MIGRATE=1.`);
+      }
+      console.log(`[startup] OVERWATCH_AUTO_MIGRATE=1 — migrations will run as needed`);
+    }
+    await ensureSchemaVersionsInitialised();
+  }, { critical: true });
+
   await runStartupStep('registry login', async () => {
     if (bootApps.length > 0) {
       await loginToAllRegistries(bootApps);
@@ -192,7 +220,24 @@ async function start() {
     if (count > 0) console.log(`Generated shared.env for ${count} tenant(s)`);
   });
 
+  await runStartupStep('report abandoned backup runs', () => reportAbandonedRuns());
   await runStartupStep('start backup schedulers', () => startAllBackupSchedulers());
+
+  // Daily config snapshot: protects against apps.json / env-vars.json loss.
+  // 03:17 UTC (off-peak). Also run one immediately on boot so we have a recent snapshot.
+  await runStartupStep('initial config snapshot', async () => {
+    const info = await createSnapshot('boot');
+    console.log(`[snapshot] Created ${info.name} (${info.files.length} file(s))`);
+  });
+  cron.schedule('17 3 * * *', async () => {
+    try {
+      const info = await createSnapshot('daily');
+      const pruned = await pruneOldSnapshots(30);
+      console.log(`[snapshot] Daily ${info.name}; pruned ${pruned}`);
+    } catch (err: any) {
+      console.error(`[snapshot] Daily snapshot failed: ${err?.message || err}`);
+    }
+  });
 
   const server = app.listen(PORT, () => {
     console.log(`Overwatch running on port ${PORT}`);
@@ -232,8 +277,12 @@ async function start() {
     stopWebSocketServer();
 
     server.close(() => {
-      console.log('All connections closed. Exiting.');
-      process.exit(0);
+      // Drain the audit queue before exit — queued entries would otherwise be
+      // lost on SIGTERM (fire-and-forget writes were never awaited).
+      flushAuditLog().catch(() => {}).finally(() => {
+        console.log('All connections closed. Exiting.');
+        process.exit(0);
+      });
     });
 
     setTimeout(() => {

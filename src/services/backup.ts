@@ -8,6 +8,7 @@ import { getTenantInfo, listTenants } from './docker';
 import { getApp, listApps } from './app';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
+import { writeJsonAtomic } from '../utils/atomicJson';
 
 const execFileAsync = promisify(execFile);
 
@@ -264,16 +265,15 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     await db.initialize();
     await db.dumpDatabase(dbName, path.join(tenantBackupDir, 'database.sql'));
 
-    // Copy tenant config
+    // Copy tenant .env — required artifact. Fail the backup if missing or unreadable.
     const tenantConfigDir = path.join(appsDir, appId, 'tenants', tenant.tenantId);
-    try {
-      const envContent = await fs.readFile(path.join(tenantConfigDir, '.env'), 'utf-8');
-      await fs.writeFile(path.join(tenantBackupDir, '.env'), envContent);
-    } catch (error) {
-      console.error(`Failed to copy config for ${tenant.tenantId}`);
-    }
+    const envContent = await fs.readFile(path.join(tenantConfigDir, '.env'), 'utf-8');
+    await fs.writeFile(path.join(tenantBackupDir, '.env'), envContent, { mode: 0o600 });
 
-    // Copy paths from services that have backup enabled
+    // Copy paths from services that have backup enabled. Per-path failures are
+    // recorded in metadata so restore can flag incompleteness — they no longer
+    // silently disappear into console.error.
+    const incompletePaths: Array<{ service: string; path: string; error: string }> = [];
     for (const service of backupServices) {
       const containerName = `${appId}-${tenant.tenantId}-${service.name}`;
 
@@ -281,10 +281,12 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
         try {
           if (!isValidContainerPath(pathConfig.container)) {
             console.error(`Skipping unsafe container path: ${pathConfig.container}`);
+            incompletePaths.push({ service: service.name, path: pathConfig.container, error: 'unsafe path' });
             continue;
           }
           if (!isValidContainerPath(pathConfig.local)) {
             console.error(`Skipping unsafe local path: ${pathConfig.local}`);
+            incompletePaths.push({ service: service.name, path: pathConfig.local, error: 'unsafe path' });
             continue;
           }
           const { stdout: checkOutput } = await execFileAsync(
@@ -296,20 +298,24 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
             await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`]);
           }
         } catch (error: any) {
-          console.error(`Failed to copy ${pathConfig.container} from ${containerName}:`, error.message);
+          const msg = error?.message || String(error);
+          console.error(`Failed to copy ${pathConfig.container} from ${containerName}: ${msg}`);
+          incompletePaths.push({ service: service.name, path: pathConfig.container, error: msg });
         }
       }
     }
 
-    // Create metadata file
+    // Create metadata file. `incomplete: true` when any optional service path failed
+    // — restore consumers can refuse or warn.
     const metadata = {
       timestamp: new Date().toISOString(),
       appId,
       tenants: [tenant.tenantId],
       project: config.project.name,
-      version: '2.0',
+      version: '2.1',
+      ...(incompletePaths.length > 0 ? { incomplete: true, missingPaths: incompletePaths } : {}),
     };
-    await fs.writeFile(path.join(backupDir, 'metadata.json'), JSON.stringify(metadata, null, 2));
+    await writeJsonAtomic(path.join(backupDir, 'metadata.json'), metadata, { mode: 0o644 });
 
     // Run restic backup with app and tenant tags (execFile avoids shell injection)
     const { stdout } = await execFileAsync(

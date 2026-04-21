@@ -5,6 +5,7 @@ import { eventBus } from './eventBus';
 import { loadConfig, getDataDir } from '../config';
 import { sendWebhook } from '../notifications/webhook';
 import { NotificationChannel, AlertHistoryEntry } from '../notifications/types';
+import { writeJsonAtomic } from '../utils/atomicJson';
 
 interface AlertRule {
   id: string;
@@ -274,7 +275,7 @@ export async function getNotificationChannelsData(): Promise<NotificationChannel
 export async function saveNotificationChannels(channels: NotificationChannel[]): Promise<void> {
   const dir = getDataDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getNotificationChannelsFile(), JSON.stringify(channels, null, 2));
+  await writeJsonAtomic(getNotificationChannelsFile(), channels, { mode: 0o644 });
 }
 
 export async function sendTestNotification(channel: NotificationChannel): Promise<void> {

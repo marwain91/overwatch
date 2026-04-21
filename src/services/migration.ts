@@ -6,6 +6,7 @@ import { findConfigPath } from '../config/loader';
 import { LegacyOverwatchConfigSchema, LegacyOverwatchConfig, OverwatchConfig } from '../config/schema';
 import { AppDefinition } from '../models/app';
 import { generateComposeFile } from './composeGenerator';
+import { writeJsonAtomic } from '../utils/atomicJson';
 
 const MIGRATION_MARKER = '.migration-v2-complete';
 
@@ -186,7 +187,7 @@ export async function runMigration(): Promise<void> {
   } catch (err: any) {
     if (err.code !== 'ENOENT' && !(err instanceof SyntaxError)) throw err;
   }
-  await fs.writeFile(appsFile, JSON.stringify([defaultApp], null, 2));
+  await writeJsonAtomic(appsFile, [defaultApp], { mode: 0o644 });
   console.log(`[Migration] Created app '${appId}' in apps.json`);
 
   // 3. Move tenants to apps/{appId}/tenants/ and regenerate compose files
@@ -268,7 +269,7 @@ export async function runMigration(): Promise<void> {
     const parsed = JSON.parse(content);
     if (Array.isArray(parsed)) {
       const newFormat: Record<string, any[]> = { [appId]: parsed };
-      await fs.writeFile(envVarsFile, JSON.stringify(newFormat, null, 2));
+      await writeJsonAtomic(envVarsFile, newFormat, { mode: 0o600 });
       console.log('[Migration] Restructured env-vars.json');
     }
   } catch {
@@ -282,7 +283,7 @@ export async function runMigration(): Promise<void> {
     const parsed = JSON.parse(content);
     if (Array.isArray(parsed)) {
       const newFormat: Record<string, any[]> = { [appId]: parsed };
-      await fs.writeFile(overridesFile, JSON.stringify(newFormat, null, 2));
+      await writeJsonAtomic(overridesFile, newFormat, { mode: 0o600 });
       console.log('[Migration] Restructured tenant-env-overrides.json');
     }
   } catch {

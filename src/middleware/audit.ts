@@ -4,6 +4,52 @@ import * as path from 'path';
 import { getDataDir } from '../config';
 import { getCurrentUserEmail } from '../utils/jwt';
 
+// Serialised audit writer. Replaces fs.appendFile().catch(() => {}) which
+// lost entries on concurrent writes and on transient errors. A single
+// background flush loop drains the queue in insertion order; callers don't
+// block on I/O but are guaranteed ordering and failure visibility.
+const auditQueue: string[] = [];
+let currentFlush: Promise<void> | null = null;
+let flushErrorLogged = false;
+
+async function drainQueue(): Promise<void> {
+  while (auditQueue.length > 0) {
+    // Take everything currently queued so we batch many entries into one
+    // append syscall; new arrivals during the await re-trigger the loop.
+    const chunk = auditQueue.splice(0, auditQueue.length).join('');
+    try {
+      await fs.appendFile(getAuditLogFile(), chunk);
+      flushErrorLogged = false;
+    } catch (err: any) {
+      // Re-queue so we don't lose entries; log once per outage.
+      auditQueue.unshift(chunk);
+      if (!flushErrorLogged) {
+        console.error(`[audit] flush failed: ${err?.message || err}. Will retry.`);
+        flushErrorLogged = true;
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+}
+
+function startFlush(): void {
+  if (currentFlush) return;
+  currentFlush = drainQueue().finally(() => { currentFlush = null; });
+}
+
+function enqueueAuditEntry(entry: unknown): void {
+  auditQueue.push(JSON.stringify(entry) + '\n');
+  startFlush();
+}
+
+/** Drain the audit queue — intended for graceful shutdown and tests. */
+export async function flushAuditLog(): Promise<void> {
+  while (auditQueue.length > 0 || currentFlush) {
+    if (!currentFlush) startFlush();
+    await currentFlush;
+  }
+}
+
 interface AuditEntry {
   timestamp: string;
   user: string;
@@ -145,8 +191,7 @@ export function auditLog(req: Request, res: Response, next: NextFunction) {
       ip: req.ip || req.socket.remoteAddress || 'unknown',
     };
 
-    const line = JSON.stringify(entry);
-    fs.appendFile(getAuditLogFile(), line + '\n').catch(() => {});
+    enqueueAuditEntry(entry);
 
     return originalJson(body);
   };

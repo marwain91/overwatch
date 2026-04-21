@@ -3,6 +3,7 @@ import * as path from 'path';
 import { z } from 'zod';
 import { getDataDir } from '../config';
 import { withFileLock } from './fileLock';
+import { writeJsonAtomic } from '../utils/atomicJson';
 
 const AdminUserSchema = z.object({
   email: z.string().email(),
@@ -68,7 +69,7 @@ async function readAdminUsers(): Promise<AdminUser[]> {
 
 async function saveAdminUsers(users: AdminUser[]): Promise<void> {
   await ensureDataDir();
-  await fs.writeFile(getAdminUsersFile(), JSON.stringify(users, null, 2));
+  await writeJsonAtomic(getAdminUsersFile(), users, { mode: 0o644 });
 }
 
 export async function listAdminUsers(): Promise<AdminUser[]> {
