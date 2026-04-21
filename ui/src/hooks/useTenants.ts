@@ -27,7 +27,7 @@ export function useDeleteTenant(appId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ tenantId, keepData }: { tenantId: string; keepData: boolean }) =>
-      api.delete(`/apps/${appId}/tenants/${tenantId}?keepData=${keepData}`),
+      api.delete(`/apps/${appId}/tenants/${tenantId}?keepData=${keepData}`, tenantId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tenants', appId] });
     },

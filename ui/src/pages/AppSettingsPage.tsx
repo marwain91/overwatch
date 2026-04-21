@@ -19,6 +19,7 @@ export function AppSettingsPage() {
   const [backup, setBackup] = useState<AppBackup | null>(null);
   const [adminAccess, setAdminAccess] = useState<AppAdminAccess | null>(null);
   const [showDelete, setShowDelete] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
 
   useEffect(() => {
     if (app) {
@@ -189,13 +190,25 @@ export function AppSettingsPage() {
         ) : (
           <div className="space-y-3">
             <p className="text-sm text-content-muted">
-              This will permanently delete the app and all its configuration. Tenants must be removed first, or use force delete.
+              This will delete the app. If active tenants exist it is <strong>soft-deleted</strong> (moved to trash,
+              tenant data kept) so you can restore it. Type the app ID <code className="text-red-300">{appId}</code> below
+              to confirm.
             </p>
+            <input
+              className="input"
+              placeholder={`Type ${appId} to confirm`}
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+            />
             <div className="flex gap-2">
-              <button className="btn btn-danger" onClick={handleDelete} disabled={deleteApp.isPending}>
+              <button
+                className="btn btn-danger"
+                onClick={handleDelete}
+                disabled={deleteApp.isPending || confirmText !== appId}
+              >
                 {deleteApp.isPending ? 'Deleting...' : 'Confirm Delete'}
               </button>
-              <button className="btn btn-secondary" onClick={() => setShowDelete(false)}>
+              <button className="btn btn-secondary" onClick={() => { setShowDelete(false); setConfirmText(''); }}>
                 Cancel
               </button>
             </div>

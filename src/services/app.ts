@@ -3,7 +3,33 @@ import * as path from 'path';
 import { getDataDir } from '../config';
 import { AppDefinition, AppDefinitionSchema, CreateAppInput, UpdateAppInput } from '../models/app';
 import { withFileLock } from './fileLock';
-import { writeJsonAtomic } from '../utils/atomicJson';
+import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
+
+function getTrashedAppsFile(): string {
+  return path.join(getDataDir(), 'apps.trashed.json');
+}
+
+interface TrashedApp {
+  app: AppDefinition;
+  deletedAt: string;
+  deletedBy: string;
+  tenantCount: number;
+}
+
+async function readTrashed(): Promise<TrashedApp[]> {
+  try {
+    const raw = await readJsonStrict<unknown>(getTrashedAppsFile());
+    if (!Array.isArray(raw)) return [];
+    return raw as TrashedApp[];
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+async function saveTrashed(entries: TrashedApp[]): Promise<void> {
+  await writeJsonAtomic(getTrashedAppsFile(), entries, { mode: 0o644 });
+}
 
 function getAppsFile(): string {
   return path.join(getDataDir(), 'apps.json');
@@ -114,7 +140,17 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
   });
 }
 
-export async function deleteApp(id: string, force: boolean = false): Promise<void> {
+/**
+ * Delete an app.
+ *
+ * - force=false (default): refuses if the app has active tenants.
+ * - force=true: soft-deletes — moves the entry to apps.trashed.json instead of
+ *   discarding. Tenant directories and containers are NOT touched; the app can
+ *   be restored with restoreApp() or permanently removed with purgeApp(). This
+ *   change was motivated by a prod incident where two apps disappeared after
+ *   clicking force-delete, leaving containers orphaned and no recovery path.
+ */
+export async function deleteApp(id: string, force: boolean = false, deletedBy: string = 'unknown'): Promise<void> {
   return withFileLock('apps', async () => {
     const apps = await readApps();
     const index = apps.findIndex(a => a.id === id);
@@ -123,23 +159,74 @@ export async function deleteApp(id: string, force: boolean = false): Promise<voi
       throw new Error(`App '${id}' not found`);
     }
 
-    // Check for existing tenants unless force
-    if (!force) {
-      const { getAppsDir } = await import('../config/loader');
-      const appsDir = getAppsDir();
-      const tenantDir = path.join(appsDir, id, 'tenants');
-      try {
-        const entries = await fs.readdir(tenantDir);
-        const tenants = entries.filter(e => !e.startsWith('.'));
-        if (tenants.length > 0) {
-          throw new Error(`App '${id}' has ${tenants.length} tenant(s). Delete all tenants first or use force=true.`);
-        }
-      } catch (err: any) {
-        if (err.code !== 'ENOENT') throw err;
-      }
+    const { getAppsDir } = await import('../config/loader');
+    const appsDir = getAppsDir();
+    const tenantDir = path.join(appsDir, id, 'tenants');
+    let tenantCount = 0;
+    try {
+      const entries = await fs.readdir(tenantDir);
+      tenantCount = entries.filter(e => !e.startsWith('.')).length;
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+
+    if (tenantCount > 0 && !force) {
+      throw new Error(`App '${id}' has ${tenantCount} tenant(s). Delete all tenants first or use force=true.`);
+    }
+
+    const victim = apps[index];
+
+    if (tenantCount > 0) {
+      // Soft-delete: move to trash, keep tenant dirs + DBs alive for recovery.
+      const trashed = await readTrashed();
+      trashed.push({ app: victim, deletedAt: new Date().toISOString(), deletedBy, tenantCount });
+      await saveTrashed(trashed);
     }
 
     apps.splice(index, 1);
     await saveApps(apps);
+  });
+}
+
+/** List soft-deleted apps still in the trash (recoverable). */
+export async function listTrashedApps(): Promise<TrashedApp[]> {
+  return readTrashed();
+}
+
+/** Restore a soft-deleted app. Fails if an app with the same id now exists. */
+export async function restoreApp(id: string): Promise<AppDefinition> {
+  return withFileLock('apps', async () => {
+    const trashed = await readTrashed();
+    const tIdx = trashed.findIndex(t => t.app.id === id);
+    if (tIdx === -1) {
+      throw new Error(`No trashed app with id '${id}' to restore`);
+    }
+    const apps = await readApps();
+    if (apps.some(a => a.id === id)) {
+      throw new Error(`Cannot restore '${id}': an app with that id already exists`);
+    }
+    const restored = trashed[tIdx].app;
+    apps.push(restored);
+    await saveApps(apps);
+    trashed.splice(tIdx, 1);
+    await saveTrashed(trashed);
+    return restored;
+  });
+}
+
+/**
+ * Permanently remove a soft-deleted app from the trash. Does NOT clean up any
+ * tenant containers or databases — caller must stop and delete tenants first
+ * through the normal tenant lifecycle.
+ */
+export async function purgeApp(id: string): Promise<void> {
+  return withFileLock('apps', async () => {
+    const trashed = await readTrashed();
+    const tIdx = trashed.findIndex(t => t.app.id === id);
+    if (tIdx === -1) {
+      throw new Error(`No trashed app with id '${id}' to purge`);
+    }
+    trashed.splice(tIdx, 1);
+    await saveTrashed(trashed);
   });
 }

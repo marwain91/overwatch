@@ -52,7 +52,11 @@ export const api = {
     request<T>(url, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
   patch: <T>(url: string, body?: unknown) =>
     request<T>(url, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
-  delete: <T>(url: string) => request<T>(url, { method: 'DELETE' }),
+  delete: <T>(url: string, confirmId?: string) =>
+    request<T>(url, {
+      method: 'DELETE',
+      headers: confirmId ? { 'X-Confirm-Id': confirmId } : undefined,
+    }),
 };
 
 export { ApiError };

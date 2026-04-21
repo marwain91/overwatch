@@ -49,7 +49,24 @@ export function useDeleteApp() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ appId, force }: { appId: string; force?: boolean }) =>
-      api.delete<{ success: boolean }>(`/apps/${appId}${force ? '?force=true' : ''}`),
+      api.delete<{ success: boolean }>(`/apps/${appId}${force ? '?force=true' : ''}`, appId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['apps'] });
+    },
+  });
+}
+
+export function useTrashedApps() {
+  return useQuery({
+    queryKey: ['apps', 'trashed'],
+    queryFn: () => api.get<Array<{ app: AppDefinition; deletedAt: string; deletedBy: string; tenantCount: number }>>('/apps/.trashed'),
+  });
+}
+
+export function useRestoreApp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (appId: string) => api.post<{ success: boolean }>(`/apps/${appId}/restore`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['apps'] });
     },

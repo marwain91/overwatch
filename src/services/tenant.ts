@@ -96,8 +96,9 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
 
   let dbCreated = true;
 
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
+  let composeWritten = false;
   try {
-
     // Generate .env file
     const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
     await writeSecretFile(path.join(tenantPath, '.env'), envContent);
@@ -113,13 +114,18 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
       config,
     });
     await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), composeContent);
+    composeWritten = true;
 
     // Create external volumes and start tenant
-    const composePath = path.join(tenantPath, 'docker-compose.yml');
     await ensureExternalVolumes(composePath);
     await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d']);
   } catch (error) {
-    // Cleanup on failure - remove directory and database
+    // Rollback in reverse order of creation. If compose was written and `up` was
+    // attempted, containers may exist even when the original command failed —
+    // always attempt `down -v` so we don't leak them.
+    if (composeWritten) {
+      await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
+    }
     await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
     if (dbCreated) {
       await db.dropDatabase(dbTenantId).catch(() => {});
@@ -176,15 +182,25 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   // Clean up tenant env var overrides
   await deleteTenantAllOverrides(appId, tenantId);
 
-  // Stop containers
+  // Stop containers. If this fails we refuse to drop the DB — orphaned
+  // containers running against a gone DB are worse than an incomplete delete.
+  // Caller can retry once the compose issue is resolved.
+  let composeDownOk = true;
   try {
     await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
-  } catch {
-    // Ignore errors
+  } catch (err: any) {
+    composeDownOk = false;
+    if (!keepData) {
+      throw new Error(
+        `Failed to stop tenant containers: ${err?.message || err}. Refusing to drop database — fix and retry.`
+      );
+    }
+    // With keepData=true, containers may already be gone; continue.
+    console.warn(`[deleteTenant] compose down failed: ${err?.message || err}. Continuing because keepData=true.`);
   }
 
   // Drop database unless keeping data
-  if (!keepData) {
+  if (!keepData && composeDownOk) {
     await db.initialize();
     await db.dropDatabase(dbTenantId);
   }
