@@ -23,7 +23,23 @@ export function isLegacyFormat(): boolean {
     const dataDir = raw?.data_dir || '/app/data';
     if (isMigrationComplete(dataDir)) return false;
 
+    // Second safety guard: if apps.json already has entries, this is NOT a legacy
+    // install regardless of what the yaml looks like. Prevents the migration from
+    // stomping a populated multi-app apps.json when the marker file is missing
+    // (e.g. data_dir changed, volume swap, or marker was never written).
+    if (hasPopulatedAppsFile(dataDir)) return false;
+
     return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasPopulatedAppsFile(dataDir: string): boolean {
+  try {
+    const content = fsSync.readFileSync(path.join(dataDir, 'apps.json'), 'utf-8');
+    const parsed = JSON.parse(content);
+    return Array.isArray(parsed) && parsed.length > 0;
   } catch {
     return false;
   }
@@ -152,9 +168,24 @@ export async function runMigration(): Promise<void> {
     // No tenants dir
   }
 
-  // 2. Write apps.json
+  // 2. Write apps.json — refuse to overwrite if already populated.
+  // The marker file is the primary guard, but defence-in-depth protects users
+  // whose marker vanished (volume swap, data_dir change, manual deletion).
   const appsFile = path.join(dataDir, 'apps.json');
   await fs.mkdir(dataDir, { recursive: true });
+  try {
+    const existingRaw = await fs.readFile(appsFile, 'utf-8');
+    const existing = JSON.parse(existingRaw);
+    if (Array.isArray(existing) && existing.length > 0) {
+      throw new Error(
+        `Refusing to overwrite ${appsFile}: file already contains ${existing.length} app(s). ` +
+        `This host is not a legacy install. Write marker manually: ` +
+        `touch ${path.join(dataDir, MIGRATION_MARKER)}`
+      );
+    }
+  } catch (err: any) {
+    if (err.code !== 'ENOENT' && !(err instanceof SyntaxError)) throw err;
+  }
   await fs.writeFile(appsFile, JSON.stringify([defaultApp], null, 2));
   console.log(`[Migration] Created app '${appId}' in apps.json`);
 
