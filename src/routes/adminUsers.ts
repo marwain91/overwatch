@@ -3,6 +3,8 @@ import { listAdminUsers, addAdminUser, removeAdminUser } from '../services/users
 import { asyncHandler } from '../utils/asyncHandler';
 import { getCurrentUserEmail } from '../utils/jwt';
 import { isValidEmail } from '../utils/validators';
+import { requireRole } from '../middleware/requireRole';
+import { requireConfirmId } from '../middleware/confirmDestructive';
 
 const router = Router();
 
@@ -12,8 +14,8 @@ router.get('/', asyncHandler(async (req: Request, res: Response) => {
   res.json(users);
 }));
 
-// Add a new admin user
-router.post('/', asyncHandler(async (req: Request, res: Response) => {
+// Add a new admin user — admin role required
+router.post('/', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {
   const { email } = req.body;
 
   if (!email || typeof email !== 'string') {
@@ -34,8 +36,8 @@ router.post('/', asyncHandler(async (req: Request, res: Response) => {
   res.status(201).json(user);
 }));
 
-// Remove an admin user
-router.delete('/:email', asyncHandler(async (req: Request, res: Response) => {
+// Remove an admin user — admin role + typed email confirmation required
+router.delete('/:email', requireRole('admin'), requireConfirmId('email'), asyncHandler(async (req: Request, res: Response) => {
   const email = decodeURIComponent(req.params.email).trim().toLowerCase();
 
   if (!isValidEmail(email)) {

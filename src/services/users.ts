@@ -5,12 +5,32 @@ import { getDataDir } from '../config';
 import { withFileLock } from './fileLock';
 import { writeJsonAtomic } from '../utils/atomicJson';
 
+export type AdminRole = 'viewer' | 'editor' | 'admin';
+
 const AdminUserSchema = z.object({
   email: z.string().email(),
   addedAt: z.string(),
   addedBy: z.string(),
+  // Role is optional for backward compatibility with existing admin-users.json
+  // files. Undefined is treated as 'admin' (pre-RBAC behavior — first install
+  // wins and every configured admin was unrestricted).
+  role: z.enum(['viewer', 'editor', 'admin']).optional(),
 });
 const AdminUsersFileSchema = z.array(AdminUserSchema);
+
+export function normaliseRole(role: AdminRole | undefined): AdminRole {
+  return role ?? 'admin';
+}
+
+/**
+ * Role hierarchy: admin > editor > viewer.
+ * `can(actualRole, minRequired)` returns true if the user's role is at least
+ * as privileged as the minimum required for the action.
+ */
+export function can(actual: AdminRole | undefined, min: AdminRole): boolean {
+  const rank: Record<AdminRole, number> = { viewer: 1, editor: 2, admin: 3 };
+  return rank[normaliseRole(actual)] >= rank[min];
+}
 
 function getAdminUsersFile(): string {
   return path.join(getDataDir(), 'admin-users.json');
@@ -26,6 +46,7 @@ export interface AdminUser {
   email: string;
   addedAt: string;
   addedBy: string;
+  role?: AdminRole;
 }
 
 async function ensureDataDir(): Promise<void> {
@@ -79,6 +100,13 @@ export async function listAdminUsers(): Promise<AdminUser[]> {
 export async function isAdminEmail(email: string): Promise<boolean> {
   const users = await readAdminUsers();
   return users.some(u => u.email.toLowerCase() === email.toLowerCase());
+}
+
+/** Look up the current role for an email. Returns undefined if email isn't an admin. */
+export async function getUserRole(email: string): Promise<AdminRole | undefined> {
+  const users = await readAdminUsers();
+  const u = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  return u ? normaliseRole(u.role) : undefined;
 }
 
 export async function addAdminUser(email: string, addedBy: string): Promise<AdminUser> {

@@ -7,6 +7,7 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { isValidSlug } from '../utils/validators';
 import { validateTenantId } from '../middleware/validators';
 import { requireConfirmId } from '../middleware/confirmDestructive';
+import { requireRole } from '../middleware/requireRole';
 
 const router = Router({ mergeParams: true });
 
@@ -54,9 +55,8 @@ router.patch('/:tenantId', validateTenantId, asyncHandler(async (req, res) => {
   res.json({ success: true, appId, tenantId, imageTag });
 }));
 
-// Delete a tenant. Requires X-Confirm-Id header matching tenantId — prevents
-// accidental deletion from double-click, stale tabs, or replayed commands.
-router.delete('/:tenantId', validateTenantId, requireConfirmId('tenantId'), asyncHandler(async (req, res) => {
+// Delete a tenant. Requires admin role and X-Confirm-Id header matching tenantId.
+router.delete('/:tenantId', validateTenantId, requireRole('admin'), requireConfirmId('tenantId'), asyncHandler(async (req, res) => {
   const { appId, tenantId } = req.params;
   const keepData = req.query.keepData === 'true';
 

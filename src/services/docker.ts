@@ -1,14 +1,11 @@
 import Docker from 'dockerode';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { loadConfig, getAppsDir } from '../config';
 import { listApps } from './app';
 import { assertWithinDir } from '../utils/security';
 import { parseEnv } from '../utils/env';
-
-const execFileAsync = promisify(execFile);
+import { runDocker } from '../utils/runDocker';
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 export { docker };
 
@@ -224,9 +221,9 @@ export async function ensureExternalVolumes(composePath: string): Promise<void> 
   while ((match = volumeRegex.exec(content)) !== null) {
     const volumeName = match[1];
     try {
-      await execFileAsync('docker', ['volume', 'inspect', volumeName]);
+      await runDocker('docker', ['volume', 'inspect', volumeName], { timeoutMs: 15_000 });
     } catch {
-      await execFileAsync('docker', ['volume', 'create', volumeName]);
+      await runDocker('docker', ['volume', 'create', volumeName], { timeoutMs: 30_000 });
     }
   }
 }
@@ -237,7 +234,7 @@ export async function startTenant(appId: string, tenantId: string): Promise<void
   await assertWithinDir(tenantPath, appsDir);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
-  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d']);
+  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: 300_000 });
 }
 
 export async function stopTenant(appId: string, tenantId: string): Promise<void> {
@@ -245,7 +242,7 @@ export async function stopTenant(appId: string, tenantId: string): Promise<void>
   const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
   await assertWithinDir(tenantPath, appsDir);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
-  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down']);
+  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down'], { timeoutMs: 120_000 });
 }
 
 export async function restartTenant(appId: string, tenantId: string): Promise<void> {
@@ -254,6 +251,6 @@ export async function restartTenant(appId: string, tenantId: string): Promise<vo
   await assertWithinDir(tenantPath, appsDir);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
-  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']);
+  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: 300_000 });
 }
 

@@ -5,6 +5,7 @@ import { CreateAppSchema } from '../models/app';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validateAppId } from '../middleware/validators';
 import { requireConfirmId } from '../middleware/confirmDestructive';
+import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
 
 const router = Router();
@@ -50,20 +51,20 @@ router.get('/.trashed', asyncHandler(async (_req, res) => {
 }));
 
 // Restore a soft-deleted app.
-router.post('/:appId/restore', validateAppId, asyncHandler(async (req, res) => {
+router.post('/:appId/restore', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
   const app = await restoreApp(req.params.appId);
   res.json({ success: true, app });
 }));
 
 // Permanently purge a soft-deleted app from the trash.
-router.delete('/:appId/purge', validateAppId, requireConfirmId('appId'), asyncHandler(async (req, res) => {
+router.delete('/:appId/purge', validateAppId, requireRole('admin'), requireConfirmId('appId'), asyncHandler(async (req, res) => {
   await purgeApp(req.params.appId);
   res.json({ success: true });
 }));
 
 // Delete app. force=true with active tenants now soft-deletes (moves to trash)
 // instead of dropping the record. Requires X-Confirm-Id header matching appId.
-router.delete('/:appId', validateAppId, requireConfirmId('appId'), asyncHandler(async (req, res) => {
+router.delete('/:appId', validateAppId, requireRole('admin'), requireConfirmId('appId'), asyncHandler(async (req, res) => {
   const force = req.query.force === 'true';
   const actor = getCurrentUserEmail(req) || 'unknown';
   await deleteApp(req.params.appId, force, actor);
