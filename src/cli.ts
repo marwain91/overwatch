@@ -5,6 +5,7 @@ import { runStart, runStop, runRestart, runRecreate, runStatus } from './cli/lif
 import { runConfig } from './cli/config';
 import { runSelfUpdate } from './cli/self-update';
 import { runAdmins } from './cli/admins';
+import { runApps } from './cli/apps';
 import { runMigrate } from './cli/migrate';
 import { runSnapshot } from './cli/snapshot';
 import { VERSION } from './version';
@@ -59,6 +60,10 @@ switch (command) {
     run(runAdmins);
     break;
 
+  case 'apps':
+    run(runApps);
+    break;
+
   case 'migrate':
     run(runMigrate);
     break;
@@ -88,6 +93,7 @@ switch (command) {
     console.log('    recreate                Force-recreate Overwatch containers');
     console.log('    status                  Show service status');
     console.log('    admins                  List, add, or remove admin users');
+    console.log('    apps <sub>              Manage app definitions (apply from file)');
     console.log('    migrate status|up       Inspect / run pending data migrations');
     console.log('    snapshot <sub>          Create / list / restore / prune config snapshots');
     console.log('    config                  View, edit, validate, and explore configuration');

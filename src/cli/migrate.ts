@@ -58,9 +58,14 @@ export async function runMigrate(args: string[]): Promise<void> {
     const stored = await readSchemaVersions();
     const pending = findPendingMigrations(stored);
     if (pending.length > 0) {
-      // v3+ migrations will register here. For now, no-op but commit version bumps.
       for (const { store, from, to } of pending) {
-        console.log(`${DIM}[migrate]${NC} ${store}: v${from} → v${to} (no transform required)`);
+        if (store === 'apps' && from < 3 && to >= 3) {
+          console.log(`${DIM}[migrate]${NC} apps: v${from} → v${to} running...`);
+          const { runAppsV3Migration } = await import('../services/migration');
+          await runAppsV3Migration();
+        } else {
+          console.log(`${DIM}[migrate]${NC} ${store}: v${from} → v${to} (no transform required)`);
+        }
       }
       await writeSchemaVersions(CURRENT_SCHEMA_VERSIONS);
       ranSomething = true;

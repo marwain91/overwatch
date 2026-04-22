@@ -168,3 +168,44 @@ describe('applyApp — CLI upsert semantics', () => {
     expect(result.app.updatedAt).not.toBe('x');
   });
 });
+
+describe('runAppsV3Migration', () => {
+  it('splits a legacy apps.json with 3 apps into apps.d/ + apps.runtime.json', async () => {
+    const legacy = [
+      { ...validStatic('kwoutr'), createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z' },
+      { ...validStatic('goalmaster'), createdAt: '2026-02-01T00:00:00Z', updatedAt: '2026-02-02T00:00:00Z' },
+      { ...validStatic('finalio'), createdAt: '2026-03-01T00:00:00Z', updatedAt: '2026-03-02T00:00:00Z' },
+    ];
+    await fs.writeFile(path.join(dataDir, 'apps.json'), JSON.stringify(legacy));
+
+    const { runAppsV3Migration } = await import('../services/migration');
+    await runAppsV3Migration();
+
+    const files = (await fs.readdir(path.join(dataDir, 'apps.d'))).sort();
+    expect(files).toEqual(['finalio.json', 'goalmaster.json', 'kwoutr.json']);
+
+    const runtime = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.runtime.json'), 'utf-8'));
+    expect(runtime.kwoutr.createdAt).toBe('2026-01-01T00:00:00Z');
+    expect(runtime.goalmaster.updatedAt).toBe('2026-02-02T00:00:00Z');
+
+    // Legacy file renamed to backup.
+    await expect(fs.access(path.join(dataDir, 'apps.json'))).rejects.toThrow();
+    await expect(fs.access(path.join(dataDir, 'apps.json.pre-apps.d'))).resolves.toBeUndefined();
+  });
+
+  it('is idempotent — running a second time is a no-op', async () => {
+    const legacy = [{ ...validStatic('kwoutr'), createdAt: 'x', updatedAt: 'x' }];
+    await fs.writeFile(path.join(dataDir, 'apps.json'), JSON.stringify(legacy));
+    const { runAppsV3Migration } = await import('../services/migration');
+    await runAppsV3Migration();
+    // Second invocation should detect populated apps.d/ and exit.
+    await expect(runAppsV3Migration()).resolves.toBeUndefined();
+  });
+
+  it('handles fresh install (no legacy apps.json)', async () => {
+    const { runAppsV3Migration } = await import('../services/migration');
+    await runAppsV3Migration();
+    const runtime = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.runtime.json'), 'utf-8'));
+    expect(runtime).toEqual({});
+  });
+});

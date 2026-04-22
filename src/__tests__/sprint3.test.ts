@@ -68,20 +68,20 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
   async function setupApp() {
     const dataDir = path.join(tmpRoot, 'data');
     const appsDir = path.join(tmpRoot, 'apps');
-    await fs.mkdir(dataDir, { recursive: true });
+    await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
     await fs.mkdir(path.join(appsDir, 'kwoutr', 'tenants', 't1'), { recursive: true });
-    // Place a valid app in apps.json
-    const app = {
+    const staticDef = {
       id: 'kwoutr',
       name: 'Kwoutr',
       domain_template: '*.kwoutr.com',
       registry: { type: 'ghcr', url: 'ghcr.io', repository: 'a/b', auth: { type: 'token' } },
       services: [{ name: 'web' }],
       default_image_tag: 'latest',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     };
-    await fs.writeFile(path.join(dataDir, 'apps.json'), JSON.stringify([app]));
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'kwoutr.json'), JSON.stringify(staticDef));
+    await fs.writeFile(path.join(dataDir, 'apps.runtime.json'), JSON.stringify({
+      kwoutr: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+    }));
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
     vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir }));
     vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
@@ -92,9 +92,9 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
     const { dataDir } = await setupApp();
     const { deleteApp } = await import('../services/app');
     await expect(deleteApp('kwoutr', false)).rejects.toThrow(/tenant/i);
-    // apps.json untouched
-    const after = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.json'), 'utf-8'));
-    expect(after).toHaveLength(1);
+    // apps.d untouched
+    const after = await fs.readdir(path.join(dataDir, 'apps.d'));
+    expect(after).toEqual(['kwoutr.json']);
   });
 
   it('soft-deletes to apps.trashed.json when force=true with active tenants', async () => {
@@ -102,8 +102,8 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
     const { deleteApp } = await import('../services/app');
     await deleteApp('kwoutr', true, 'test@local');
 
-    const active = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.json'), 'utf-8'));
-    expect(active).toHaveLength(0);
+    const active = await fs.readdir(path.join(dataDir, 'apps.d'));
+    expect(active).toEqual([]);
 
     const trashed = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.trashed.json'), 'utf-8'));
     expect(trashed).toHaveLength(1);
@@ -118,9 +118,8 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
     await deleteApp('kwoutr', true, 'test@local');
     await restoreApp('kwoutr');
 
-    const active = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.json'), 'utf-8'));
-    expect(active).toHaveLength(1);
-    expect(active[0].id).toBe('kwoutr');
+    const active = await fs.readdir(path.join(dataDir, 'apps.d'));
+    expect(active).toEqual(['kwoutr.json']);
 
     const trashed = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.trashed.json'), 'utf-8'));
     expect(trashed).toHaveLength(0);

@@ -3,13 +3,16 @@ import * as path from 'path';
 import { getDataDir } from '../config';
 import {
   AppDefinition,
+  AppDefinitionSchema,
   AppDefinitionStaticSchema,
   AppRuntimeEntry,
   AppRuntimeStore,
   AppRuntimeStoreSchema,
   CreateAppInput,
   UpdateAppInput,
+  ApplyResult,
 } from '../models/app';
+import { withFileLock } from './fileLock';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 
 const APPS_D_DIR = 'apps.d';
@@ -116,9 +119,9 @@ async function readApps(): Promise<AppDefinition[]> {
   }
 
   if (runtimeDirty) {
-    // TODO(Task 5): wrap readApps in withFileLock once the mutators land. Until then
-    // two concurrent synthesis writes race, but the write is idempotent + atomic so
-    // the outcome is fine (just duplicated work).
+    // Runtime synthesis is called outside withFileLock because readApps is invoked
+    // from many routes including GETs that should not block on the apps lock. The
+    // concurrent-synthesis race is tolerated: writes are atomic and idempotent.
     await writeRuntimeStore(runtime);
   }
   return apps;
@@ -178,11 +181,145 @@ export async function getApp(id: string): Promise<AppDefinition | null> {
 }
 
 export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
-  throw new Error('rewritten in Task 5');
+  return withFileLock('apps', async () => {
+    const existing = await readApps();
+    if (existing.find(a => a.id === input.id)) {
+      throw new Error(`App '${input.id}' already exists`);
+    }
+
+    const now = new Date().toISOString();
+    const app: AppDefinition = { ...input, createdAt: now, updatedAt: now };
+    const parsed = AppDefinitionSchema.safeParse(app);
+    if (!parsed.success) {
+      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      throw new Error(`Invalid app definition: ${errors}`);
+    }
+
+    await writeStatic(parsed.data);
+    await upsertRuntime(parsed.data.id, () => ({ createdAt: now, updatedAt: now }));
+    return parsed.data;
+  });
 }
 
 export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
-  throw new Error('rewritten in Task 5');
+  return withFileLock('apps', async () => {
+    const apps = await readApps();
+    const index = apps.findIndex(a => a.id === input.id);
+    if (index === -1) {
+      throw new Error(`App '${input.id}' not found`);
+    }
+
+    const now = new Date().toISOString();
+    const updated: AppDefinition = { ...apps[index], ...input, updatedAt: now };
+    const parsed = AppDefinitionSchema.safeParse(updated);
+    if (!parsed.success) {
+      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      throw new Error(`Invalid app definition: ${errors}`);
+    }
+
+    await writeStatic(parsed.data);
+    await upsertRuntime(parsed.data.id, prev => ({
+      createdAt: prev?.createdAt ?? parsed.data.createdAt,
+      updatedAt: now,
+    }));
+    return parsed.data;
+  });
+}
+
+/**
+ * Declarative upsert used by `overwatch apps apply <file>`.
+ * - Validates against AppDefinitionStaticSchema (rejects forged createdAt/updatedAt).
+ * - Errors if the id is currently soft-deleted in the trash.
+ * - No-op (does not bump updatedAt) when the on-disk static file is deep-equal.
+ */
+export async function applyApp(
+  input: unknown,
+  _actor: string,
+): Promise<{ result: ApplyResult; app: AppDefinition; changedKeys: string[] }> {
+  return withFileLock('apps', async () => {
+    const parsed = AppDefinitionStaticSchema.safeParse(input);
+    if (!parsed.success) {
+      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      throw new Error(`App definition failed validation: ${errors}`);
+    }
+    const next = parsed.data;
+
+    const trashed = await readTrashed();
+    if (trashed.some(t => t.app.id === next.id)) {
+      throw new Error(
+        `App '${next.id}' is in trash. Restore with 'overwatch apps restore ${next.id}' ` +
+        `or permanently remove with 'overwatch apps purge ${next.id}' before applying.`,
+      );
+    }
+
+    const currentFile = getStaticFile(next.id);
+    let prevRaw: string | null = null;
+    try {
+      prevRaw = await fs.readFile(currentFile, 'utf-8');
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+
+    if (prevRaw) {
+      let prev: typeof next;
+      try {
+        prev = AppDefinitionStaticSchema.parse(JSON.parse(prevRaw));
+      } catch (err: any) {
+        throw new Error(
+          `apps.d/${next.id}.json exists but failed to parse during apply — ` +
+          `inspect and repair the file before re-running: ${err?.message || err}`
+        );
+      }
+      const changedKeys = diffKeys(prev, next);
+      if (changedKeys.length === 0) {
+        const runtime = await readRuntimeStore();
+        const entry = runtime[next.id];
+        if (!entry) {
+          throw new Error(`apps.d/${next.id}.json exists but apps.runtime.json has no entry — state inconsistent`);
+        }
+        return {
+          result: 'noop' as ApplyResult,
+          app: { ...prev, createdAt: entry.createdAt, updatedAt: entry.updatedAt },
+          changedKeys: [],
+        };
+      }
+      const now = new Date().toISOString();
+      await writeJsonAtomic(currentFile, next, { mode: 0o644 });
+      const entry = await upsertRuntime(next.id, prevEntry => ({
+        createdAt: prevEntry?.createdAt ?? now,
+        updatedAt: now,
+      }));
+      return {
+        result: 'updated' as ApplyResult,
+        app: { ...next, createdAt: entry.createdAt, updatedAt: entry.updatedAt },
+        changedKeys,
+      };
+    }
+
+    const now = new Date().toISOString();
+    await writeJsonAtomic(currentFile, next, { mode: 0o644 });
+    const entry = await upsertRuntime(next.id, () => ({ createdAt: now, updatedAt: now }));
+    return {
+      result: 'created' as ApplyResult,
+      app: { ...next, createdAt: entry.createdAt, updatedAt: entry.updatedAt },
+      changedKeys: Object.keys(next),
+    };
+  });
+}
+
+/**
+ * Shallow per-key diff using JSON.stringify comparison. Safe for our use
+ * because both inputs pass through AppDefinitionStaticSchema.parse, which
+ * produces deterministic key ordering derived from the Zod schema — so the
+ * same logical object stringifies identically regardless of source.
+ */
+function diffKeys(a: Record<string, unknown>, b: Record<string, unknown>): string[] {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const changed: string[] = [];
+  for (const k of keys) {
+    if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) changed.push(k);
+  }
+  return changed.sort();
 }
 
 /**
@@ -196,7 +333,39 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
  *   clicking force-delete, leaving containers orphaned and no recovery path.
  */
 export async function deleteApp(id: string, force: boolean = false, deletedBy: string = 'unknown'): Promise<void> {
-  throw new Error('rewritten in Task 5');
+  return withFileLock('apps', async () => {
+    const apps = await readApps();
+    const victim = apps.find(a => a.id === id);
+    if (!victim) {
+      throw new Error(`App '${id}' not found`);
+    }
+
+    const { getAppsDir } = await import('../config/loader');
+    const tenantDir = path.join(getAppsDir(), id, 'tenants');
+    let tenantCount = 0;
+    try {
+      const entries = await fs.readdir(tenantDir);
+      tenantCount = entries.filter(e => !e.startsWith('.')).length;
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+
+    if (tenantCount > 0 && !force) {
+      throw new Error(`App '${id}' has ${tenantCount} tenant(s). Delete all tenants first or use force=true.`);
+    }
+
+    // Soft-delete (to apps.trashed.json) only when tenants exist — preserves
+    // recovery path for running workloads. When no tenants exist, hard-delete
+    // is safe: there's nothing to orphan.
+    if (tenantCount > 0) {
+      const trashed = await readTrashed();
+      trashed.push({ app: victim, deletedAt: new Date().toISOString(), deletedBy, tenantCount });
+      await saveTrashed(trashed);
+    }
+
+    await removeStatic(id);
+    await deleteRuntime(id);
+  });
 }
 
 /** List soft-deleted apps still in the trash (recoverable). */
@@ -206,7 +375,23 @@ export async function listTrashedApps(): Promise<TrashedApp[]> {
 
 /** Restore a soft-deleted app. Fails if an app with the same id now exists. */
 export async function restoreApp(id: string): Promise<AppDefinition> {
-  throw new Error('rewritten in Task 5');
+  return withFileLock('apps', async () => {
+    const trashed = await readTrashed();
+    const tIdx = trashed.findIndex(t => t.app.id === id);
+    if (tIdx === -1) {
+      throw new Error(`No trashed app with id '${id}' to restore`);
+    }
+    const apps = await readApps();
+    if (apps.some(a => a.id === id)) {
+      throw new Error(`Cannot restore '${id}': an app with that id already exists`);
+    }
+    const restored = trashed[tIdx].app;
+    await writeStatic(restored);
+    await upsertRuntime(restored.id, () => ({ createdAt: restored.createdAt, updatedAt: restored.updatedAt }));
+    trashed.splice(tIdx, 1);
+    await saveTrashed(trashed);
+    return restored;
+  });
 }
 
 /**
@@ -215,5 +400,13 @@ export async function restoreApp(id: string): Promise<AppDefinition> {
  * through the normal tenant lifecycle.
  */
 export async function purgeApp(id: string): Promise<void> {
-  throw new Error('rewritten in Task 5');
+  return withFileLock('apps', async () => {
+    const trashed = await readTrashed();
+    const tIdx = trashed.findIndex(t => t.app.id === id);
+    if (tIdx === -1) {
+      throw new Error(`No trashed app with id '${id}' to purge`);
+    }
+    trashed.splice(tIdx, 1);
+    await saveTrashed(trashed);
+  });
 }

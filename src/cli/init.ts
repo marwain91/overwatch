@@ -636,9 +636,13 @@ async function generateFiles(config: InitConfig): Promise<void> {
     path.join(base, 'overwatch', 'data', 'admin-users.json'),
     '[]\n',
   );
+  const dataDir = path.join(base, 'overwatch', 'data');
+  if (!fs.existsSync(path.join(dataDir, 'apps.d'))) {
+    fs.mkdirSync(path.join(dataDir, 'apps.d'), { recursive: true });
+  }
   await writeFileSafe(
-    path.join(base, 'overwatch', 'data', 'apps.json'),
-    '[]\n',
+    path.join(dataDir, 'apps.runtime.json'),
+    '{}\n',
   );
   await writeFileSafe(
     path.join(base, 'overwatch', 'data', 'env-vars.json'),

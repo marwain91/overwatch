@@ -91,26 +91,33 @@ describe('R2 schemaVersions — refuses data newer than code', () => {
 });
 
 describe('G2 configSnapshots', () => {
-  it('create+list+restore round-trips apps.json', async () => {
+  it('create+list+restore round-trips apps.runtime.json and apps.d/', async () => {
     const dataDir = path.join(tmpRoot, 'data');
-    await fs.mkdir(dataDir, { recursive: true });
-    await fs.writeFile(path.join(dataDir, 'apps.json'), JSON.stringify([{ id: 'original' }]));
+    await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
+    await fs.writeFile(path.join(dataDir, 'apps.runtime.json'), JSON.stringify({
+      original: { createdAt: 'x', updatedAt: 'x' },
+    }));
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'original.json'), JSON.stringify({ id: 'original' }));
 
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
     const { createSnapshot, listSnapshots, restoreSnapshot } = await import('../services/configSnapshots');
 
     const snap = await createSnapshot('test');
-    expect(snap.files).toContain('apps.json');
+    expect(snap.files).toContain('apps.runtime.json');
+    expect(snap.files).toContain('apps.d/');
 
-    // Overwrite current state to simulate loss
-    await fs.writeFile(path.join(dataDir, 'apps.json'), JSON.stringify([{ id: 'overwritten' }]));
+    // Overwrite to simulate loss.
+    await fs.writeFile(path.join(dataDir, 'apps.runtime.json'), JSON.stringify({}));
+    await fs.rm(path.join(dataDir, 'apps.d', 'original.json'));
 
     const all = await listSnapshots();
     expect(all.length).toBeGreaterThan(0);
 
     await restoreSnapshot(snap.name);
-    const restored = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.json'), 'utf-8'));
-    expect(restored).toEqual([{ id: 'original' }]);
+    const runtime = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.runtime.json'), 'utf-8'));
+    expect(runtime.original).toBeDefined();
+    const appsD = await fs.readdir(path.join(dataDir, 'apps.d'));
+    expect(appsD).toEqual(['original.json']);
   });
 
   it('preserves 0600 on secret files through snapshot/restore', async () => {
