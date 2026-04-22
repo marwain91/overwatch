@@ -1,0 +1,22 @@
+# Traefik dashboard router + basic-auth middleware.
+# Managed by `overwatch infra deploy`. ${BASE_DOMAIN} and
+# ${TRAEFIK_DASHBOARD_AUTH} are resolved by traefik from the env it
+# receives via docker-compose, not substituted at install time.
+
+http:
+  routers:
+    dashboard:
+      rule: "Host(`traefik.${BASE_DOMAIN}`)"
+      service: api@internal
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+      middlewares:
+        - dashboard-auth
+
+  middlewares:
+    dashboard-auth:
+      basicAuth:
+        users:
+          - "${TRAEFIK_DASHBOARD_AUTH}"

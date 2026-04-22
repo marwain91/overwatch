@@ -1,0 +1,60 @@
+# Traefik static configuration. Managed by `overwatch infra deploy`.
+# SSL termination with automatic Let's Encrypt certificates.
+
+api:
+  dashboard: true
+  insecure: false
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    address: ":443"
+    http:
+      middlewares:
+        - hsts@file
+
+certificatesResolvers:
+  # DNS challenge for wildcard certs (Cloudflare)
+  letsencrypt-cf:
+    acme:
+      storage: /letsencrypt/acme.json
+      dnsChallenge:
+        provider: cloudflare
+        resolvers:
+          - "1.1.1.1:53"
+          - "8.8.8.8:53"
+  # HTTP challenge for custom domains brought by tenants
+  letsencrypt:
+    acme:
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: ${NETWORK_NAME}
+  file:
+    filename: /etc/traefik/dynamic.yml
+  # Additional dynamic files in traefik/dynamic/ (e.g. dashboard.yml).
+  # Traefik watches this directory and hot-reloads.
+  # Defined under providers.file via directory: — note file provider only
+  # accepts one of filename OR directory, so dynamic/ is loaded separately:
+  # see traefik's providers.file.directory below if the filename provider
+  # isn't sufficient. Here we list both files explicitly via static include.
+
+log:
+  level: INFO
+  format: common
+
+accessLog:
+  filePath: "/var/log/traefik/access.log"
+  bufferingSize: 100

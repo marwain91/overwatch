@@ -1,6 +1,6 @@
 {
   "name": "overwatch",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Universal Multi-Tenant Management Tool",
   "license": "MIT",
   "author": "marwain91",
@@ -37,7 +37,10 @@
     "test": "vitest run"
   },
   "pkg": {
-    "assets": ["../package.json"],
+    "assets": [
+      "../package.json",
+      "../templates/**/*"
+    ],
     "outputPath": "dist/bin"
   },
   "dependencies": {
