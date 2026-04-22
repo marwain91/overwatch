@@ -1,12 +1,38 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getDataDir } from '../config';
-import { AppDefinition, AppDefinitionSchema, CreateAppInput, UpdateAppInput } from '../models/app';
+import {
+  AppDefinition,
+  AppDefinitionSchema,
+  AppDefinitionStaticSchema,
+  AppRuntimeEntry,
+  AppRuntimeStore,
+  AppRuntimeStoreSchema,
+  CreateAppInput,
+  UpdateAppInput,
+  ApplyResult,
+} from '../models/app';
 import { withFileLock } from './fileLock';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 
+const APPS_D_DIR = 'apps.d';
+const RUNTIME_FILE = 'apps.runtime.json';
+const TRASH_FILE = 'apps.trashed.json';
+
+function getAppsDDir(): string {
+  return path.join(getDataDir(), APPS_D_DIR);
+}
+
+function getStaticFile(id: string): string {
+  return path.join(getAppsDDir(), `${id}.json`);
+}
+
+function getRuntimeFile(): string {
+  return path.join(getDataDir(), RUNTIME_FILE);
+}
+
 function getTrashedAppsFile(): string {
-  return path.join(getDataDir(), 'apps.trashed.json');
+  return path.join(getDataDir(), TRASH_FILE);
 }
 
 interface TrashedApp {
@@ -14,6 +40,118 @@ interface TrashedApp {
   deletedAt: string;
   deletedBy: string;
   tenantCount: number;
+}
+
+async function readRuntimeStore(): Promise<AppRuntimeStore> {
+  try {
+    const raw = await readJsonStrict<unknown>(getRuntimeFile());
+    const parsed = AppRuntimeStoreSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(`apps.runtime.json failed validation: ${parsed.error.message}`);
+    }
+    return parsed.data;
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return {};
+    throw err;
+  }
+}
+
+async function writeRuntimeStore(store: AppRuntimeStore): Promise<void> {
+  await writeJsonAtomic(getRuntimeFile(), store, { mode: 0o644 });
+}
+
+async function listStaticFiles(): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(getAppsDDir());
+    return entries.filter(e => e.endsWith('.json')).sort();
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      await fs.mkdir(getAppsDDir(), { recursive: true });
+      return [];
+    }
+    throw err;
+  }
+}
+
+async function readApps(): Promise<AppDefinition[]> {
+  const files = await listStaticFiles();
+  const runtime = await readRuntimeStore();
+  let runtimeDirty = false;
+  const apps: AppDefinition[] = [];
+
+  for (const filename of files) {
+    const fullPath = path.join(getAppsDDir(), filename);
+    let data: string;
+    try {
+      data = await fs.readFile(fullPath, 'utf-8');
+    } catch (err: any) {
+      throw new Error(`failed to read ${filename}: ${err?.message || err}`);
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(data);
+    } catch (err: any) {
+      throw new Error(`${filename} is not valid JSON (${err.message})`);
+    }
+    const parsed = AppDefinitionStaticSchema.safeParse(raw);
+    if (!parsed.success) {
+      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      throw new Error(`${filename} failed validation: ${errors}`);
+    }
+    const staticDef = parsed.data;
+
+    // File-name sanity: filename id must match the in-file id. Prevents renames
+    // from silently producing two copies or mis-keyed runtime entries.
+    const filenameId = filename.replace(/\.json$/, '');
+    if (filenameId !== staticDef.id) {
+      throw new Error(`${filename}: filename id '${filenameId}' does not match in-file id '${staticDef.id}'`);
+    }
+
+    let entry = runtime[staticDef.id];
+    if (!entry) {
+      const stat = await fs.stat(fullPath);
+      const when = stat.mtime.toISOString();
+      entry = { createdAt: when, updatedAt: when };
+      runtime[staticDef.id] = entry;
+      runtimeDirty = true;
+    }
+    apps.push({ ...staticDef, createdAt: entry.createdAt, updatedAt: entry.updatedAt });
+  }
+
+  if (runtimeDirty) {
+    await writeRuntimeStore(runtime);
+  }
+  return apps;
+}
+
+async function writeStatic(appDef: AppDefinition): Promise<void> {
+  const { createdAt, updatedAt, ...staticOnly } = appDef;
+  void createdAt; void updatedAt;
+  await writeJsonAtomic(getStaticFile(appDef.id), staticOnly, { mode: 0o644 });
+}
+
+async function removeStatic(id: string): Promise<void> {
+  try {
+    await fs.unlink(getStaticFile(id));
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+}
+
+async function upsertRuntime(id: string, mutator: (prev: AppRuntimeEntry | undefined) => AppRuntimeEntry): Promise<AppRuntimeEntry> {
+  const store = await readRuntimeStore();
+  const next = mutator(store[id]);
+  store[id] = next;
+  await writeRuntimeStore(store);
+  return next;
+}
+
+async function deleteRuntime(id: string): Promise<void> {
+  const store = await readRuntimeStore();
+  if (store[id]) {
+    delete store[id];
+    await writeRuntimeStore(store);
+  }
 }
 
 async function readTrashed(): Promise<TrashedApp[]> {
@@ -31,50 +169,6 @@ async function saveTrashed(entries: TrashedApp[]): Promise<void> {
   await writeJsonAtomic(getTrashedAppsFile(), entries, { mode: 0o644 });
 }
 
-function getAppsFile(): string {
-  return path.join(getDataDir(), 'apps.json');
-}
-
-async function readApps(): Promise<AppDefinition[]> {
-  let data: string;
-  try {
-    data = await fs.readFile(getAppsFile(), 'utf-8');
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      await saveApps([]);
-      return [];
-    }
-    throw error;
-  }
-
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch (err: any) {
-    throw new Error(
-      `apps.json is not valid JSON (${err.message}). Refusing to auto-reset — inspect and restore from backup.`
-    );
-  }
-  if (!Array.isArray(raw)) {
-    throw new Error(`apps.json must be an array; got ${typeof raw}. Refusing to auto-reset.`);
-  }
-  // Validate every entry; fail loudly on structural drift rather than silently degrading.
-  const apps: AppDefinition[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const parsed = AppDefinitionSchema.safeParse(raw[i]);
-    if (!parsed.success) {
-      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-      throw new Error(`apps.json[${i}] failed validation: ${errors}`);
-    }
-    apps.push(parsed.data);
-  }
-  return apps;
-}
-
-async function saveApps(apps: AppDefinition[]): Promise<void> {
-  await writeJsonAtomic(getAppsFile(), apps, { mode: 0o644 });
-}
-
 export async function listApps(): Promise<AppDefinition[]> {
   return readApps();
 }
@@ -85,59 +179,11 @@ export async function getApp(id: string): Promise<AppDefinition | null> {
 }
 
 export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
-  return withFileLock('apps', async () => {
-    const apps = await readApps();
-
-    if (apps.find(a => a.id === input.id)) {
-      throw new Error(`App '${input.id}' already exists`);
-    }
-
-    const now = new Date().toISOString();
-    const app: AppDefinition = {
-      ...input,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // Validate with Zod
-    const parsed = AppDefinitionSchema.safeParse(app);
-    if (!parsed.success) {
-      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-      throw new Error(`Invalid app definition: ${errors}`);
-    }
-
-    apps.push(parsed.data);
-    await saveApps(apps);
-    return parsed.data;
-  });
+  throw new Error('rewritten in Task 5');
 }
 
 export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
-  return withFileLock('apps', async () => {
-    const apps = await readApps();
-    const index = apps.findIndex(a => a.id === input.id);
-
-    if (index === -1) {
-      throw new Error(`App '${input.id}' not found`);
-    }
-
-    const updated: AppDefinition = {
-      ...apps[index],
-      ...input,
-      updatedAt: new Date().toISOString(),
-    };
-
-    // Validate with Zod
-    const parsed = AppDefinitionSchema.safeParse(updated);
-    if (!parsed.success) {
-      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-      throw new Error(`Invalid app definition: ${errors}`);
-    }
-
-    apps[index] = parsed.data;
-    await saveApps(apps);
-    return parsed.data;
-  });
+  throw new Error('rewritten in Task 5');
 }
 
 /**
@@ -151,41 +197,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
  *   clicking force-delete, leaving containers orphaned and no recovery path.
  */
 export async function deleteApp(id: string, force: boolean = false, deletedBy: string = 'unknown'): Promise<void> {
-  return withFileLock('apps', async () => {
-    const apps = await readApps();
-    const index = apps.findIndex(a => a.id === id);
-
-    if (index === -1) {
-      throw new Error(`App '${id}' not found`);
-    }
-
-    const { getAppsDir } = await import('../config/loader');
-    const appsDir = getAppsDir();
-    const tenantDir = path.join(appsDir, id, 'tenants');
-    let tenantCount = 0;
-    try {
-      const entries = await fs.readdir(tenantDir);
-      tenantCount = entries.filter(e => !e.startsWith('.')).length;
-    } catch (err: any) {
-      if (err.code !== 'ENOENT') throw err;
-    }
-
-    if (tenantCount > 0 && !force) {
-      throw new Error(`App '${id}' has ${tenantCount} tenant(s). Delete all tenants first or use force=true.`);
-    }
-
-    const victim = apps[index];
-
-    if (tenantCount > 0) {
-      // Soft-delete: move to trash, keep tenant dirs + DBs alive for recovery.
-      const trashed = await readTrashed();
-      trashed.push({ app: victim, deletedAt: new Date().toISOString(), deletedBy, tenantCount });
-      await saveTrashed(trashed);
-    }
-
-    apps.splice(index, 1);
-    await saveApps(apps);
-  });
+  throw new Error('rewritten in Task 5');
 }
 
 /** List soft-deleted apps still in the trash (recoverable). */
@@ -195,23 +207,7 @@ export async function listTrashedApps(): Promise<TrashedApp[]> {
 
 /** Restore a soft-deleted app. Fails if an app with the same id now exists. */
 export async function restoreApp(id: string): Promise<AppDefinition> {
-  return withFileLock('apps', async () => {
-    const trashed = await readTrashed();
-    const tIdx = trashed.findIndex(t => t.app.id === id);
-    if (tIdx === -1) {
-      throw new Error(`No trashed app with id '${id}' to restore`);
-    }
-    const apps = await readApps();
-    if (apps.some(a => a.id === id)) {
-      throw new Error(`Cannot restore '${id}': an app with that id already exists`);
-    }
-    const restored = trashed[tIdx].app;
-    apps.push(restored);
-    await saveApps(apps);
-    trashed.splice(tIdx, 1);
-    await saveTrashed(trashed);
-    return restored;
-  });
+  throw new Error('rewritten in Task 5');
 }
 
 /**
@@ -220,13 +216,5 @@ export async function restoreApp(id: string): Promise<AppDefinition> {
  * through the normal tenant lifecycle.
  */
 export async function purgeApp(id: string): Promise<void> {
-  return withFileLock('apps', async () => {
-    const trashed = await readTrashed();
-    const tIdx = trashed.findIndex(t => t.app.id === id);
-    if (tIdx === -1) {
-      throw new Error(`No trashed app with id '${id}' to purge`);
-    }
-    trashed.splice(tIdx, 1);
-    await saveTrashed(trashed);
-  });
+  throw new Error('rewritten in Task 5');
 }
