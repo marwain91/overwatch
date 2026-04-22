@@ -14,7 +14,7 @@ function usage(): void {
   console.log('  Usage: overwatch snapshot <subcommand>');
   console.log('');
   console.log('  Subcommands:');
-  console.log('    create [label]    Snapshot apps.json, env-vars.json, and related state');
+  console.log('    create [label]    Snapshot apps.d/, apps.runtime.json, env-vars.json, and related state');
   console.log('    list              List existing snapshots');
   console.log('    restore <name>    Restore the named snapshot (pre-restore snapshot is made first)');
   console.log('    prune [--keep N]  Prune old snapshots, keeping the N most recent (default 30)');

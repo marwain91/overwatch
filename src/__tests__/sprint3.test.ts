@@ -112,7 +112,7 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
     expect(trashed[0].tenantCount).toBe(1);
   });
 
-  it('restoreApp moves the entry back to apps.json', async () => {
+  it('restoreApp moves the entry back to apps.d/', async () => {
     const { dataDir } = await setupApp();
     const { deleteApp, restoreApp } = await import('../services/app');
     await deleteApp('kwoutr', true, 'test@local');
