@@ -145,10 +145,31 @@ export const CreateAppSchema = AppDefinitionSchema.omit({
 // Schema for updating an app (all fields optional except id)
 export const UpdateAppSchema = CreateAppSchema.partial().required({ id: true });
 
+// Static portion of an app definition — the shape persisted in data/apps.d/<id>.json.
+// Everything in AppDefinitionSchema except the runtime timestamps.
+export const AppDefinitionStaticSchema = AppDefinitionSchema.omit({
+  createdAt: true,
+  updatedAt: true,
+});
+
+// Runtime state for a single app — persisted as a value in data/apps.runtime.json.
+export const AppRuntimeEntrySchema = z.object({
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+// Runtime store: map of appId → runtime entry.
+export const AppRuntimeStoreSchema = z.record(AppRuntimeEntrySchema);
+
 // TypeScript types
 export type AppDefinition = z.infer<typeof AppDefinitionSchema>;
+export type AppDefinitionStatic = z.infer<typeof AppDefinitionStaticSchema>;
+export type AppRuntimeEntry = z.infer<typeof AppRuntimeEntrySchema>;
+export type AppRuntimeStore = z.infer<typeof AppRuntimeStoreSchema>;
 export type CreateAppInput = z.infer<typeof CreateAppSchema>;
 export type UpdateAppInput = z.infer<typeof UpdateAppSchema>;
 export type AppService = z.infer<typeof AppServiceSchema>;
 export type AppRegistry = z.infer<typeof AppRegistrySchema>;
 export type AppBackup = z.infer<typeof AppBackupSchema>;
+
+export type ApplyResult = 'created' | 'updated' | 'noop';
