@@ -3,16 +3,13 @@ import * as path from 'path';
 import { getDataDir } from '../config';
 import {
   AppDefinition,
-  AppDefinitionSchema,
   AppDefinitionStaticSchema,
   AppRuntimeEntry,
   AppRuntimeStore,
   AppRuntimeStoreSchema,
   CreateAppInput,
   UpdateAppInput,
-  ApplyResult,
 } from '../models/app';
-import { withFileLock } from './fileLock';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 
 const APPS_D_DIR = 'apps.d';
@@ -119,6 +116,9 @@ async function readApps(): Promise<AppDefinition[]> {
   }
 
   if (runtimeDirty) {
+    // TODO(Task 5): wrap readApps in withFileLock once the mutators land. Until then
+    // two concurrent synthesis writes race, but the write is idempotent + atomic so
+    // the outcome is fine (just duplicated work).
     await writeRuntimeStore(runtime);
   }
   return apps;
@@ -126,7 +126,6 @@ async function readApps(): Promise<AppDefinition[]> {
 
 async function writeStatic(appDef: AppDefinition): Promise<void> {
   const { createdAt, updatedAt, ...staticOnly } = appDef;
-  void createdAt; void updatedAt;
   await writeJsonAtomic(getStaticFile(appDef.id), staticOnly, { mode: 0o644 });
 }
 
