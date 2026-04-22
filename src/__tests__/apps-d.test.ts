@@ -104,3 +104,67 @@ describe('readApps — apps.d/ + apps.runtime.json', () => {
     await expect(listApps()).rejects.toThrow(/bad\.json/);
   });
 });
+
+describe('applyApp — CLI upsert semantics', () => {
+  it('creates a new app when none exists with that id', async () => {
+    const { applyApp } = await import('../services/app');
+    const result = await applyApp(validStatic('kwoutr'), 'cli:test');
+
+    expect(result.result).toBe('created');
+    expect(result.app.id).toBe('kwoutr');
+    expect(result.app.createdAt).toBe(result.app.updatedAt);
+
+    const files = await fs.readdir(path.join(dataDir, 'apps.d'));
+    expect(files).toEqual(['kwoutr.json']);
+  });
+
+  it('updates an existing app and preserves createdAt', async () => {
+    const { applyApp } = await import('../services/app');
+    const first = await applyApp(validStatic('kwoutr'), 'cli:test');
+    // Force a time gap so updatedAt would differ if bumped.
+    await new Promise(r => setTimeout(r, 5));
+
+    const modified = { ...validStatic('kwoutr'), domain_template: '*.kwoutr.io' };
+    const second = await applyApp(modified, 'cli:test');
+
+    expect(second.result).toBe('updated');
+    expect(second.app.createdAt).toBe(first.app.createdAt);
+    expect(second.app.updatedAt).not.toBe(first.app.updatedAt);
+    expect(second.changedKeys).toContain('domain_template');
+  });
+
+  it('is a no-op when applying an unchanged file', async () => {
+    const { applyApp } = await import('../services/app');
+    const first = await applyApp(validStatic('kwoutr'), 'cli:test');
+    await new Promise(r => setTimeout(r, 5));
+    const second = await applyApp(validStatic('kwoutr'), 'cli:test');
+
+    expect(second.result).toBe('noop');
+    expect(second.app.updatedAt).toBe(first.app.updatedAt);
+    expect(second.changedKeys).toEqual([]);
+  });
+
+  it('rejects when the id is in the trash', async () => {
+    await fs.writeFile(path.join(dataDir, 'apps.trashed.json'), JSON.stringify([{
+      app: { ...validStatic('kwoutr'), createdAt: 'x', updatedAt: 'x' },
+      deletedAt: 'x', deletedBy: 'x', tenantCount: 0,
+    }]));
+    const { applyApp } = await import('../services/app');
+    await expect(applyApp(validStatic('kwoutr'), 'cli:test')).rejects.toThrow(/in trash/);
+  });
+
+  it('rejects input that fails static schema validation', async () => {
+    const { applyApp } = await import('../services/app');
+    await expect(applyApp({ id: 'kwoutr' }, 'cli:test')).rejects.toThrow(/validation/);
+  });
+
+  it('rejects input that includes createdAt/updatedAt (static-only shape)', async () => {
+    const { applyApp } = await import('../services/app');
+    const withRuntime = { ...validStatic('kwoutr'), createdAt: 'x', updatedAt: 'x' };
+    // Either the schema strips these silently OR rejects them. The test asserts
+    // the runtime store is unaffected — the input must not be able to forge createdAt.
+    const result = await applyApp(withRuntime, 'cli:test');
+    expect(result.app.createdAt).not.toBe('x');
+    expect(result.app.updatedAt).not.toBe('x');
+  });
+});
