@@ -49,7 +49,7 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
   }
 
   const envVar = await setEnvVar(appId, key, effectiveValue, sensitive ?? false, description);
-  const tenantsAffected = await regenerateAllSharedEnvFiles();
+  const tenantsAffected = await regenerateAllSharedEnvFiles(appId);
 
   res.json({
     envVar: {
@@ -64,7 +64,7 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
 router.delete('/:key', requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
   const { appId, key } = req.params;
   await deleteEnvVar(appId, key);
-  const tenantsAffected = await regenerateAllSharedEnvFiles();
+  const tenantsAffected = await regenerateAllSharedEnvFiles(appId);
   res.json({ success: true, tenantsAffected });
 }));
 

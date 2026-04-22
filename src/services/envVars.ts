@@ -528,35 +528,51 @@ export async function tightenSecretFilePermissions(): Promise<number> {
   return count;
 }
 
-export async function regenerateAllSharedEnvFiles(): Promise<number> {
+/**
+ * Regenerate shared.env for all tenants, optionally scoped to a single app.
+ *
+ * When `onlyAppId` is provided, only that app's tenants are regenerated — this
+ * is the right choice for env-var mutations on a specific app, since env vars
+ * are per-app and a change in app A must not touch app B's tenant files.
+ * Without a filter, this is the boot-time sweep that regenerates every
+ * tenant's shared.env across every app.
+ */
+export async function regenerateAllSharedEnvFiles(onlyAppId?: string): Promise<number> {
   const appsDir = getAppsDir();
   let count = 0;
+
+  async function regenerateAppTenants(appId: string): Promise<void> {
+    const tenantsDir = path.join(appsDir, appId, 'tenants');
+    try {
+      const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
+      for (const tenantEntry of tenantDirs) {
+        if (!tenantEntry.isDirectory()) continue;
+        const tenantId = tenantEntry.name;
+
+        // Verify it's actually a tenant directory (has .env file)
+        try {
+          await fs.access(path.join(tenantsDir, tenantId, '.env'));
+          await generateSharedEnvFile(appId, tenantId);
+          count++;
+        } catch {
+          // Not a tenant directory, skip
+        }
+      }
+    } catch {
+      // No tenants dir for this app
+    }
+  }
+
+  if (onlyAppId) {
+    await regenerateAppTenants(onlyAppId);
+    return count;
+  }
 
   try {
     const appDirs = await fs.readdir(appsDir, { withFileTypes: true });
     for (const appEntry of appDirs) {
       if (!appEntry.isDirectory()) continue;
-      const appId = appEntry.name;
-      const tenantsDir = path.join(appsDir, appId, 'tenants');
-
-      try {
-        const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
-        for (const tenantEntry of tenantDirs) {
-          if (!tenantEntry.isDirectory()) continue;
-          const tenantId = tenantEntry.name;
-
-          // Verify it's actually a tenant directory (has .env file)
-          try {
-            await fs.access(path.join(tenantsDir, tenantId, '.env'));
-            await generateSharedEnvFile(appId, tenantId);
-            count++;
-          } catch {
-            // Not a tenant directory, skip
-          }
-        }
-      } catch {
-        // No tenants dir for this app
-      }
+      await regenerateAppTenants(appEntry.name);
     }
   } catch (error: any) {
     if (error.code === 'ENOENT') {

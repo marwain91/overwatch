@@ -22,7 +22,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <App />
         <Toaster
-          position="top-right"
+          position="bottom-right"
           theme="dark"
           toastOptions={{
             style: {
