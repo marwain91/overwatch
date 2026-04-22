@@ -47,6 +47,27 @@ function enqueueAuditEntry(entry: unknown): void {
   startFlush();
 }
 
+/**
+ * Append a pre-built audit entry. For non-HTTP callers (CLI, background jobs)
+ * that don't have a Request/Response pair. Caller is responsible for providing
+ * all required fields; sanitisation of sensitive keys is still applied.
+ */
+export function writeAuditEntry(entry: Omit<AuditEntry, 'timestamp'> & { timestamp?: string }): void {
+  const full: AuditEntry = {
+    timestamp: entry.timestamp ?? new Date().toISOString(),
+    user: entry.user,
+    action: entry.action,
+    method: entry.method,
+    path: entry.path,
+    query: entry.query,
+    body: sanitizeBody(entry.body),
+    status: entry.status,
+    ip: entry.ip,
+    ...(entry.force ? { force: true } : {}),
+  };
+  enqueueAuditEntry(full);
+}
+
 /** Drain the audit queue — intended for graceful shutdown and tests. */
 export async function flushAuditLog(): Promise<void> {
   while (auditQueue.length > 0 || currentFlush) {

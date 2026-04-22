@@ -17,7 +17,7 @@ export interface SchemaVersions {
 }
 
 export const CURRENT_SCHEMA_VERSIONS: SchemaVersions = {
-  apps: 2,
+  apps: 3,
   envVars: 2,
   tenantOverrides: 2,
   adminUsers: 1,

@@ -326,3 +326,75 @@ export async function runMigration(): Promise<void> {
   console.log('[Migration] Migration complete!');
   console.log(`[Migration] Created app '${appId}' with ${defaultApp.services.length} services`);
 }
+
+/**
+ * Migrate apps schema v2 → v3: split the single data/apps.json array into
+ * per-app static files in data/apps.d/ plus a data/apps.runtime.json sidecar.
+ * Idempotent: if apps.d/ already contains files, exits without touching anything.
+ */
+export async function runAppsV3Migration(): Promise<void> {
+  const { getDataDir } = await import('../config');
+  const dataDir = getDataDir();
+  const legacyPath = path.join(dataDir, 'apps.json');
+  const appsDDir = path.join(dataDir, 'apps.d');
+  const runtimePath = path.join(dataDir, 'apps.runtime.json');
+  const backupPath = path.join(dataDir, 'apps.json.pre-apps.d');
+
+  // Idempotency: already migrated if apps.d/ has files.
+  try {
+    const entries = await fs.readdir(appsDDir);
+    if (entries.filter(e => e.endsWith('.json')).length > 0) {
+      console.log('[migrate] apps.d/ already populated — skipping v3 migration');
+      return;
+    }
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+
+  // Fresh install path: no legacy file AND empty apps.d/.
+  let legacyRaw: string;
+  try {
+    legacyRaw = await fs.readFile(legacyPath, 'utf-8');
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      await fs.mkdir(appsDDir, { recursive: true });
+      await fs.writeFile(runtimePath, '{}\n', { mode: 0o644 });
+      console.log('[migrate] apps v2→v3: fresh install — created empty apps.d/ and apps.runtime.json');
+      return;
+    }
+    throw err;
+  }
+
+  let legacyApps: any[];
+  try {
+    legacyApps = JSON.parse(legacyRaw);
+  } catch (err: any) {
+    throw new Error(`apps v2→v3 migration: apps.json is not valid JSON (${err.message}). Fix or restore before running.`);
+  }
+  if (!Array.isArray(legacyApps)) {
+    throw new Error(`apps v2→v3 migration: apps.json must be an array; got ${typeof legacyApps}.`);
+  }
+
+  await fs.mkdir(appsDDir, { recursive: true });
+  const runtimeStore: Record<string, { createdAt: string; updatedAt: string }> = {};
+
+  for (const app of legacyApps) {
+    if (!app || typeof app !== 'object' || typeof app.id !== 'string') {
+      throw new Error(`apps v2→v3 migration: entry without a string 'id' field: ${JSON.stringify(app).slice(0, 120)}`);
+    }
+    const { createdAt, updatedAt, ...staticDef } = app;
+    // Preserve any timestamp present; synthesize from 'now' if missing so we
+    // don't fail validation later. The migration runs once; this is the best
+    // historical record we can offer for entries that lacked timestamps.
+    const now = new Date().toISOString();
+    runtimeStore[app.id] = {
+      createdAt: typeof createdAt === 'string' ? createdAt : now,
+      updatedAt: typeof updatedAt === 'string' ? updatedAt : now,
+    };
+    await writeJsonAtomic(path.join(appsDDir, `${app.id}.json`), staticDef, { mode: 0o644 });
+  }
+
+  await writeJsonAtomic(runtimePath, runtimeStore, { mode: 0o644 });
+  await fs.rename(legacyPath, backupPath);
+  console.log(`[migrate] apps v2→v3: split ${legacyApps.length} app(s) into apps.d/; legacy backup at ${backupPath}`);
+}

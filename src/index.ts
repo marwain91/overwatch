@@ -172,8 +172,8 @@ async function start() {
     }
   };
 
-  // Critical: if listApps() throws, apps.json is corrupt or unreadable — abort boot,
-  // don't start schedulers/metrics with a silently empty list.
+  // Critical: if listApps() throws, apps.d/ or apps.runtime.json is corrupt or
+  // unreadable — abort boot, don't start schedulers/metrics with a silently empty list.
   let bootApps: Awaited<ReturnType<typeof listApps>> = [];
   await runStartupStep('list apps', async () => {
     bootApps = await listApps();
@@ -222,7 +222,7 @@ async function start() {
   await runStartupStep('report abandoned backup runs', () => reportAbandonedRuns());
   await runStartupStep('start backup schedulers', () => startAllBackupSchedulers());
 
-  // Daily config snapshot: protects against apps.json / env-vars.json loss.
+  // Daily config snapshot: protects against apps.d/, apps.runtime.json, env-vars.json loss.
   // 03:17 UTC (off-peak). Also run one immediately on boot so we have a recent snapshot.
   await runStartupStep('initial config snapshot', async () => {
     const info = await createSnapshot('boot');

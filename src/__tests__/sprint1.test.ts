@@ -61,29 +61,29 @@ describe('G3 destructiveRateLimit — only gates destructive requests', () => {
 });
 
 describe('G1 readApps — refuses to silently accept corrupt JSON', () => {
-  it('throws a clear error when apps.json is malformed', async () => {
+  it('throws a clear error when an apps.d/ file is malformed', async () => {
     const dataDir = path.join(tmpRoot, 'data');
-    await fs.mkdir(dataDir, { recursive: true });
-    await fs.writeFile(path.join(dataDir, 'apps.json'), '{not valid json');
+    await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'broken.json'), '{not valid json');
 
     vi.doMock('../config', () => ({ getDataDir: () => dataDir, getAppsDir: () => path.join(tmpRoot, 'apps') }));
     vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
 
     const { listApps } = await import('../services/app');
-    await expect(listApps()).rejects.toThrow(/not valid JSON/);
+    await expect(listApps()).rejects.toThrow(/broken\.json is not valid JSON/);
   });
 
-  it('throws when apps.json has an invalid app entry (schema drift)', async () => {
+  it('throws when an apps.d/ file has an invalid app entry (schema drift)', async () => {
     const dataDir = path.join(tmpRoot, 'data');
-    await fs.mkdir(dataDir, { recursive: true });
+    await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
     // Missing required `name`, `domain_template`, `registry`, `services`…
-    await fs.writeFile(path.join(dataDir, 'apps.json'), JSON.stringify([{ id: 'incomplete' }]));
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'incomplete.json'), JSON.stringify({ id: 'incomplete' }));
 
     vi.doMock('../config', () => ({ getDataDir: () => dataDir, getAppsDir: () => path.join(tmpRoot, 'apps') }));
     vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
 
     const { listApps } = await import('../services/app');
-    await expect(listApps()).rejects.toThrow(/failed validation/);
+    await expect(listApps()).rejects.toThrow(/incomplete\.json failed validation/);
   });
 });
 

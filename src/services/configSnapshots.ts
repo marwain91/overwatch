@@ -4,12 +4,18 @@ import { getDataDir } from '../config';
 
 const SNAPSHOT_DIR = '.snapshots';
 const FILES_TO_SNAPSHOT = [
-  'apps.json',
+  'apps.runtime.json',
+  'apps.trashed.json',
   'env-vars.json',
   'tenant-env-overrides.json',
   'admin-users.json',
   'audit.log',
   '.schema-versions.json',
+];
+
+// Directories captured recursively — each becomes a subdir inside the snapshot.
+const DIRS_TO_SNAPSHOT = [
+  'apps.d',
 ];
 const DEFAULT_RETENTION = 30;
 
@@ -26,6 +32,30 @@ function snapshotsRoot(): string {
 
 function isoStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+async function copyDir(src: string, dest: string): Promise<number> {
+  let bytes = 0;
+  try {
+    await fs.access(src);
+  } catch {
+    return 0;
+  }
+  await fs.mkdir(dest, { recursive: true, mode: 0o700 });
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      bytes += await copyDir(from, to);
+    } else if (entry.isFile()) {
+      const stat = await fs.stat(from);
+      await fs.copyFile(from, to);
+      await fs.chmod(to, stat.mode & 0o777);
+      bytes += stat.size;
+    }
+  }
+  return bytes;
 }
 
 export async function createSnapshot(label?: string): Promise<SnapshotInfo> {
@@ -49,6 +79,20 @@ export async function createSnapshot(label?: string): Promise<SnapshotInfo> {
       totalBytes += stat.size;
     } catch (err: any) {
       if (err.code !== 'ENOENT') throw err;
+    }
+  }
+
+  for (const dir of DIRS_TO_SNAPSHOT) {
+    const src = path.join(dataDir, dir);
+    try {
+      await fs.access(src);
+    } catch {
+      continue;
+    }
+    const bytes = await copyDir(src, path.join(dest, dir));
+    if (bytes > 0) {
+      files.push(dir + '/');
+      totalBytes += bytes;
     }
   }
 
@@ -98,6 +142,19 @@ export async function restoreSnapshot(name: string): Promise<void> {
     const stat = await fs.stat(candidate);
     await fs.copyFile(candidate, path.join(dataDir, file));
     await fs.chmod(path.join(dataDir, file), stat.mode & 0o777);
+  }
+
+  for (const dir of DIRS_TO_SNAPSHOT) {
+    const candidate = path.join(src, dir);
+    try {
+      await fs.access(candidate);
+    } catch {
+      continue;
+    }
+    // Wipe destination dir then copy fresh — matches the "last snapshot wins" semantics.
+    const destDir = path.join(dataDir, dir);
+    await fs.rm(destDir, { recursive: true, force: true });
+    await copyDir(candidate, destDir);
   }
 }
 

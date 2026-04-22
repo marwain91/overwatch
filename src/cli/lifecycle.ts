@@ -181,24 +181,42 @@ function loadProjectConfig(): { prefix: string } | null {
 }
 
 /**
- * Load app definitions from apps.json to get service names per app.
+ * Load app definitions from apps.d/<id>.json to get service names per app.
+ * Falls back to legacy apps.json (pre-v3) if apps.d/ doesn't exist yet — handy
+ * for `overwatch status` on a host that hasn't been migrated yet.
  */
 function loadAppDefinitions(base: string): Array<{ id: string; name: string; serviceNames: string[]; initContainerNames: string[] }> {
-  const appsJsonPath = path.join(base, 'overwatch', 'data', 'apps.json');
+  const dataDir = path.join(base, 'overwatch', 'data');
+  const appsDDir = path.join(dataDir, 'apps.d');
+  const toShape = (app: any) => ({
+    id: app.id,
+    name: app.name || app.id,
+    serviceNames: (app.services || [])
+      .filter((s: any) => !s.is_init_container)
+      .map((s: any) => s.name),
+    initContainerNames: (app.services || [])
+      .filter((s: any) => s.is_init_container)
+      .map((s: any) => s.name),
+  });
+
   try {
-    const content = fs.readFileSync(appsJsonPath, 'utf-8');
+    const entries = fs.readdirSync(appsDDir).filter(e => e.endsWith('.json')).sort();
+    if (entries.length > 0) {
+      return entries.map(filename => {
+        const raw = fs.readFileSync(path.join(appsDDir, filename), 'utf-8');
+        return toShape(JSON.parse(raw));
+      });
+    }
+  } catch {
+    // apps.d/ absent — fall through to legacy path below.
+  }
+
+  try {
+    const legacyPath = path.join(dataDir, 'apps.json');
+    const content = fs.readFileSync(legacyPath, 'utf-8');
     const apps = JSON.parse(content);
     if (!Array.isArray(apps)) return [];
-    return apps.map((app: any) => ({
-      id: app.id,
-      name: app.name || app.id,
-      serviceNames: (app.services || [])
-        .filter((s: any) => !s.is_init_container)
-        .map((s: any) => s.name),
-      initContainerNames: (app.services || [])
-        .filter((s: any) => s.is_init_container)
-        .map((s: any) => s.name),
-    }));
+    return apps.map(toShape);
   } catch {
     return [];
   }
