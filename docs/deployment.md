@@ -57,7 +57,7 @@ Overwatch needs access to:
 | `/var/run/docker.sock` | Docker socket for container management |
 | `/root/.docker:ro` | Registry credentials for pulling tenant images (optional) |
 | `./overwatch.yaml:ro` | Infrastructure configuration |
-| `./data` | Persistent data: `apps.json`, `admin-users.json`, env vars, logs |
+| `./data` | Persistent data: `apps.d/`, `apps.runtime.json`, `admin-users.json`, env vars, logs |
 | `./apps` | Auto-managed tenant compose files and `.env` files |
 
 ## Production Checklist
@@ -302,7 +302,11 @@ After setting up and creating a few apps with tenants:
 │   ├── overwatch.yaml            # Infrastructure configuration
 │   ├── .env                      # Overwatch secrets
 │   └── data/
-│       ├── apps.json             # App definitions (managed by UI)
+│       ├── apps.d/               # App definitions (one file per app, managed by UI/API/CLI)
+│       │   ├── kwoutr.json
+│       │   └── ...
+│       ├── apps.runtime.json     # Per-app runtime timestamps
+│       ├── apps.trashed.json     # Soft-deleted apps (recovery bin)
 │       ├── admin-users.json      # Admin user list
 │       ├── alert-history.jsonl   # Alert history (auto-pruned)
 │       └── audit.log             # Audit log (auto-pruned)

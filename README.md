@@ -92,7 +92,7 @@ overwatch.yaml (infrastructure)     GUI / API (runtime)
 ```
 
 - **Infrastructure config** lives in `overwatch.yaml` — set once at deployment
-- **App definitions** are created through the UI and stored in `data/apps.json`
+- **App definitions** are created through the UI, the API, or `overwatch apps apply <file>` and stored one-per-file in `data/apps.d/<id>.json` (with `data/apps.runtime.json` holding timestamps)
 - **Tenant data** (compose files, .env) is generated on the filesystem
 
 ## CLI Commands

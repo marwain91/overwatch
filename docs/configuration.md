@@ -122,7 +122,7 @@ retention:
 
 ## App Definition — GUI/API Config
 
-Apps are created and managed through the web UI or API (`POST /api/apps`). Each app defines its own registry, services, backup, and admin access settings. Apps are stored in `data/apps.json`.
+Apps are created and managed through the web UI, the HTTP API (`POST /api/apps`), or the `overwatch apps apply <file>` CLI (recommended for deploy pipelines — writes one file per app, so pipelines cannot stomp each other's registrations). Each app defines its own registry, services, backup, and admin access settings. App definitions are stored one-per-file in `data/apps.d/<id>.json`; runtime state (`createdAt`, `updatedAt`) lives in `data/apps.runtime.json`.
 
 ### App Schema
 

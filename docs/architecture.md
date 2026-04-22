@@ -56,17 +56,17 @@ Managed Infrastructure
 ## Data Flow
 
 ```
-overwatch.yaml (infrastructure)     data/apps.json (runtime)
-├── project (name, prefix)          ├── Apps (registry, services, backup)
-├── database (host, credentials)    ├── Tenants (per app, on filesystem)
-├── networking                      ├── Environment variables (per app)
-├── monitoring & alert rules        ├── Admin users
-├── credentials (password lengths)  └── Notification channels
-└── retention
+overwatch.yaml (infrastructure)     data/apps.d/ + data/apps.runtime.json
+├── project (name, prefix)          ├── Apps (one file per app: registry, services, backup)
+├── database (host, credentials)    ├── Runtime timestamps (createdAt, updatedAt per id)
+├── networking                      ├── Tenants (per app, on filesystem)
+├── monitoring & alert rules        ├── Environment variables (per app)
+├── credentials (password lengths)  ├── Admin users
+└── retention                       └── Notification channels
 ```
 
 - **Infrastructure config** (`overwatch.yaml`) is set at deployment — project name, database, networking, monitoring rules
-- **App definitions** are created through the UI/API and stored in `data/apps.json`
+- **App definitions** are created through the UI/API or `overwatch apps apply <file>` and stored one-per-file in `data/apps.d/<id>.json`; runtime state (`createdAt`/`updatedAt`) lives in `data/apps.runtime.json`
 - **Tenant data** (compose files, `.env`) is generated on the filesystem under `apps/{appId}/tenants/{tenantId}/`
 
 ## Project Structure
@@ -112,7 +112,7 @@ overwatch/
 │   │       └── index.ts          # Factory function
 │   ├── services/
 │   │   ├── index.ts              # Service barrel exports
-│   │   ├── app.ts                # App CRUD (data/apps.json)
+│   │   ├── app.ts                # App CRUD (data/apps.d/ + data/apps.runtime.json)
 │   │   ├── tenant.ts             # Tenant CRUD operations
 │   │   ├── docker.ts             # Container management (Docker API)
 │   │   ├── dockerEvents.ts       # Docker event stream listener
