@@ -1,0 +1,54 @@
+# Overwatch container deployment. Managed by `overwatch infra deploy`.
+# Secrets come from ../.env. overwatch.yaml holds project configuration.
+
+services:
+  overwatch:
+    image: ghcr.io/marwain91/overwatch:latest
+    container_name: ${PROJECT_PREFIX}-overwatch
+    restart: unless-stopped
+    environment:
+      PORT: 3002
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      JWT_SECRET: ${JWT_SECRET}
+      GHCR_TOKEN: ${GHCR_TOKEN}
+      AUTH_SERVICE_SECRET: ${AUTH_SERVICE_SECRET}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME}
+      R2_ENDPOINT: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /root/.docker:/root/.docker:ro
+      - ./overwatch.yaml:/app/overwatch.yaml:ro
+      - ./data:/app/data
+      - ${APPS_PATH_ON_HOST}:/app/apps
+    networks:
+      - shared
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.admin.rule=Host(`admin.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.admin.entrypoints=websecure"
+      - "traefik.http.routers.admin.tls=true"
+      - "traefik.http.routers.admin.tls.certresolver=letsencrypt-cf"
+      - "traefik.http.routers.admin.tls.domains[0].main=${BASE_DOMAIN}"
+      - "traefik.http.routers.admin.tls.domains[0].sans=*.${BASE_DOMAIN}"
+      - "traefik.http.services.admin.loadbalancer.server.port=3002"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+
+networks:
+  shared:
+    name: ${NETWORK_NAME}
+    external: true
