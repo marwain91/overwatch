@@ -1700,5 +1700,5 @@ Do NOT push the tag yet — operator must verify production upgrade plan first (
 ## Post-implementation checklist
 
 - [ ] Confirm `docker-compose` image for Overwatch rebuilds cleanly in CI.
-- [ ] Document the upgrade procedure in `docs/updating.md`: stop overwatch → `overwatch migrate up` (with `OVERWATCH_AUTO_MIGRATE=1` or the explicit CLI) → start overwatch.
+- [ ] Document the upgrade procedure in `docs/updating.md`: stop overwatch → run `overwatch migrate up` on the host as the deploy user (the pkg'd binary with `getDataDir()` resolving via `OVERWATCH_CONFIG` or cwd heuristic) → start overwatch. Note: `OVERWATCH_AUTO_MIGRATE=1` only gates the boot refuse-to-start behavior; it does NOT actually execute migrations. The explicit CLI step is required.
 - [ ] In a separate PR on the Kwoutr repo, add a step to `build-and-push.yml`'s `deploy-infrastructure` job that runs `ssh deploy@host 'overwatch apps apply <path>'` with `deploy/overwatch/apps/kwoutr.json` (adjust paths to match Kwoutr's repo layout). Do NOT reintroduce any direct write of `apps.d/kwoutr.json`.
