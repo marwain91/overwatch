@@ -42,3 +42,6 @@ backup-temp/
 
 # Tests
 test/
+
+# Git worktrees (superpowers)
+.worktrees/
