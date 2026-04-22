@@ -55,10 +55,11 @@ describe('readApps — apps.d/ + apps.runtime.json', () => {
     for (const id of ['goalmaster', 'kwoutr', 'finalio']) {
       await fs.writeFile(path.join(dataDir, 'apps.d', `${id}.json`), JSON.stringify(validStatic(id)));
     }
+    const iso = new Date(0).toISOString();
     await fs.writeFile(path.join(dataDir, 'apps.runtime.json'), JSON.stringify({
-      goalmaster: { createdAt: 'a', updatedAt: 'a' },
-      kwoutr: { createdAt: 'a', updatedAt: 'a' },
-      finalio: { createdAt: 'a', updatedAt: 'a' },
+      goalmaster: { createdAt: iso, updatedAt: iso },
+      kwoutr: { createdAt: iso, updatedAt: iso },
+      finalio: { createdAt: iso, updatedAt: iso },
     }));
 
     const { listApps } = await import('../services/app');
@@ -82,6 +83,7 @@ describe('readApps — apps.d/ + apps.runtime.json', () => {
     const runtime = JSON.parse(runtimeRaw);
     expect(runtime.kwoutr).toBeDefined();
     expect(runtime.kwoutr.createdAt).toBe(apps[0].createdAt);
+    expect(runtime.kwoutr.updatedAt).toBe(apps[0].updatedAt);
   });
 
   it('returns empty array when apps.d/ exists but is empty', async () => {
