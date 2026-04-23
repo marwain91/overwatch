@@ -123,3 +123,46 @@ Install-time variables (`${PROJECT_PREFIX}`, `${NETWORK_NAME}`, `${APPS_PATH_ON_
 ### Redeploying
 
 Safe to re-run any time — the command diffs templates against on-disk state and only restarts compose services when something actually changed.
+
+## v1.5.4 — App definitions ride inside app images
+
+From v1.5.4, Overwatch can pull an app's own definition out of a freshly-released image, so adding or removing a service travels atomically with the code that ships it. The app repo no longer has to SSH in or call any Overwatch API — Overwatch reads the manifest on the next tenant update.
+
+### How it works
+
+1. The app bakes a single file — `overwatch-app.json` — into its primary image. The default location Overwatch looks for is `/overwatch/app.json`, and the default image is the one whose `image_suffix` is `backend`. Both are overridable via an optional `manifest` section in the app definition.
+2. When an operator (or an automation) calls `PATCH /api/apps/<appId>/tenants/<tenantId>` with a new `imageTag`, Overwatch:
+   - Pulls the new image.
+   - Extracts `/overwatch/app.json` (via throw-away `docker create` + `docker cp`).
+   - If found and different from the current `apps.d/<appId>.json`, upserts via the same logic as `overwatch apps apply`.
+   - Regenerates the tenant's docker-compose.yml from the (possibly updated) app definition.
+   - Runs `docker compose up -d --force-recreate --remove-orphans` — `--remove-orphans` stops containers for services the manifest dropped.
+
+### Adding manifest support to an app's image
+
+In the app's Dockerfile for the designated manifest image (typically `backend`):
+
+```dockerfile
+COPY overwatch-app.json /overwatch/app.json
+```
+
+Where `overwatch-app.json` at the repo root is the full app definition — same shape consumed by `overwatch apps apply`, minus `createdAt` / `updatedAt`.
+
+### Non-invasive by default
+
+- Apps that don't bake a manifest keep working exactly as before — the extraction returns null and Overwatch falls through to the existing on-disk definition.
+- Broken JSON in the manifest doesn't block the tenant update; it logs a warning and falls through.
+- The manifest upsert path uses the same trash guard as `apps apply` — if an app is soft-deleted, its manifest won't silently re-create it.
+
+### Opting in with `manifest` config
+
+If an app wants a non-default location or a different carrier image, add this to its `overwatch-app.json`:
+
+```json
+{
+  "manifest": {
+    "image_suffix": "api",
+    "path": "/etc/overwatch/manifest.json"
+  }
+}
+```

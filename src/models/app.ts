@@ -118,6 +118,20 @@ export const AppCredentialsSchema = z.object({
   jwt_secret_length: z.number().default(64),
 });
 
+// Where Overwatch extracts the app's own definition from when a tenant
+// upgrades to a new image tag. Allows an app to ship its own manifest
+// inside its image (e.g. `COPY overwatch-app.json /overwatch/app.json`)
+// so definition changes travel atomically with code. Optional — when
+// absent, no manifest sync is attempted on tenant update.
+export const AppManifestSchema = z.object({
+  image_suffix: z.string().default('backend').describe(
+    'image_suffix of the service whose image carries the embedded manifest. Usually "backend".'
+  ),
+  path: z.string().default('/overwatch/app.json').describe(
+    'Absolute path inside the image where the manifest JSON lives.'
+  ),
+});
+
 // Main app definition schema
 export const AppDefinitionSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/, 'Must be lowercase alphanumeric with hyphens'),
@@ -128,6 +142,7 @@ export const AppDefinitionSchema = z.object({
   backup: AppBackupSchema.optional(),
   admin_access: AppAdminAccessSchema.optional(),
   credentials: AppCredentialsSchema.optional(),
+  manifest: AppManifestSchema.optional(),
   db_prefix: z.string().optional().describe(
     'Override project-level db_prefix for this app. Empty string means no prefix (DB name = ${appId}_${tenantId}). Omit to inherit project.db_prefix.'
   ),
@@ -171,5 +186,6 @@ export type UpdateAppInput = z.infer<typeof UpdateAppSchema>;
 export type AppService = z.infer<typeof AppServiceSchema>;
 export type AppRegistry = z.infer<typeof AppRegistrySchema>;
 export type AppBackup = z.infer<typeof AppBackupSchema>;
+export type AppManifest = z.infer<typeof AppManifestSchema>;
 
 export type ApplyResult = 'created' | 'updated' | 'noop';

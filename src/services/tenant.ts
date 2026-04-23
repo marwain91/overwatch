@@ -6,9 +6,10 @@ import { promisify } from 'util';
 import { loadConfig, getAppsDir, resolveAppDbPrefix } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
-import { getApp } from './app';
+import { getApp, applyApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
+import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { isValidSlug } from '../utils/validators';
@@ -226,7 +227,7 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   await assertWithinDir(tenantPath, getAppsDir());
 
   // Load app definition
-  const app = await getApp(appId);
+  let app = await getApp(appId);
   if (!app) {
     throw new Error(`App '${appId}' not found`);
   }
@@ -238,6 +239,32 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   // Update IMAGE_TAG in .env
   const newEnvContent = originalEnvContent.replace(/^IMAGE_TAG=.*/m, `IMAGE_TAG=${newTag}`);
   await writeSecretFile(envPath, newEnvContent);
+
+  // Sync the app definition from the embedded manifest inside the new image,
+  // BEFORE we regenerate the compose file — so added/removed services travel
+  // atomically with the image release. Best-effort: images without a manifest
+  // file, or apps that haven't configured one, keep the existing definition.
+  try {
+    const manifest = await readManifestFromAppImage(app, newTag);
+    if (manifest !== null) {
+      const result = await applyApp(manifest, `manifest:${resolveManifestImageRef(app, newTag)}`);
+      if (result.result === 'updated') {
+        console.log(`[manifest] Updated app '${appId}' from image ${newTag} (changed: ${result.changedKeys.join(', ')})`);
+      } else if (result.result === 'created') {
+        console.log(`[manifest] Created app '${appId}' from image ${newTag}`);
+      }
+      // Reload so downstream compose regen sees the new service list.
+      const reloaded = await getApp(appId);
+      if (reloaded) app = reloaded;
+    }
+  } catch (err: any) {
+    // Extraction / apply errors are non-fatal for the tag-update path — log
+    // loudly and fall through to using the previous definition. This keeps
+    // operator-triggered tag bumps working even if the image happens to ship
+    // a broken manifest (regression). A broken manifest should be caught by
+    // whoever merged it, not block every tenant update across all apps.
+    console.warn(`[manifest] Sync skipped for '${appId}' @ ${newTag}: ${err?.message || err}`);
+  }
 
   // Regenerate shared.env
   await generateSharedEnvFile(appId, tenantId);
@@ -270,9 +297,10 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
     throw error;
   }
 
-  // Restart containers with new images - do NOT roll back .env on failure,
-  // because docker may have already recreated containers with the new image
-  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']);
+  // Restart containers with new images. --remove-orphans sweeps containers
+  // that used to be part of this compose stack but aren't in the regenerated
+  // file (e.g. a service removed via an upstream manifest update).
+  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans']);
 }
 
 export async function getTenantConfig(appId: string, tenantId: string): Promise<TenantConfig | null> {
