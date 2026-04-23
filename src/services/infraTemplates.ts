@@ -93,6 +93,18 @@ async function writeAtomic(destPath: string, content: string): Promise<void> {
   await fs.rename(tmp, destPath);
 }
 
+async function ensureNetwork(name: string): Promise<'created' | 'exists'> {
+  // `docker network inspect` exits non-zero when the network is absent.
+  try {
+    await execFileAsync('docker', ['network', 'inspect', name]);
+    return 'exists';
+  } catch {
+    // Not present — create it. Plain bridge network, no special driver opts.
+    await execFileAsync('docker', ['network', 'create', '--driver', 'bridge', name]);
+    return 'created';
+  }
+}
+
 async function runCompose(composeFile: string): Promise<void> {
   await execFileAsync('docker', [
     'compose',
@@ -141,6 +153,11 @@ export async function deployInfra(options: {
 
   let composeRestarted = false;
   if (!dryRun) {
+    // Network is declared `external: true` in the templates so compose doesn't
+    // try to manage its labels — that sidesteps the "incorrect label" conflict
+    // you hit when a pre-existing network was created under a different compose
+    // key. Instead we explicitly ensure the network exists before compose runs.
+    await ensureNetwork(vars.NETWORK_NAME);
     const composeFile = path.join(deployDir, 'infrastructure', 'docker-compose.yml');
     await runCompose(composeFile);
     composeRestarted = true;

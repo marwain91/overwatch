@@ -50,7 +50,7 @@ services:
 networks:
   shared:
     name: ${NETWORK_NAME}
-    driver: bridge
+    external: true
 
 volumes:
   traefik-letsencrypt:

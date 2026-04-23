@@ -54,7 +54,7 @@ services:
 networks:
   shared:
     name: \${NETWORK_NAME}
-    driver: bridge
+    external: true
 
 volumes:
   traefik-letsencrypt:
@@ -166,6 +166,8 @@ services:
     container_name: \${PROJECT_PREFIX}-overwatch
     restart: unless-stopped
     environment:
+      OVERWATCH_UID: "\${OVERWATCH_UID:-1001}"
+      OVERWATCH_GID: "\${OVERWATCH_GID:-1001}"
       PORT: 3002
       MYSQL_ROOT_PASSWORD: \${MYSQL_ROOT_PASSWORD}
       GOOGLE_CLIENT_ID: \${GOOGLE_CLIENT_ID}
