@@ -219,6 +219,14 @@ async function start() {
     if (count > 0) console.log(`Generated shared.env for ${count} tenant(s)`);
   });
 
+  await runStartupStep('seed per-tenant app-definition snapshots', async () => {
+    const { seedMissingTenantAppDefs } = await import('./services/tenantAppDef');
+    const { seeded, skipped } = await seedMissingTenantAppDefs();
+    if (seeded > 0) {
+      console.log(`[tenant-app-def] Seeded ${seeded} tenant snapshot(s); ${skipped} already present.`);
+    }
+  });
+
   await runStartupStep('report abandoned backup runs', () => reportAbandonedRuns());
   await runStartupStep('start backup schedulers', () => startAllBackupSchedulers());
 

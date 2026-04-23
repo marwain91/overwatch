@@ -6,6 +6,7 @@ import { loadConfig, resolveEnvValue, getAppsDir } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { getTenantInfo, listTenants } from './docker';
 import { getApp, listApps } from './app';
+import { readTenantAppDef } from './tenantAppDef';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
 import { writeJsonAtomic } from '../utils/atomicJson';
@@ -227,7 +228,12 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
 }
 
 export async function createBackup(appId: string, tenantId: string): Promise<{ success: boolean; snapshotId?: string; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
-  const app = await getApp(appId);
+  // Read the tenant's frozen definition rather than the global apps.d/ one:
+  // we want to back up exactly what THIS tenant actually runs, which may
+  // differ from a sibling tenant on a different image version. Falls back
+  // to the global definition if the tenant has no snapshot yet (legacy
+  // pre-v1.5.5 tenants, seeded at boot).
+  const app = await readTenantAppDef(appId, tenantId);
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
   const info = await getBackupInfo(appId);
@@ -248,7 +254,9 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
   const db = getDatabaseAdapter(app);
   const appsDir = getAppsDir();
 
-  // Get backup-enabled services from app definition
+  // Get backup-enabled services from THIS tenant's app definition. A sibling
+  // tenant on a different image version may have a different service list;
+  // that's intentional — tenants are isolated.
   const backupServices = app.services
     .filter(s => s.backup?.enabled && s.backup?.paths?.length)
     .map(s => ({

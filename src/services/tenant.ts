@@ -10,7 +10,8 @@ import { getApp, applyApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
-import { AppDefinition } from '../models/app';
+import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
+import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { isValidSlug } from '../utils/validators';
 import { parseEnv } from '../utils/env';
@@ -116,6 +117,16 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     });
     await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), composeContent);
     composeWritten = true;
+
+    // Seed this tenant's frozen app-definition snapshot. From v1.5.5 on,
+    // per-tenant snapshots drive compose regen + backup config so tenants
+    // running different image versions don't step on each other's feet.
+    // The snapshot starts as a copy of whatever apps.d/<id>.json says at
+    // creation; subsequent updateTenant calls refresh it from the image's
+    // embedded manifest when one is present.
+    const { createdAt: _cA, updatedAt: _uA, ...appStatic } = app;
+    void _cA; void _uA;
+    await writeTenantAppDef(appId, tenantId, appStatic as AppDefinitionStatic);
 
     // Create external volumes and start tenant
     await ensureExternalVolumes(composePath);
@@ -226,8 +237,10 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   // Verify path hasn't been manipulated via symlinks
   await assertWithinDir(tenantPath, getAppsDir());
 
-  // Load app definition
-  let app = await getApp(appId);
+  // Load this tenant's current app definition. Prefer the per-tenant
+  // snapshot; fall back to apps.d/<id>.json for legacy tenants without
+  // a snapshot (boot seeds these, but this keeps the path resilient).
+  let app = await readTenantAppDef(appId, tenantId);
   if (!app) {
     throw new Error(`App '${appId}' not found`);
   }
@@ -244,17 +257,29 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   // BEFORE we regenerate the compose file — so added/removed services travel
   // atomically with the image release. Best-effort: images without a manifest
   // file, or apps that haven't configured one, keep the existing definition.
+  //
+  // Two writes per successful extraction:
+  //   1. Per-tenant snapshot (drives THIS tenant's compose + backup going
+  //      forward — isolates it from sibling tenants on other versions).
+  //   2. Global apps.d/<id>.json via applyApp (updates the "latest-seen"
+  //      view for the admin UI and as default for new tenants).
   try {
     const manifest = await readManifestFromAppImage(app, newTag);
     if (manifest !== null) {
-      const result = await applyApp(manifest, `manifest:${resolveManifestImageRef(app, newTag)}`);
-      if (result.result === 'updated') {
-        console.log(`[manifest] Updated app '${appId}' from image ${newTag} (changed: ${result.changedKeys.join(', ')})`);
-      } else if (result.result === 'created') {
-        console.log(`[manifest] Created app '${appId}' from image ${newTag}`);
+      const parsed = AppDefinitionStaticSchema.safeParse(manifest);
+      if (!parsed.success) {
+        const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+        throw new Error(`Image manifest failed validation: ${errors}`);
       }
-      // Reload so downstream compose regen sees the new service list.
-      const reloaded = await getApp(appId);
+      await writeTenantAppDef(appId, tenantId, parsed.data);
+      const result = await applyApp(parsed.data, `manifest:${resolveManifestImageRef(app, newTag)}`);
+      if (result.result === 'updated') {
+        console.log(`[manifest] Updated app '${appId}' from image ${newTag} for tenant '${tenantId}' (changed: ${result.changedKeys.join(', ')})`);
+      } else if (result.result === 'created') {
+        console.log(`[manifest] Created app '${appId}' from image ${newTag} for tenant '${tenantId}'`);
+      }
+      // Reload so downstream compose regen sees the latest service list.
+      const reloaded = await readTenantAppDef(appId, tenantId);
       if (reloaded) app = reloaded;
     }
   } catch (err: any) {
@@ -263,7 +288,7 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
     // operator-triggered tag bumps working even if the image happens to ship
     // a broken manifest (regression). A broken manifest should be caught by
     // whoever merged it, not block every tenant update across all apps.
-    console.warn(`[manifest] Sync skipped for '${appId}' @ ${newTag}: ${err?.message || err}`);
+    console.warn(`[manifest] Sync skipped for '${appId}'/'${tenantId}' @ ${newTag}: ${err?.message || err}`);
   }
 
   // Regenerate shared.env

@@ -174,3 +174,40 @@ If an app wants a non-default location or a different carrier image, add this to
   }
 }
 ```
+
+## v1.5.5 — Per-tenant frozen app-definition snapshots
+
+v1.5.4 pulled the app definition out of each new image on tenant update and wrote it to the global `apps.d/<id>.json`. That worked when all tenants of an app ran the same version, but left a ghost window when versions diverged — e.g. after a release that removed a service, tenants still on the older tag had containers the global definition no longer listed, and the backup scheduler (reading the global definition) would silently stop backing up data from those "now-unlisted" containers.
+
+v1.5.5 fixes this by freezing a per-tenant copy of the app definition alongside each tenant's `.env` / `docker-compose.yml`. Each tenant's compose regeneration and backup config now read from its own snapshot — so tenants on different image versions never interfere.
+
+### File layout
+
+```
+/opt/<prefix>/deploy/apps/<appId>/tenants/<tenantId>/
+├── .env
+├── shared.env
+├── docker-compose.yml
+└── app-definition.json   ← v1.5.5: per-tenant frozen snapshot
+```
+
+The global `data/apps.d/<id>.json` remains, now serving as:
+- The "latest-seen manifest" display state for the admin UI and API listings.
+- The default definition copied into `app-definition.json` when a brand-new tenant is created.
+- The fallback read source for any tenant that somehow lacks a snapshot (the boot seed should prevent this).
+
+### Upgrade behaviour
+
+On first boot after upgrading to v1.5.5, Overwatch scans `/opt/<prefix>/deploy/apps/<appId>/tenants/<tenantId>/` for every registered app and seeds a `app-definition.json` (copy of the current global `apps.d/<appId>.json`) for any tenant that doesn't already have one. Idempotent — logged as:
+
+```
+[tenant-app-def] Seeded N tenant snapshot(s); M already present.
+```
+
+Subsequent tenant operations read this snapshot first and fall back to the global definition only if the file is missing (shouldn't happen after boot).
+
+### What triggers a snapshot refresh
+
+Only `updateTenant` refreshes a tenant's snapshot, and only when the new image has an embedded `/overwatch/app.json` (see v1.5.4 doc section). A tenant with no manifest in its image keeps the snapshot it was seeded with at creation/boot until explicit intervention.
+
+For operators who need to force-align all tenants of an app to the current global definition (e.g., after editing `apps.d/<id>.json` manually), the operation is currently: `overwatch apps apply <file>` (updates global) → then call `updateTenant` on each tenant with its current tag. A dedicated `overwatch tenant reconcile` command covering this case is a likely follow-up.
