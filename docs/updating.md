@@ -140,13 +140,21 @@ From v1.5.4, Overwatch can pull an app's own definition out of a freshly-release
 
 ### Adding manifest support to an app's image
 
-In the app's Dockerfile for the designated manifest image (typically `backend`):
+Convention: the manifest lives at `overwatch/app.json` in the app's repo and gets copied into the image at the same absolute path. The repo path mirrors the image path — same location on both sides, one fewer thing to remember.
+
+In the app repo, create `overwatch/app.json` with the full app definition (same shape consumed by `overwatch apps apply`, minus `createdAt` / `updatedAt`), and add this to the primary image's Dockerfile (the one producing the service with `image_suffix: backend`):
 
 ```dockerfile
-COPY overwatch-app.json /overwatch/app.json
+COPY overwatch/app.json /overwatch/app.json
 ```
 
-Where `overwatch-app.json` at the repo root is the full app definition — same shape consumed by `overwatch apps apply`, minus `createdAt` / `updatedAt`.
+Or if you want to bundle related files together later:
+
+```dockerfile
+COPY overwatch /overwatch
+```
+
+Make sure `overwatch/` isn't excluded by `.dockerignore` (add `!overwatch/` if you have a broad catch-all).
 
 ### Non-invasive by default
 
