@@ -8,6 +8,7 @@ export type EventType =
   | 'metrics:snapshot'
   | 'health:change'
   | 'alert:fired'
-  | 'alert:resolved';
+  | 'alert:resolved'
+  | 'tenant:update:progress';
 
 export { eventBus };

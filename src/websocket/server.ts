@@ -168,6 +168,10 @@ export function createWebSocketServer(server: HTTPServer): WebSocketServer {
     broadcast(createWSMessage('alert:resolved', data));
   });
 
+  eventBus.on('tenant:update:progress', (data) => {
+    broadcast(createWSMessage('tenant:update:progress', data));
+  });
+
   console.log('[WebSocket] Server initialized');
   return wss;
 }

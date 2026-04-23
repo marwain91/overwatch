@@ -12,6 +12,8 @@ import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
 import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
 import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
+import { eventBus } from './eventBus';
+import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { isValidSlug } from '../utils/validators';
 import { parseEnv } from '../utils/env';
@@ -227,6 +229,14 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   const envPath = path.join(tenantPath, '.env');
   const composePath = path.join(tenantPath, 'docker-compose.yml');
 
+  // Progress emitter — broadcast over WebSocket via eventBus. The admin UI
+  // subscribes in the tenant-update modal to render a step-by-step view.
+  // Non-throwing: emit failures don't cascade into the update itself.
+  const emit = (step: TenantUpdateStep, status: TenantUpdateStatus, detail?: string) => {
+    const payload: TenantUpdateProgress = { appId, tenantId, newTag, step, status, detail };
+    try { eventBus.emit('tenant:update:progress', payload); } catch { /* swallow */ }
+  };
+
   // Check if tenant exists
   try {
     await fs.access(envPath);
@@ -255,14 +265,8 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
 
   // Sync the app definition from the embedded manifest inside the new image,
   // BEFORE we regenerate the compose file — so added/removed services travel
-  // atomically with the image release. Best-effort: images without a manifest
-  // file, or apps that haven't configured one, keep the existing definition.
-  //
-  // Two writes per successful extraction:
-  //   1. Per-tenant snapshot (drives THIS tenant's compose + backup going
-  //      forward — isolates it from sibling tenants on other versions).
-  //   2. Global apps.d/<id>.json via applyApp (updates the "latest-seen"
-  //      view for the admin UI and as default for new tenants).
+  // atomically with the image release.
+  emit('manifest', 'started');
   try {
     const manifest = await readManifestFromAppImage(app, newTag);
     if (manifest !== null) {
@@ -275,57 +279,96 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
       const result = await applyApp(parsed.data, `manifest:${resolveManifestImageRef(app, newTag)}`);
       if (result.result === 'updated') {
         console.log(`[manifest] Updated app '${appId}' from image ${newTag} for tenant '${tenantId}' (changed: ${result.changedKeys.join(', ')})`);
+        emit('manifest', 'completed', `updated (changed: ${result.changedKeys.join(', ') || 'none'})`);
       } else if (result.result === 'created') {
         console.log(`[manifest] Created app '${appId}' from image ${newTag} for tenant '${tenantId}'`);
+        emit('manifest', 'completed', 'created');
+      } else {
+        emit('manifest', 'completed', 'noop (manifest matches current definition)');
       }
-      // Reload so downstream compose regen sees the latest service list.
       const reloaded = await readTenantAppDef(appId, tenantId);
       if (reloaded) app = reloaded;
+    } else {
+      emit('manifest', 'skipped', 'image carries no /overwatch/app.json — keeping existing definition');
     }
   } catch (err: any) {
-    // Extraction / apply errors are non-fatal for the tag-update path — log
-    // loudly and fall through to using the previous definition. This keeps
-    // operator-triggered tag bumps working even if the image happens to ship
-    // a broken manifest (regression). A broken manifest should be caught by
-    // whoever merged it, not block every tenant update across all apps.
-    console.warn(`[manifest] Sync skipped for '${appId}'/'${tenantId}' @ ${newTag}: ${err?.message || err}`);
+    const msg = err?.message || String(err);
+    console.warn(`[manifest] Sync skipped for '${appId}'/'${tenantId}' @ ${newTag}: ${msg}`);
+    emit('manifest', 'skipped', msg);
   }
 
-  // Regenerate shared.env
-  await generateSharedEnvFile(appId, tenantId);
-
-  // Extract domain from .env
-  const domainMatch = originalEnvContent.match(/^TENANT_DOMAIN=(.*)$/m);
-  const domain = domainMatch ? domainMatch[1] : '';
-
-  // Regenerate docker-compose.yml from app definitions
+  // Regenerate shared.env + compose.
+  emit('config', 'started');
   try {
-    const composeContent = generateComposeFile({
-      app,
-      tenantId,
-      domain,
-      config,
-    });
-    await fs.writeFile(composePath, composeContent);
-  } catch (err) {
-    console.warn('Failed to regenerate docker-compose.yml:', err);
-    await fs.writeFile(composePath, originalComposeContent);
+    await generateSharedEnvFile(appId, tenantId);
+
+    const domainMatch = originalEnvContent.match(/^TENANT_DOMAIN=(.*)$/m);
+    const domain = domainMatch ? domainMatch[1] : '';
+
+    try {
+      const composeContent = generateComposeFile({ app, tenantId, domain, config });
+      await fs.writeFile(composePath, composeContent);
+    } catch (err) {
+      console.warn('Failed to regenerate docker-compose.yml:', err);
+      await fs.writeFile(composePath, originalComposeContent);
+    }
+    emit('config', 'completed');
+  } catch (err: any) {
+    emit('config', 'failed', err?.message || String(err));
+    emit('failed', 'failed', err?.message || String(err));
+    throw err;
   }
 
-  // Pull new images - roll back .env only if pull fails (tag may be invalid)
+  // Pull new images — usually the slow step. Roll back .env + compose on
+  // failure so a bad tag (or missing image, like the classic 'docs:1.3.18
+  // not found') leaves the tenant exactly as it was.
+  emit('pull', 'started');
   try {
     await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'pull']);
     await ensureExternalVolumes(composePath);
-  } catch (error) {
+    emit('pull', 'completed');
+  } catch (error: any) {
     await writeSecretFile(envPath, originalEnvContent);
     await fs.writeFile(composePath, originalComposeContent);
-    throw error;
+    const detail = extractComposeErrorMessage(error);
+    emit('pull', 'failed', detail);
+    emit('failed', 'failed', detail);
+    throw new Error(detail);
   }
 
   // Restart containers with new images. --remove-orphans sweeps containers
   // that used to be part of this compose stack but aren't in the regenerated
   // file (e.g. a service removed via an upstream manifest update).
-  await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans']);
+  emit('restart', 'started');
+  try {
+    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans']);
+    emit('restart', 'completed');
+    emit('done', 'completed');
+  } catch (error: any) {
+    const detail = extractComposeErrorMessage(error);
+    emit('restart', 'failed', detail);
+    emit('failed', 'failed', detail);
+    throw new Error(detail);
+  }
+}
+
+/**
+ * `docker compose` stuffs the useful error into `stderr` along with a lot of
+ * progress noise. Pull out the "Error:" line when present; fall back to the
+ * exec error message.
+ */
+function extractComposeErrorMessage(error: any): string {
+  const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
+  const errorLine = stderr.split('\n').find((l: string) => /^Error\s/i.test(l) || /^Error\s+response/i.test(l));
+  if (errorLine) return errorLine.trim();
+  // Fallback: first non-empty non-"Pulling"/"Pulled" line of stderr.
+  for (const raw of stderr.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^\w+\s+(Pulling|Pulled|Skipped|Interrupted)/i.test(line)) continue;
+    return line;
+  }
+  return error?.message || String(error);
 }
 
 export async function getTenantConfig(appId: string, tenantId: string): Promise<TenantConfig | null> {

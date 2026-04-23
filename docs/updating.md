@@ -211,3 +211,41 @@ Subsequent tenant operations read this snapshot first and fall back to the globa
 Only `updateTenant` refreshes a tenant's snapshot, and only when the new image has an embedded `/overwatch/app.json` (see v1.5.4 doc section). A tenant with no manifest in its image keeps the snapshot it was seeded with at creation/boot until explicit intervention.
 
 For operators who need to force-align all tenants of an app to the current global definition (e.g., after editing `apps.d/<id>.json` manually), the operation is currently: `overwatch apps apply <file>` (updates global) → then call `updateTenant` on each tenant with its current tag. A dedicated `overwatch tenant reconcile` command covering this case is a likely follow-up.
+
+## v1.5.6 — Tenant update progress UI + env-var declarations
+
+Two related UX improvements around tenant updates.
+
+### Progress events on tenant update
+
+`updateTenant` now emits step-by-step progress over the existing WebSocket channel. The admin UI's Update-tenant modal subscribes to these events and renders a live step list:
+
+| Step | Meaning |
+|---|---|
+| `manifest` | Extracting + applying `/overwatch/app.json` from the new image |
+| `config` | Regenerating `shared.env` + `docker-compose.yml` |
+| `pull` | `docker compose pull` (usually the slowest — where "image not found" errors surface) |
+| `restart` | `docker compose up -d --force-recreate --remove-orphans` |
+
+Failures are surfaced inline with the specific error (e.g. `ghcr.io/.../docs:1.3.18: not found`) instead of a generic toast. The modal's Cancel button turns into "Close (update continues in background)" once the request is inflight, letting the operator walk away without aborting.
+
+### Declaring required env vars in the manifest
+
+Apps can now declare the env vars they need from the operator in `overwatch/app.json`:
+
+```json
+{
+  ...
+  "env_vars": [
+    { "key": "OPENAI_API_KEY", "description": "OpenAI key for chat completions", "sensitive": true },
+    { "key": "SMTP_HOST",      "description": "SMTP relay",                       "default": "smtp.eu.mailgun.org" },
+    { "key": "SMTP_PASS",      "description": "SMTP password",                    "sensitive": true }
+  ]
+}
+```
+
+On manifest apply (both `overwatch apps apply` and the image-embedded flow), Overwatch pre-populates the app's `env-vars.json` with every declared key that isn't already present — showing up in the Environment Variables page with the right description + sensitivity, waiting for the operator to fill in values. Existing values are never overwritten.
+
+**Reserved keys** (auto-resolved by Overwatch: `FRONTEND_URL`, `BACKEND_URL`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME`, `DB_PASSWORD`, `NODE_ENV`, `PORT`, `JWT_SECRET`, `TENANT_ID`, `TENANT_DOMAIN`, `IMAGE_TAG`, `PROJECT_PREFIX`, `SHARED_NETWORK`, `APP_ID`, `CERT_RESOLVER`, plus Node/system vars like `NODE_OPTIONS`, `PATH`, etc.) are skipped with a warning if an app mistakenly declares them — they're already provided at compose time, no operator input needed.
+
+`default` values are convenience non-secrets only; don't put credentials there since the manifest travels inside the public-ish image.

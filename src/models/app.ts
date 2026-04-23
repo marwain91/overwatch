@@ -132,6 +132,23 @@ export const AppManifestSchema = z.object({
   ),
 });
 
+// An env var this app needs an operator to supply (API keys, SMTP creds,
+// etc.). Declared in the manifest so Overwatch can pre-populate the
+// Environment Variables page with the right keys, descriptions, and
+// sensitivity flags — no more "what did I need to set again" guesswork.
+//
+// Values are NEVER taken from the manifest (the manifest is in the
+// image, potentially public). Only the schema: key + description +
+// sensitivity + optional non-sensitive default.
+export const AppEnvVarDeclarationSchema = z.object({
+  key: z.string().regex(/^[A-Z][A-Z0-9_]*$/, 'Env var names must be UPPERCASE with underscores'),
+  description: z.string().optional(),
+  sensitive: z.boolean().default(false),
+  default: z.string().optional().describe(
+    'Optional default value. Do NOT put secrets here — the manifest travels in the image. Leave blank for operator-supplied keys; use for sensible non-secret defaults like "smtp.eu.mailgun.org".'
+  ),
+});
+
 // Main app definition schema
 export const AppDefinitionSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/, 'Must be lowercase alphanumeric with hyphens'),
@@ -143,6 +160,9 @@ export const AppDefinitionSchema = z.object({
   admin_access: AppAdminAccessSchema.optional(),
   credentials: AppCredentialsSchema.optional(),
   manifest: AppManifestSchema.optional(),
+  env_vars: z.array(AppEnvVarDeclarationSchema).optional().describe(
+    'Env vars this app needs from operators. Used to pre-populate the Environment Variables page. Overwatch-provided keys (FRONTEND_URL, BACKEND_URL, DB_*, NODE_ENV, PORT, JWT_SECRET, TENANT_*) are auto-resolved and should NOT be declared here — if they are, they will be ignored with a warning.'
+  ),
   db_prefix: z.string().optional().describe(
     'Override project-level db_prefix for this app. Empty string means no prefix (DB name = ${appId}_${tenantId}). Omit to inherit project.db_prefix.'
   ),
@@ -187,5 +207,6 @@ export type AppService = z.infer<typeof AppServiceSchema>;
 export type AppRegistry = z.infer<typeof AppRegistrySchema>;
 export type AppBackup = z.infer<typeof AppBackupSchema>;
 export type AppManifest = z.infer<typeof AppManifestSchema>;
+export type AppEnvVarDeclaration = z.infer<typeof AppEnvVarDeclarationSchema>;
 
 export type ApplyResult = 'created' | 'updated' | 'noop';

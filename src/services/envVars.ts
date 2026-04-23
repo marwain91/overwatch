@@ -45,6 +45,10 @@ const PROTECTED_KEYS = new Set([
   'LD_PRELOAD', 'LD_LIBRARY_PATH', 'PATH', 'HOME', 'SHELL',
 ]);
 
+export function isProtectedEnvVarKey(key: string): boolean {
+  return PROTECTED_KEYS.has(key);
+}
+
 export interface EnvVar {
   key: string;
   value: string;
@@ -537,6 +541,54 @@ export async function tightenSecretFilePermissions(): Promise<number> {
  * Without a filter, this is the boot-time sweep that regenerates every
  * tenant's shared.env across every app.
  */
+/**
+ * Reconcile declared env vars from an app's manifest against what's already
+ * in env-vars.json for that app. Missing declared keys get inserted with
+ * the declared default (or empty) + description + sensitivity so they
+ * appear pre-populated in the admin UI for operators to fill in.
+ *
+ * - Keys already present in env-vars.json are NEVER overwritten.
+ * - Keys that collide with PROTECTED_KEYS (FRONTEND_URL, DB_HOST, etc.)
+ *   are ignored with a warning — those are resolved by Overwatch itself.
+ * - Returns counts so callers can log activity.
+ */
+export async function reconcileDeclaredEnvVars(
+  appId: string,
+  declared: Array<{ key: string; description?: string; sensitive?: boolean; default?: string }>,
+): Promise<{ added: number; skippedProtected: string[]; alreadyPresent: number }> {
+  const existing = await listEnvVars(appId);
+  const existingKeys = new Set(existing.map(v => v.key));
+  const skippedProtected: string[] = [];
+  let added = 0;
+  let alreadyPresent = 0;
+
+  for (const dec of declared) {
+    if (isProtectedEnvVarKey(dec.key)) {
+      skippedProtected.push(dec.key);
+      console.warn(
+        `[env-vars] App '${appId}' manifest declares protected key '${dec.key}' — ignored. ` +
+        `Overwatch auto-resolves this at compose time; remove the declaration from overwatch/app.json.`
+      );
+      continue;
+    }
+    if (existingKeys.has(dec.key)) {
+      alreadyPresent += 1;
+      continue;
+    }
+    // setEnvVar validates key/value and persists with timestamps.
+    await setEnvVar(
+      appId,
+      dec.key,
+      dec.default ?? '',
+      dec.sensitive ?? false,
+      dec.description,
+    );
+    added += 1;
+  }
+
+  return { added, skippedProtected, alreadyPresent };
+}
+
 export async function regenerateAllSharedEnvFiles(onlyAppId?: string): Promise<number> {
   const appsDir = getAppsDir();
   let count = 0;

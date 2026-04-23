@@ -289,6 +289,7 @@ export async function applyApp(
         createdAt: prevEntry?.createdAt ?? now,
         updatedAt: now,
       }));
+      await reconcileEnvVarDeclarations(next);
       return {
         result: 'updated' as ApplyResult,
         app: { ...next, createdAt: entry.createdAt, updatedAt: entry.updatedAt },
@@ -299,6 +300,7 @@ export async function applyApp(
     const now = new Date().toISOString();
     await writeJsonAtomic(currentFile, next, { mode: 0o644 });
     const entry = await upsertRuntime(next.id, () => ({ createdAt: now, updatedAt: now }));
+    await reconcileEnvVarDeclarations(next);
     return {
       result: 'created' as ApplyResult,
       app: { ...next, createdAt: entry.createdAt, updatedAt: entry.updatedAt },
@@ -313,6 +315,32 @@ export async function applyApp(
  * produces deterministic key ordering derived from the Zod schema — so the
  * same logical object stringifies identically regardless of source.
  */
+/**
+ * Reconcile the manifest's declared env_vars against the app's env-vars.json.
+ * Missing non-protected keys get pre-populated (empty value by default, or
+ * declared default) with description + sensitive flag so they appear in the
+ * admin UI ready to be filled in. Never overwrites existing values.
+ * Dynamic import to avoid the envVars module pulling app.ts on module-load.
+ */
+async function reconcileEnvVarDeclarations(def: { id: string; env_vars?: Array<{ key: string; description?: string; sensitive?: boolean; default?: string }> }): Promise<void> {
+  if (!def.env_vars || def.env_vars.length === 0) return;
+  try {
+    const { reconcileDeclaredEnvVars } = await import('./envVars');
+    const result = await reconcileDeclaredEnvVars(def.id, def.env_vars);
+    const bits: string[] = [];
+    if (result.added > 0) bits.push(`${result.added} added`);
+    if (result.alreadyPresent > 0) bits.push(`${result.alreadyPresent} kept`);
+    if (result.skippedProtected.length > 0) bits.push(`${result.skippedProtected.length} skipped (protected: ${result.skippedProtected.join(', ')})`);
+    if (bits.length > 0) {
+      console.log(`[env-vars] Reconciled declarations for '${def.id}': ${bits.join(', ')}.`);
+    }
+  } catch (err: any) {
+    // Non-fatal — the applyApp itself succeeded, env-vars reconciliation
+    // is a nicety. Surface the error so operators notice.
+    console.warn(`[env-vars] Reconciliation failed for '${def.id}': ${err?.message || err}`);
+  }
+}
+
 function diffKeys(a: Record<string, unknown>, b: Record<string, unknown>): string[] {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
   const changed: string[] = [];
