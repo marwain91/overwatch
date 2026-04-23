@@ -30,13 +30,18 @@ services:
     networks:
       - shared
     labels:
+      # The admin UI usually lives on the SERVER's hostname (e.g.
+      # admin.my-host.example.com), not on a tenant-app domain — so it needs
+      # its own host + cert-resolver pair distinct from BASE_DOMAIN / wildcard
+      # certs. Set OVERWATCH_ADMIN_HOST in overwatch/.env to the FQDN users
+      # reach the admin UI at, and OVERWATCH_ADMIN_CERT_RESOLVER to a resolver
+      # Traefik can satisfy for that host (defaults to "letsencrypt" = HTTP
+      # challenge, which works for any publicly-reachable domain).
       - "traefik.enable=true"
-      - "traefik.http.routers.admin.rule=Host(`admin.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.admin.rule=Host(`${OVERWATCH_ADMIN_HOST}`)"
       - "traefik.http.routers.admin.entrypoints=websecure"
       - "traefik.http.routers.admin.tls=true"
-      - "traefik.http.routers.admin.tls.certresolver=letsencrypt-cf"
-      - "traefik.http.routers.admin.tls.domains[0].main=${BASE_DOMAIN}"
-      - "traefik.http.routers.admin.tls.domains[0].sans=*.${BASE_DOMAIN}"
+      - "traefik.http.routers.admin.tls.certresolver=${OVERWATCH_ADMIN_CERT_RESOLVER:-letsencrypt}"
       - "traefik.http.services.admin.loadbalancer.server.port=3002"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3002/health"]
