@@ -3,6 +3,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { loadConfig } from '../config';
+import { EMBEDDED_TEMPLATES } from '../generated/embeddedTemplates';
 
 const execFileAsync = promisify(execFile);
 
@@ -43,14 +44,6 @@ const TEMPLATE_FILES: Array<{ source: string; dest: string }> = [
   { source: 'overwatch/docker-compose.yml', dest: 'overwatch/docker-compose.yml' },
 ];
 
-/**
- * Resolve the embedded templates directory. Works under both `npx tsx`
- * (from src/) and the pkg'd binary (snapshot filesystem).
- */
-function templatesRoot(): string {
-  return path.resolve(__dirname, '..', '..', 'templates');
-}
-
 export function resolveDeployVars(deployDir: string): InfraDeployVars {
   const config = loadConfig();
   const projectPrefix = config.project.prefix;
@@ -76,8 +69,12 @@ export function renderTemplate(content: string, vars: InfraDeployVars): string {
   });
 }
 
-async function readTemplate(source: string): Promise<string> {
-  return fs.readFile(path.join(templatesRoot(), source), 'utf-8');
+function readTemplate(source: string): string {
+  const content = EMBEDDED_TEMPLATES[source];
+  if (content === undefined) {
+    throw new Error(`Template '${source}' is not embedded. Rebuild with 'npm run build'.`);
+  }
+  return content;
 }
 
 async function readDestIfExists(destPath: string): Promise<string | null> {
@@ -124,7 +121,7 @@ export async function deployInfra(options: {
   const changes: InfraFileChange[] = [];
 
   for (const tpl of TEMPLATE_FILES) {
-    const raw = await readTemplate(tpl.source);
+    const raw = readTemplate(tpl.source);
     const rendered = renderTemplate(raw, vars);
     const destPath = path.join(deployDir, tpl.dest);
     const existing = await readDestIfExists(destPath);
