@@ -104,6 +104,7 @@ switch (command) {
     console.log('    snapshot <sub>          Create / list / restore / prune config snapshots');
     console.log('    config                  View, edit, validate, and explore configuration');
     console.log('    update [--check]        Pull latest image and restart (--self-update to also update CLI)');
+    console.log('                            --list-tags to browse available tags, --tag <tag> to pin');
     console.log('    self-update [--check]   Update the CLI binary itself');
     console.log('');
     console.log('  Environment:');

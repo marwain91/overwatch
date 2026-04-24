@@ -3,9 +3,11 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { findDeployDir } from './lifecycle';
 import { runSelfUpdate } from './self-update';
+import { listImageTags, sortTagsForDisplay } from '../services/registry';
 
 const GREEN = '\x1b[32m';
 const YELLOW = '\x1b[33m';
+const DIM = '\x1b[2m';
 const NC = '\x1b[0m';
 
 function exec(cmd: string, args: string[]): string {
@@ -47,8 +49,20 @@ function updateComposeImage(composeDir: string, oldImage: string, newImage: stri
   }
 }
 
+function readFlagValue(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  if (idx < 0) return undefined;
+  const value = args[idx + 1];
+  if (!value || value.startsWith('-')) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
+}
+
 export async function runUpdate(args: string[]): Promise<void> {
   const checkOnly = args.includes('--check');
+  const listTagsOnly = args.includes('--list-tags');
+  const tagArg = readFlagValue(args, '--tag');
 
   // Self-update CLI binary if requested
   if (args.includes('--self-update')) {
@@ -63,12 +77,31 @@ export async function runUpdate(args: string[]): Promise<void> {
   const composeDir = path.join(findDeployDir(), 'overwatch');
   const serviceName = process.env.SERVICE_NAME || 'overwatch';
 
-  // Determine image: explicit IMAGE env, or read from compose file, or default to latest
+  // Determine image: explicit IMAGE env, or --tag against compose base, or compose default, or latest
   const composeImage = readComposeImage(composeDir, serviceName);
   const imageBase = composeImage
     ? composeImage.split(':')[0].split('@')[0]
     : 'ghcr.io/marwain91/overwatch';
-  const image = process.env.IMAGE || `${imageBase}:latest`;
+
+  if (listTagsOnly) {
+    console.log(`${GREEN}Available tags${NC} for ${imageBase}`);
+    console.log('');
+    const tags = await listImageTags(imageBase);
+    if (tags.length === 0) {
+      console.log(`${DIM}(no tags found)${NC}`);
+      return;
+    }
+    for (const tag of sortTagsForDisplay(tags)) {
+      console.log(`  ${tag}`);
+    }
+    console.log('');
+    console.log(`${DIM}Run: overwatch update --tag <tag>${NC}`);
+    return;
+  }
+
+  const image = process.env.IMAGE
+    || (tagArg ? `${imageBase}:${tagArg}` : null)
+    || `${imageBase}:latest`;
 
   console.log(`${GREEN}Overwatch Update${NC}`);
   console.log('================');
