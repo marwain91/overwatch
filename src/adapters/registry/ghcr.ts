@@ -1,17 +1,15 @@
 import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 
-interface GitHubRelease {
-  tag_name: string;
-  draft: boolean;
-  prerelease: boolean;
+interface GitHubTag {
+  name: string;
 }
 
 /**
  * GitHub Container Registry adapter.
  *
  * Container pulls use GHCR (requires `read:packages`). Tag listing reads
- * GitHub Releases (requires `repo` scope for private source repos) so the
+ * GitHub git tags (requires `repo` scope for private source repos) so the
  * UI surfaces coordinated cross-service release tags rather than per-image
  * registry tags (which diverge across backend/frontend/migrator images).
  */
@@ -53,7 +51,7 @@ export class GHCRAdapter implements RegistryAdapter {
       throw new Error('GHCR token not configured');
     }
 
-    const url = `https://api.github.com/repos/${this.config.repository}/releases?per_page=100`;
+    const url = `https://api.github.com/repos/${this.config.repository}/tags?per_page=100`;
     const response = await fetch(url, {
       headers: {
         Authorization: `Bearer ${this.config.token}`,
@@ -64,7 +62,7 @@ export class GHCRAdapter implements RegistryAdapter {
 
     if (response.status === 401 || response.status === 403) {
       throw new Error(
-        `GitHub API denied access (HTTP ${response.status}). GHCR_TOKEN needs the 'repo' scope to list releases for ${this.config.repository}.`,
+        `GitHub API denied access (HTTP ${response.status}). GHCR_TOKEN needs the 'repo' scope to list tags for ${this.config.repository}.`,
       );
     }
     if (response.status === 404) {
@@ -73,15 +71,14 @@ export class GHCRAdapter implements RegistryAdapter {
       );
     }
     if (!response.ok) {
-      throw new Error(`GitHub releases API failed (HTTP ${response.status}).`);
+      throw new Error(`GitHub tags API failed (HTTP ${response.status}).`);
     }
 
-    const releases = (await response.json()) as GitHubRelease[];
+    const gitTags = (await response.json()) as GitHubTag[];
     const pattern = this.config.tagPattern;
 
-    return releases
-      .filter((r) => !r.draft)
-      .map((r) => r.tag_name)
+    return gitTags
+      .map((t) => t.name)
       .filter((name) => (pattern ? pattern.test(name) : true))
       .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
   }
