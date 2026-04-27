@@ -49,9 +49,20 @@ Managed Infrastructure
 │   ├── {app1}-{tenant1}-migrator
 │   ├── {app2}-{tenant1}-backend
 │   └── ...
-├── Reverse Proxy (Traefik) — external
+├── Reverse Proxy (Traefik) — external, fully driven by `traefik:` in overwatch.yaml
 └── Backup Storage (S3) — external, per app
 ```
+
+## Traefik configuration model
+
+Traefik configuration lives under four scopes that all share one Zod schema:
+
+- **Global** (`overwatch.yaml.traefik`) — cert resolvers, entrypoints, dashboard, Overwatch self-routing, global middleware library, default middlewares.
+- **Per-app** (in `data/apps.d/<id>.json` under `traefik:`) — app-scoped middleware library, default middlewares for the app's services.
+- **Per-service** (in app definition `services[*].routing`) — middleware references, raw label escape hatch.
+- **Per-tenant** (`apps/<id>/tenants/<tid>/traefik.yaml`) — cert resolver override, host aliases, middleware overrides per service, raw labels per service.
+
+All four scopes are editable via Web UI, REST API, and CLI. The legacy `networking.cert_resolvers` field is shimmed into `traefik.cert_resolvers` at load time for backwards compatibility; run `overwatch config traefik migrate` to upgrade. See `docs/configuration.md` for the full schema.
 
 ## Data Flow
 

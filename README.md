@@ -54,6 +54,8 @@ overwatch init
 
 The wizard walks you through project name, domain, database (MariaDB/PostgreSQL), DNS provider for SSL, Google OAuth, and optional S3 backups. Everything has sensible defaults — press Enter to accept them.
 
+After install, the full Traefik configuration (cert resolvers, middlewares, dashboard, Overwatch self-routing) is editable from Sidebar → Traefik in the admin UI, the `/api/traefik/*` REST endpoints, or `overwatch config traefik` in the CLI. See [docs/traefik.md](docs/traefik.md).
+
 After confirming, it generates a complete deployment:
 
 ```

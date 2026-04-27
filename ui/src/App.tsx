@@ -13,6 +13,7 @@ import { BackupsPage } from './pages/BackupsPage';
 import { AdminsPage } from './pages/AdminsPage';
 import { DatabasePage } from './pages/DatabasePage';
 import { TenantDetailPage } from './pages/TenantDetailPage';
+import { InfrastructureTraefikPage } from './pages/InfrastructureTraefikPage';
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
         <Route path="apps/:appId/environment" element={<EnvironmentPage />} />
         <Route path="admins" element={<AdminsPage />} />
         <Route path="database" element={<DatabasePage />} />
+        <Route path="infrastructure/traefik" element={<InfrastructureTraefikPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

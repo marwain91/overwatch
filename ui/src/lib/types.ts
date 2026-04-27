@@ -9,8 +9,93 @@ export interface AppDefinition {
   admin_access?: AppAdminAccess;
   credentials?: { db_password_length?: number; jwt_secret_length?: number };
   default_image_tag: string;
+  traefik?: TraefikApp;
   createdAt: string;
   updatedAt: string;
+}
+
+// ─── Traefik types (mirror Zod schemas in src/models/traefik.ts) ──────────
+
+export type MiddlewareType =
+  | 'rateLimit' | 'basicAuth' | 'forwardAuth' | 'ipAllowList' | 'headers'
+  | 'redirectScheme' | 'redirectRegex' | 'compress' | 'retry' | 'circuitBreaker'
+  | 'replacePath' | 'replacePathRegex' | 'inFlightReq' | 'chain';
+
+export const MIDDLEWARE_TYPES: MiddlewareType[] = [
+  'rateLimit', 'basicAuth', 'forwardAuth', 'ipAllowList', 'headers',
+  'redirectScheme', 'redirectRegex', 'compress', 'retry', 'circuitBreaker',
+  'replacePath', 'replacePathRegex', 'inFlightReq', 'chain',
+];
+
+export interface MiddlewareSpec {
+  type: MiddlewareType;
+  [k: string]: unknown;
+}
+
+export type CertResolver = CertResolverDns | CertResolverHttp;
+
+export interface CertResolverDns {
+  name: string;
+  challenge: 'dns';
+  provider: string;
+  acme_email: string;
+  ca_server?: string;
+  env?: Record<string, string>;
+  domain_patterns?: string[];
+  resolvers?: string[];
+  delay_before_check?: string;
+}
+
+export interface CertResolverHttp {
+  name: string;
+  challenge: 'http';
+  acme_email: string;
+  ca_server?: string;
+  entrypoint?: string;
+  domain_patterns?: string[];
+}
+
+export interface Entrypoint {
+  name: string;
+  port: number;
+  redirect_to?: string;
+}
+
+export interface TraefikDashboard {
+  enabled: boolean;
+  host?: string;
+  cert_resolver?: string;
+  middlewares?: string[];
+  raw_labels?: Record<string, string>;
+}
+
+export interface TraefikOverwatchRouting {
+  host: string;
+  cert_resolver?: string;
+  middlewares?: string[];
+  raw_labels?: Record<string, string>;
+}
+
+export interface TraefikGlobal {
+  log_level?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+  dashboard?: TraefikDashboard;
+  entrypoints?: Entrypoint[];
+  cert_resolvers?: CertResolver[];
+  middlewares?: Record<string, MiddlewareSpec>;
+  default_middlewares?: string[];
+  overwatch?: TraefikOverwatchRouting;
+}
+
+export interface TraefikApp {
+  middlewares?: Record<string, MiddlewareSpec>;
+  default_middlewares?: string[];
+}
+
+export interface TraefikTenant {
+  cert_resolver?: string;
+  host_aliases?: string[];
+  middleware_overrides?: Record<string, string[]>;
+  raw_labels?: Record<string, Record<string, string>>;
 }
 
 export interface AppRegistry {

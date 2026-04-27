@@ -107,12 +107,14 @@ The deploy command writes into `$DEPLOY_DIR/`:
 |------|----------|
 | `infrastructure/docker-compose.yml` | Traefik + MariaDB stack |
 | `infrastructure/traefik/traefik.yml` | Traefik static config |
-| `infrastructure/traefik/dynamic.yml` | Global middlewares |
-| `infrastructure/traefik/dynamic/dashboard.yml` | Dashboard router + basic-auth |
+| `infrastructure/traefik/dynamic.yml` | Global middlewares + dashboard router |
+| `infrastructure/traefik/dynamic/dashboard.yml` | Removed when `traefik.dashboard` is configured (folded into `dynamic.yml`) |
 | `infrastructure/mariadb/init/.gitkeep` | Placeholder for init SQL |
 | `overwatch/docker-compose.yml` | Overwatch container (requires manual restart to apply) |
 
 Install-time variables (`${PROJECT_PREFIX}`, `${NETWORK_NAME}`, `${APPS_PATH_ON_HOST}`) are substituted from `overwatch.yaml`. Everything else (`${BASE_DOMAIN}`, `${MYSQL_ROOT_PASSWORD}`, `${CF_DNS_API_TOKEN}`, …) is left untouched and resolved by Docker Compose from your `.env` at compose time.
+
+**v1.6+**: when `traefik.cert_resolvers` is present in `overwatch.yaml`, the four Traefik-related templates above are generated from that config instead of being copied verbatim. Legacy installs (those still on `networking.cert_resolvers`) keep using the embedded static templates until they run `overwatch config traefik migrate`.
 
 ### What it does NOT do
 

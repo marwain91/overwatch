@@ -18,6 +18,10 @@ services:
     networks:
       - myapp-network
     labels:
+      # The labels below are the legacy hardcoded form. From v1.6 onward, configure
+      # these in `overwatch.yaml` under `traefik.overwatch` (host, cert_resolver,
+      # middlewares) and run `overwatch infra deploy` — the labels are generated
+      # from that config. See: docs/configuration.md → Traefik Configuration.
       - "traefik.enable=true"
       - "traefik.http.routers.overwatch.rule=Host(`overwatch.example.com`)"
       - "traefik.http.routers.overwatch.entrypoints=websecure"
@@ -236,6 +240,10 @@ services:
     networks:
       - myapp-network
     labels:
+      # The labels below are the legacy hardcoded form. From v1.6 onward, configure
+      # these in `overwatch.yaml` under `traefik.overwatch` (host, cert_resolver,
+      # middlewares) and run `overwatch infra deploy` — the labels are generated
+      # from that config. See: docs/configuration.md → Traefik Configuration.
       - "traefik.enable=true"
       - "traefik.http.routers.overwatch.rule=Host(`overwatch.example.com`)"
       - "traefik.http.routers.overwatch.entrypoints=websecure"

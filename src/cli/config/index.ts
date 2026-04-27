@@ -3,6 +3,7 @@ import { runConfigView } from './view';
 import { runConfigEdit } from './edit';
 import { runConfigDocs } from './docs';
 import { runConfigValidate } from './validate';
+import { runConfigTraefik } from './traefik';
 import { BOLD, CYAN, NC, DIM } from './utils';
 
 export async function runConfig(args: string[]): Promise<void> {
@@ -22,6 +23,8 @@ export async function runConfig(args: string[]): Promise<void> {
       return runConfigDocs(args.slice(1));
     case 'validate':
       return runConfigValidate(args.slice(1));
+    case 'traefik':
+      return runConfigTraefik(args.slice(1));
     case undefined:
       return showMenu();
     default:
@@ -42,6 +45,7 @@ function showHelp(): void {
   console.log(`    edit ${DIM}[section]${NC}                   Edit configuration interactively`);
   console.log(`    docs ${DIM}[section]${NC}                   Show available config options`);
   console.log(`    validate ${DIM}[--diff]${NC}                Validate config and environment`);
+  console.log(`    traefik ${DIM}<subcommand>${NC}             Manage Traefik (resolvers, migrate, reload)`);
   console.log('');
   console.log('  Examples:');
   console.log(`    ${DIM}overwatch config${NC}                  Interactive menu`);
