@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { Modal } from '../components/Modal';
 import { cn } from '../lib/cn';
 import {
+  useTraefik, useUpdateTraefik,
   useCertResolvers, useUpsertCertResolver, useDeleteCertResolver,
   useGlobalMiddlewares, useUpsertGlobalMiddleware, useDeleteGlobalMiddleware,
   useDashboardConfig, useUpdateDashboard,
@@ -10,11 +11,11 @@ import {
   useReloadTraefik,
 } from '../hooks/useTraefik';
 import {
-  CertResolver, CertResolverDns, CertResolverHttp, MiddlewareSpec, MIDDLEWARE_TYPES,
-  TraefikDashboard, TraefikOverwatchRouting,
+  CertResolver, CertResolverDns, CertResolverHttp, Entrypoint, MiddlewareSpec, MIDDLEWARE_TYPES,
+  TraefikDashboard, TraefikGlobal, TraefikOverwatchRouting, TlsTermination,
 } from '../lib/types';
 
-type Tab = 'resolvers' | 'middlewares' | 'dashboard' | 'overwatch';
+type Tab = 'resolvers' | 'middlewares' | 'entrypoints' | 'dashboard' | 'overwatch';
 
 export function InfrastructureTraefikPage() {
   const [tab, setTab] = useState<Tab>('resolvers');
@@ -22,10 +23,11 @@ export function InfrastructureTraefikPage() {
   const [reloadOpen, setReloadOpen] = useState(false);
 
   const tabs: Array<{ id: Tab; label: string }> = [
-    { id: 'resolvers',   label: 'Cert Resolvers' },
-    { id: 'middlewares', label: 'Middlewares' },
-    { id: 'dashboard',   label: 'Dashboard' },
-    { id: 'overwatch',   label: 'Overwatch Server' },
+    { id: 'resolvers',    label: 'Cert Resolvers' },
+    { id: 'middlewares',  label: 'Middlewares' },
+    { id: 'entrypoints',  label: 'Entrypoints' },
+    { id: 'dashboard',    label: 'Dashboard' },
+    { id: 'overwatch',    label: 'Overwatch Server' },
   ];
 
   return (
@@ -62,10 +64,13 @@ export function InfrastructureTraefikPage() {
         ))}
       </div>
 
-      {tab === 'resolvers'   && <CertResolversTab />}
-      {tab === 'middlewares' && <MiddlewaresTab />}
-      {tab === 'dashboard'   && <DashboardTab />}
-      {tab === 'overwatch'   && <OverwatchTab />}
+      <TlsTerminationBanner />
+
+      {tab === 'resolvers'    && <CertResolversTab />}
+      {tab === 'middlewares'  && <MiddlewaresTab />}
+      {tab === 'entrypoints'  && <EntrypointsTab />}
+      {tab === 'dashboard'    && <DashboardTab />}
+      {tab === 'overwatch'    && <OverwatchTab />}
 
       {reloadOpen && (
         <Modal title="Reload Traefik?" onClose={() => setReloadOpen(false)} size="md">
@@ -535,6 +540,262 @@ function OverwatchTab() {
         <button onClick={submit} className="rounded-lg bg-brand-600 px-3 py-2 text-white hover:bg-brand-500">Save</button>
       </div>
     </div>
+  );
+}
+
+// ─── TLS termination banner (global setting) ──────────────────────────────
+
+function TlsTerminationBanner() {
+  const { data, isLoading } = useTraefik();
+  const update = useUpdateTraefik();
+  const [editing, setEditing] = useState(false);
+
+  if (isLoading || !data) return null;
+  const termination: TlsTermination = data.tls_termination ?? 'traefik';
+  const upstreamEp = data.upstream_entrypoint ?? 'web';
+
+  const summary = termination === 'traefik'
+    ? 'Traefik terminates TLS using the configured cert resolvers.'
+    : `An upstream proxy terminates TLS. Traefik routes plain HTTP via the "${upstreamEp}" entrypoint.`;
+
+  return (
+    <div className="mb-4 rounded-lg border border-border bg-surface-subtle p-3 text-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-content-muted">TLS termination</span>
+            <span className={cn(
+              'rounded px-2 py-0.5 text-xs',
+              termination === 'traefik' ? 'bg-brand-600/20 text-brand-300' : 'bg-amber-600/20 text-amber-300',
+            )}>
+              {termination === 'traefik' ? 'Traefik' : 'Upstream proxy'}
+            </span>
+          </div>
+          <p className="mt-1 text-content-muted">{summary}</p>
+        </div>
+        <button onClick={() => setEditing(true)} className="text-xs text-content-muted hover:text-content-primary">Change</button>
+      </div>
+      {editing && (
+        <TlsTerminationModal
+          initial={{ tls_termination: termination, upstream_entrypoint: upstreamEp }}
+          fullConfig={data}
+          onClose={() => setEditing(false)}
+          onSubmit={(patch) => {
+            const next: TraefikGlobal = { ...data, ...patch };
+            update.mutate(next, {
+              onSuccess: () => { toast.success('TLS termination updated. Run Reload Traefik for entrypoint changes to take effect.'); setEditing(false); },
+              onError: (err: any) => toast.error(err?.message || 'Save failed'),
+            });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function TlsTerminationModal({
+  initial, fullConfig, onClose, onSubmit,
+}: {
+  initial: { tls_termination: TlsTermination; upstream_entrypoint: string };
+  fullConfig: TraefikGlobal;
+  onClose: () => void;
+  onSubmit: (patch: Partial<TraefikGlobal>) => void;
+}) {
+  const [termination, setTermination] = useState<TlsTermination>(initial.tls_termination);
+  const [upstreamEp, setUpstreamEp] = useState(initial.upstream_entrypoint);
+  const knownEntrypoints = (fullConfig.entrypoints ?? []).map(e => e.name);
+
+  return (
+    <Modal title="TLS termination" onClose={onClose}>
+      <div className="space-y-3 text-sm">
+        <Field label="Mode">
+          <select value={termination} onChange={e => setTermination(e.target.value as TlsTermination)} className={inputCls}>
+            <option value="traefik">Traefik (default — Traefik manages certs)</option>
+            <option value="upstream">Upstream proxy (TLS terminates before Traefik)</option>
+          </select>
+        </Field>
+        {termination === 'upstream' && (
+          <Field label="Upstream entrypoint">
+            <input
+              value={upstreamEp}
+              onChange={e => setUpstreamEp(e.target.value)}
+              className={inputCls}
+              placeholder="web"
+              list="known-entrypoints"
+            />
+            <datalist id="known-entrypoints">
+              {knownEntrypoints.map(n => <option key={n} value={n} />)}
+            </datalist>
+            <p className="mt-1 text-xs text-content-faint">
+              Name of the entrypoint Traefik listens on (no TLS). Make sure it has <code>forwarded_headers.trusted_ips</code> configured (Entrypoints tab) so Traefik trusts X-Forwarded-* from your upstream.
+            </p>
+          </Field>
+        )}
+        {termination === 'upstream' && (
+          <div className="rounded-md bg-amber-600/10 p-2 text-xs text-amber-300">
+            Apps will see the request scheme/IP via X-Forwarded-* headers. If the upstream entrypoint doesn't trust the upstream's IP, headers are dropped and apps see the upstream as the client.
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <button onClick={onClose} className="rounded-lg border border-border px-3 py-2 text-content-secondary hover:bg-surface-subtle">Cancel</button>
+          <button
+            onClick={() => onSubmit({
+              tls_termination: termination,
+              upstream_entrypoint: termination === 'upstream' ? (upstreamEp || 'web') : undefined,
+            })}
+            className="rounded-lg bg-brand-600 px-3 py-2 text-white hover:bg-brand-500"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ─── Entrypoints tab ───────────────────────────────────────────────────────
+
+function EntrypointsTab() {
+  const { data, isLoading } = useTraefik();
+  const update = useUpdateTraefik();
+  const [editing, setEditing] = useState<Entrypoint | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  if (isLoading || !data) return <p className="text-sm text-content-muted">Loading...</p>;
+  const entrypoints = data.entrypoints ?? [
+    { name: 'web', port: 80, redirect_to: 'websecure' },
+    { name: 'websecure', port: 443 },
+  ];
+
+  const save = (next: Entrypoint[]) => {
+    const patch: TraefikGlobal = { ...data, entrypoints: next };
+    update.mutate(patch, {
+      onSuccess: () => toast.success('Saved. Run Reload Traefik for entrypoint changes to take effect.'),
+      onError: (err: any) => toast.error(err?.message || 'Save failed'),
+    });
+  };
+
+  return (
+    <div>
+      <p className="mb-3 text-xs text-content-faint">
+        Entrypoints define the ports Traefik listens on. Configure <code>forwarded_headers</code> when sitting behind Cloudflare / ALB / nginx etc., or <code>proxy_protocol</code> for HAProxy / NLB.
+      </p>
+      <div className="mb-4 flex justify-end">
+        <button onClick={() => setAdding(true)} className="rounded-lg bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-500">
+          Add entrypoint
+        </button>
+      </div>
+
+      <div className="space-y-2">
+        {entrypoints.map(ep => (
+          <div key={ep.name} className="rounded-lg border border-border bg-surface-raised p-3">
+            <div className="flex items-start justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-content-primary">{ep.name}</span>
+                  <span className="rounded bg-surface-subtle px-2 py-0.5 text-xs text-content-muted">:{ep.port}</span>
+                  {ep.redirect_to && <span className="text-xs text-content-faint">→ {ep.redirect_to}</span>}
+                </div>
+                {ep.forwarded_headers && (
+                  <div className="mt-1 text-xs text-content-muted">trust X-Forwarded-* from: {ep.forwarded_headers.trusted_ips.join(', ')}</div>
+                )}
+                {ep.proxy_protocol && (
+                  <div className="mt-1 text-xs text-content-muted">PROXY protocol from: {ep.proxy_protocol.trusted_ips.join(', ')}</div>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setEditing(ep)} className="text-xs text-content-muted hover:text-content-primary">Edit</button>
+                <button
+                  onClick={() => {
+                    if (confirm(`Delete entrypoint "${ep.name}"?`)) {
+                      save(entrypoints.filter(e => e.name !== ep.name));
+                    }
+                  }}
+                  className="text-xs text-red-400 hover:text-red-300"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {(editing || adding) && (
+        <EntrypointModal
+          initial={editing ?? undefined}
+          onClose={() => { setEditing(null); setAdding(false); }}
+          onSubmit={(ep) => {
+            const idx = entrypoints.findIndex(e => e.name === ep.name);
+            const next = idx >= 0
+              ? entrypoints.map((e, i) => i === idx ? ep : e)
+              : [...entrypoints, ep];
+            save(next);
+            setEditing(null);
+            setAdding(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EntrypointModal({
+  initial, onClose, onSubmit,
+}: {
+  initial?: Entrypoint;
+  onClose: () => void;
+  onSubmit: (ep: Entrypoint) => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [port, setPort] = useState(String(initial?.port ?? 80));
+  const [redirectTo, setRedirectTo] = useState(initial?.redirect_to ?? '');
+  const [forwardedTrusted, setForwardedTrusted] = useState((initial?.forwarded_headers?.trusted_ips ?? []).join(', '));
+  const [proxyTrusted, setProxyTrusted] = useState((initial?.proxy_protocol?.trusted_ips ?? []).join(', '));
+
+  const submit = () => {
+    if (!name.trim()) return toast.error('Name required');
+    const portNum = Number(port);
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) return toast.error('Port must be 1–65535');
+    const fwIps = forwardedTrusted.split(',').map(s => s.trim()).filter(Boolean);
+    const ppIps = proxyTrusted.split(',').map(s => s.trim()).filter(Boolean);
+    const ep: Entrypoint = {
+      name: name.trim(),
+      port: portNum,
+      redirect_to: redirectTo.trim() || undefined,
+      forwarded_headers: fwIps.length > 0 ? { trusted_ips: fwIps } : undefined,
+      proxy_protocol: ppIps.length > 0 ? { trusted_ips: ppIps } : undefined,
+    };
+    onSubmit(ep);
+  };
+
+  return (
+    <Modal title={initial ? `Edit "${initial.name}"` : 'Add entrypoint'} onClose={onClose}>
+      <div className="space-y-3 text-sm">
+        <Field label="Name">
+          <input value={name} onChange={e => setName(e.target.value)} disabled={!!initial} className={inputCls} placeholder="web" />
+        </Field>
+        <Field label="Port">
+          <input type="number" value={port} onChange={e => setPort(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Redirect to (optional)">
+          <input value={redirectTo} onChange={e => setRedirectTo(e.target.value)} className={inputCls} placeholder="websecure" />
+          <p className="mt-1 text-xs text-content-faint">Set on the HTTP entrypoint to redirect to HTTPS. Leave empty when sitting behind an upstream HTTPS terminator.</p>
+        </Field>
+        <Field label="Forwarded headers — trusted IPs">
+          <input value={forwardedTrusted} onChange={e => setForwardedTrusted(e.target.value)} className={inputCls} placeholder="10.0.0.0/8, 172.16.0.0/12" />
+          <p className="mt-1 text-xs text-content-faint">CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust. Required when behind Cloudflare / ALB / nginx.</p>
+        </Field>
+        <Field label="PROXY protocol — trusted IPs">
+          <input value={proxyTrusted} onChange={e => setProxyTrusted(e.target.value)} className={inputCls} placeholder="10.0.0.0/8" />
+          <p className="mt-1 text-xs text-content-faint">CIDRs allowed to send PROXY protocol headers (HAProxy / AWS NLB).</p>
+        </Field>
+        <div className="flex justify-end gap-2 pt-2">
+          <button onClick={onClose} className="rounded-lg border border-border px-3 py-2 text-content-secondary hover:bg-surface-subtle">Cancel</button>
+          <button onClick={submit} className="rounded-lg bg-brand-600 px-3 py-2 text-white hover:bg-brand-500">Save</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

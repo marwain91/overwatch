@@ -187,13 +187,37 @@ export type CertResolver = z.infer<typeof CertResolverSchema>;
 
 // ─── Entrypoints ────────────────────────────────────────────────────────────
 
+// Trust configuration for upstream proxies. Required when Overwatch sits behind
+// another reverse proxy that terminates TLS (Cloudflare, AWS ALB/NLB, an upstream
+// nginx/HAProxy, another Traefik). Without these, Traefik strips X-Forwarded-*
+// headers from untrusted senders and your apps see the upstream's IP instead of
+// the real client.
+export const ForwardedHeadersSchema = z.object({
+  trusted_ips: z.array(z.string()).min(1).describe('CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust'),
+});
+
+// PROXY protocol v1/v2 (HAProxy, AWS NLB). Like forwarded_headers but at the TCP
+// layer — preserves real client IP without parsing HTTP headers.
+export const ProxyProtocolSchema = z.object({
+  trusted_ips: z.array(z.string()).min(1).describe('CIDRs of upstream proxies allowed to send PROXY protocol headers'),
+});
+
 export const EntrypointSchema = z.object({
   name: z.string().min(1),
   port: z.number().int().min(1).max(65535),
-  redirect_to: z.string().optional().describe('Name of another entrypoint to redirect HTTP→HTTPS to'),
+  redirect_to: z.string().optional().describe('Name of another entrypoint to redirect HTTP→HTTPS to (omit when sitting behind an upstream HTTPS terminator)'),
+  forwarded_headers: ForwardedHeadersSchema.optional().describe('Trust X-Forwarded-* headers from these upstream IPs'),
+  proxy_protocol: ProxyProtocolSchema.optional().describe('Accept PROXY protocol from these upstream IPs'),
 });
 
 export type Entrypoint = z.infer<typeof EntrypointSchema>;
+
+// TLS termination mode. `traefik` (default): Traefik terminates TLS and uses a
+// cert resolver. `upstream`: an upstream proxy already terminates TLS — Traefik
+// listens on the upstream entrypoint (default `web`) without TLS labels. Can be
+// set globally, per-service (overrides global), and per-tenant (overrides both).
+export const TlsTerminationSchema = z.enum(['traefik', 'upstream']);
+export type TlsTermination = z.infer<typeof TlsTerminationSchema>;
 
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 
@@ -227,6 +251,8 @@ export const TraefikGlobalSchema = z.object({
   middlewares: z.record(MiddlewareSpecSchema).optional().describe('Global middleware library, referenceable from any app/tenant/dashboard/overwatch router'),
   default_middlewares: z.array(z.string()).optional().describe('Middleware names applied to every generated router unless explicitly omitted'),
   overwatch: TraefikOverwatchSchema.optional().describe('Routing for the Overwatch admin server itself'),
+  tls_termination: TlsTerminationSchema.optional().describe('Where TLS terminates. "traefik" (default): Traefik manages certs. "upstream": an upstream proxy terminates TLS; Traefik routes plain HTTP. Per-service and per-tenant overrides win.'),
+  upstream_entrypoint: z.string().optional().describe('Name of the entrypoint Traefik listens on when behind an upstream SSL terminator (default: "web")'),
 }).superRefine((cfg, ctx) => {
   // Cert resolver names must be unique within the list.
   if (cfg.cert_resolvers) {
@@ -276,6 +302,7 @@ export const TraefikTenantSchema = z.object({
   host_aliases: z.array(z.string()).optional().describe('Additional Host(...) matchers on the primary service'),
   middleware_overrides: z.record(z.array(z.string())).optional().describe('serviceName → middleware names. REPLACES the app\'s middleware list for that service.'),
   raw_labels: PerServiceRawLabelsSchema.optional().describe('serviceName → label key/value map (escape hatch, denylist enforced)'),
+  tls_termination: TlsTerminationSchema.optional().describe('Override TLS termination mode for this tenant'),
 });
 
 export type TraefikTenant = z.infer<typeof TraefikTenantSchema>;

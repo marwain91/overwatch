@@ -144,6 +144,63 @@ Override semantics: `middleware_overrides` is a full replacement, not a merge. `
 - **`overwatch infra deploy`** regenerates `traefik.yml`, `dynamic.yml`, the infrastructure compose, and the Overwatch compose from the global config. For legacy installs, it keeps the static templates.
 - **Frozen snapshots**: each tenant has a frozen copy of its app definition (incl. `traefik.middlewares`). Middleware changes don't affect existing tenants until you explicitly `tenant update`.
 
+## Behind an upstream SSL terminator
+
+Some setups place Overwatch behind another reverse proxy that handles TLS — Cloudflare full-strict, AWS ALB / NLB, an upstream nginx or HAProxy, even another Traefik. v1.6.1 supports this with three knobs:
+
+```yaml
+traefik:
+  tls_termination: upstream     # global default. Per-service and per-tenant overrides win.
+  upstream_entrypoint: web      # name of the entrypoint Traefik listens on (default: web)
+
+  entrypoints:
+    - name: web
+      port: 80
+      forwarded_headers:
+        # CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust.
+        # Without this, Traefik strips them and apps see the upstream's IP.
+        trusted_ips: ["10.0.0.0/8", "172.16.0.0/12"]
+      proxy_protocol:
+        # PROXY protocol v1/v2 for HAProxy / AWS NLB. Optional.
+        trusted_ips: ["10.0.0.0/8"]
+      # No `redirect_to` — the upstream already terminates HTTPS.
+```
+
+When `tls_termination: upstream` is in effect for a router, the generator:
+
+- Routes the service to `upstream_entrypoint` (default `web`) instead of `websecure`.
+- Drops `tls=true` and `tls.certresolver` from the labels — Traefik will not try to manage certs for that route.
+
+**Mixed mode is supported.** You can keep `tls_termination: traefik` globally (so Overwatch's own admin and most tenants terminate at Traefik with Let's Encrypt) and set `tls_termination: upstream` on specific tenants that sit behind Cloudflare. Cert resolvers stay defined and usable.
+
+### Per-service / per-tenant override
+
+```jsonc
+// data/apps.d/myapp.json — service-level override
+{
+  "services": [
+    { "name": "web", "routing": { "tls_termination": "upstream" } }
+  ]
+}
+```
+
+```yaml
+# apps/myapp/tenants/cf-tenant/traefik.yaml — tenant-level override (wins over service)
+tls_termination: upstream
+```
+
+### Common topologies
+
+| Upstream | What to set |
+|---|---|
+| **Cloudflare full / full-strict** | `tls_termination: upstream`, `forwarded_headers.trusted_ips: [<Cloudflare IPs>]`, omit `redirect_to` on `web` |
+| **AWS ALB** | `tls_termination: upstream`, `forwarded_headers.trusted_ips: [<VPC CIDR>]` |
+| **AWS NLB / HAProxy with PROXY** | as above, plus `proxy_protocol.trusted_ips` |
+| **Upstream nginx terminating TLS** | `tls_termination: upstream`, `forwarded_headers.trusted_ips: [<nginx IP>]` |
+| **Direct (default)** | leave `tls_termination` unset; Traefik manages certs via `cert_resolvers` |
+
+After changing entrypoint config or `tls_termination`, run **Reload Traefik** (UI button or `overwatch config traefik reload`) — those settings are read at start-time.
+
 ## Migration from `networking.cert_resolvers`
 
 ```bash

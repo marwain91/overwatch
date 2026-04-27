@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildTraefikLabels } from '../services/traefikLabels';
-import type { AppDefinition } from '../models/app';
+import { buildTraefikLabels, resolveTlsTermination } from '../services/traefikLabels';
+import type { AppDefinition, AppService } from '../models/app';
 import type { TraefikGlobal, TraefikTenant } from '../models/traefik';
 
 function baseApp(traefikOverride?: Partial<AppDefinition['traefik']>): AppDefinition {
@@ -148,6 +148,106 @@ describe('buildTraefikLabels', () => {
     expect(joined).toMatch(/traefik\.enable=true/);
   });
 
+  it('routes through the upstream entrypoint and skips TLS labels when termination=upstream', () => {
+    const traefik: TraefikGlobal = {
+      log_level: 'INFO',
+      tls_termination: 'upstream',
+      upstream_entrypoint: 'web',
+    };
+    const labels = buildTraefikLabels({
+      app: baseApp(),
+      tenantId: 't1',
+      domain: 't1.app.example.com',
+      service: baseService as any,
+      certResolverName: 'cf-prod', // present but should be ignored
+      traefik,
+    });
+    const joined = labels.join('\n');
+    expect(joined).toMatch(/traefik\.http\.routers\.myapp-t1-web\.entrypoints=web/);
+    expect(joined).not.toMatch(/traefik\.http\.routers\.myapp-t1-web\.tls=true/);
+    expect(joined).not.toMatch(/certresolver/);
+  });
+
+  it('per-service tls_termination overrides the global default', () => {
+    const traefik: TraefikGlobal = { log_level: 'INFO', tls_termination: 'traefik' };
+    const svc: AppService = {
+      ...baseService,
+      routing: { enabled: true, strip_prefix: false, tls_termination: 'upstream' },
+    } as any;
+    const labels = buildTraefikLabels({
+      app: baseApp(),
+      tenantId: 't1',
+      domain: 't1.app.example.com',
+      service: svc,
+      certResolverName: 'cf-prod',
+      traefik,
+    });
+    const joined = labels.join('\n');
+    expect(joined).toMatch(/traefik\.http\.routers\.myapp-t1-web\.entrypoints=web/);
+    expect(joined).not.toMatch(/tls=true/);
+  });
+
+  it('per-tenant tls_termination overrides the per-service setting', () => {
+    const traefik: TraefikGlobal = { log_level: 'INFO', tls_termination: 'traefik' };
+    const svc: AppService = {
+      ...baseService,
+      routing: { enabled: true, strip_prefix: false, tls_termination: 'traefik' },
+    } as any;
+    const tenant: TraefikTenant = { tls_termination: 'upstream' };
+    const labels = buildTraefikLabels({
+      app: baseApp(),
+      tenantId: 't1',
+      domain: 't1.app.example.com',
+      service: svc,
+      certResolverName: 'cf-prod',
+      traefik,
+      tenantOverrides: tenant,
+    });
+    const joined = labels.join('\n');
+    expect(joined).toMatch(/entrypoints=web/);
+    expect(joined).not.toMatch(/tls=true/);
+  });
+
+  it('honors a custom upstream_entrypoint name', () => {
+    const traefik: TraefikGlobal = { log_level: 'INFO', tls_termination: 'upstream', upstream_entrypoint: 'edge' };
+    const labels = buildTraefikLabels({
+      app: baseApp(),
+      tenantId: 't1',
+      domain: 't1.app.example.com',
+      service: baseService as any,
+      certResolverName: 'cf-prod',
+      traefik,
+    });
+    expect(labels.join('\n')).toMatch(/entrypoints=edge/);
+  });
+});
+
+describe('resolveTlsTermination', () => {
+  const baseSvc: AppService = {
+    name: 'web', required: true, is_init_container: false, ports: { internal: 3000 },
+    routing: { enabled: true, strip_prefix: false },
+  } as any;
+
+  it('defaults to "traefik" when nothing is set', () => {
+    expect(resolveTlsTermination(baseSvc, undefined, undefined)).toBe('traefik');
+  });
+
+  it('uses global default when nothing else is set', () => {
+    expect(resolveTlsTermination(baseSvc, { log_level: 'INFO', tls_termination: 'upstream' }, undefined)).toBe('upstream');
+  });
+
+  it('service overrides global', () => {
+    const svc = { ...baseSvc, routing: { enabled: true, strip_prefix: false, tls_termination: 'upstream' as const } } as any;
+    expect(resolveTlsTermination(svc, { log_level: 'INFO', tls_termination: 'traefik' }, undefined)).toBe('upstream');
+  });
+
+  it('tenant overrides service', () => {
+    const svc = { ...baseSvc, routing: { enabled: true, strip_prefix: false, tls_termination: 'upstream' as const } } as any;
+    expect(resolveTlsTermination(svc, undefined, { tls_termination: 'traefik' })).toBe('traefik');
+  });
+});
+
+describe('buildTraefikLabels (chain expansion regression)', () => {
   it('expands chain middleware references with router-scoped names', () => {
     const traefik: TraefikGlobal = {
       log_level: 'INFO',

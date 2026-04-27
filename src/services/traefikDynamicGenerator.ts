@@ -26,6 +26,17 @@ export function buildTraefikStaticYml(traefik: TraefikGlobal): string {
       eobj.http = eobj.http || {};
       eobj.http.middlewares = traefik.default_middlewares!.map(m => `${m}@file`);
     }
+    // Trust X-Forwarded-* headers from declared upstream proxies. Without this,
+    // Traefik strips forwarded headers from "untrusted" senders and apps see the
+    // upstream proxy's IP instead of the real client.
+    if (ep.forwarded_headers && ep.forwarded_headers.trusted_ips.length > 0) {
+      eobj.forwardedHeaders = { trustedIPs: ep.forwarded_headers.trusted_ips };
+    }
+    // PROXY protocol v1/v2 — for HAProxy / AWS NLB / similar that preserve client
+    // IP at the TCP layer rather than via HTTP headers.
+    if (ep.proxy_protocol && ep.proxy_protocol.trusted_ips.length > 0) {
+      eobj.proxyProtocol = { trustedIPs: ep.proxy_protocol.trusted_ips };
+    }
     entryPointsObj[ep.name] = eobj;
   }
 
