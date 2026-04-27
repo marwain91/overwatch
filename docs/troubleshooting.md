@@ -21,11 +21,14 @@
 **Symptom:** "Failed to login to registry" or tag fetching fails.
 
 **Solutions:**
-1. Verify registry credentials environment variables are set (check the app's registry config)
-2. For GHCR: Ensure token has `read:packages` scope
-3. For ECR: Ensure AWS credentials have ECR pull permissions
-4. For Docker Hub: Use access token instead of password
-5. Test registry connection via the app settings page ("Test Connection" button)
+1. Verify registry credentials environment variables are set (check the app's registry config — names live in `auth.*_env` and `api_url`).
+2. **GHCR with a PAT:** ensure the token has `read:packages` (and `repo` for tag listing on private source repos).
+3. **GHCR with a GitHub App:** confirm the App is *installed* on the specific repository, has `Contents:Read`, `Metadata:Read`, and `Packages:Read`, and that `GH_APP_ID` / `GH_APP_INSTALLATION_ID` / `GH_APP_PRIVATE_KEY` are set. Full guide: [registry-github-app.md](./registry-github-app.md).
+4. **GitLab:** token needs `read_api` + `read_registry`. Group Access Tokens are recommended for org repos. Self-hosted? Set `api_url` to the GitLab web URL (registry host and API host commonly differ). Full guide: [registry-gitlab.md](./registry-gitlab.md).
+5. **GitLab self-hosted on a private network:** the SSRF guard refuses RFC1918 / loopback addresses. Set `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL=1` if intentional.
+6. **ECR:** AWS credentials need ECR pull permissions.
+7. **Docker Hub:** use an access token, not the account password.
+8. Hit the app settings page → "Test Registry" — the response surfaces the exact failure mode (401 / 404 / network).
 
 ## Backup Repository Locked
 

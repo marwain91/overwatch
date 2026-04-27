@@ -34,10 +34,11 @@ Overwatch Instance
 │   ├── MySQL/MariaDB adapter
 │   └── PostgreSQL adapter
 └── Registry Adapter (per app)
-    ├── GHCR adapter
+    ├── GHCR adapter (PAT or GitHub App via githubApp service)
+    ├── GitLab adapter (SaaS + self-hosted)
     ├── Docker Hub adapter
     ├── ECR adapter
-    └── Custom adapter
+    └── Custom adapter (shares urlValidation with GitLab self-hosted)
 
 Managed Infrastructure
 ├── Shared Database Engine
@@ -114,13 +115,15 @@ overwatch/
 │   │   │   ├── mysql.ts          # MySQL/MariaDB implementation
 │   │   │   ├── postgres.ts       # PostgreSQL implementation
 │   │   │   └── index.ts          # Factory function
-│   │   └── registry/             # GHCR, Docker Hub, ECR adapters
-│   │       ├── types.ts          # RegistryAdapter interface
-│   │       ├── ghcr.ts           # GitHub Container Registry
+│   │   └── registry/             # Container registry adapters
+│   │       ├── types.ts          # RegistryAdapter interface + RegistryAdapterConfig
+│   │       ├── ghcr.ts           # GitHub Container Registry (PAT + GitHub App paths)
+│   │       ├── gitlab.ts         # GitLab Container Registry (SaaS + self-hosted)
 │   │       ├── dockerhub.ts      # Docker Hub
 │   │       ├── ecr.ts            # Amazon ECR
-│   │       ├── custom.ts         # Custom registries
-│   │       └── index.ts          # Factory function
+│   │       ├── custom.ts         # Custom V2 registries
+│   │       ├── urlValidation.ts  # SSRF guard shared by gitlab + custom
+│   │       └── index.ts          # Factory function + per-app adapter cache
 │   ├── services/
 │   │   ├── index.ts              # Service barrel exports
 │   │   ├── app.ts                # App CRUD (data/apps.d/ + data/apps.runtime.json)
@@ -129,6 +132,8 @@ overwatch/
 │   │   ├── dockerEvents.ts       # Docker event stream listener
 │   │   ├── composeGenerator.ts   # Per-tenant docker-compose generation
 │   │   ├── backup.ts             # Backup/restore with Restic
+│   │   ├── backupCache.ts        # In-process TTL cache for backup info/snapshots
+│   │   ├── githubApp.ts          # GitHub App installation token mint + cache
 │   │   ├── scheduler.ts          # Per-app backup cron scheduler
 │   │   ├── users.ts              # Admin user management
 │   │   ├── envVars.ts            # Environment variable management

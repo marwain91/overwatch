@@ -41,6 +41,43 @@ All API endpoints require authentication via Bearer token (except `/api/auth/*` 
 }
 ```
 
+The `registry` block accepts these auth shapes:
+
+| Registry type | Auth type | Required `auth` fields | Notes |
+|---|---|---|---|
+| `ghcr` | `token` | `token_env` | PAT with `read:packages` (and `repo` for private source) |
+| `ghcr` | `github_app` | `app_id_env`, `installation_id_env`, `private_key_env` | Org repos — see [registry-github-app.md](./registry-github-app.md) |
+| `gitlab` | `token` | `token_env` | Add top-level `api_url` for self-hosted; see [registry-gitlab.md](./registry-gitlab.md) |
+| `dockerhub` | `basic` | `username_env`, `token_env` | |
+| `ecr` | `aws_iam` | `aws_region_env` (+ standard AWS env) | |
+| `custom` | `token` or `basic` | varies | |
+
+GitHub App example:
+```json
+"registry": {
+  "type": "ghcr",
+  "url": "ghcr.io",
+  "repository": "acme/myapp",
+  "auth": {
+    "type": "github_app",
+    "app_id_env": "GH_APP_ID",
+    "installation_id_env": "GH_APP_INSTALLATION_ID",
+    "private_key_env": "GH_APP_PRIVATE_KEY"
+  }
+}
+```
+
+GitLab self-hosted example:
+```json
+"registry": {
+  "type": "gitlab",
+  "url": "registry.acme.com:5050",
+  "api_url": "https://gitlab.acme.com",
+  "repository": "group/sub/project",
+  "auth": { "type": "token", "token_env": "GITLAB_TOKEN" }
+}
+```
+
 ## Tenants
 
 All tenant endpoints are scoped to an app: `/api/apps/:appId/tenants`.
