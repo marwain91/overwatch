@@ -1,5 +1,8 @@
 import { AppDefinition, AppService } from '../models/app';
 import { OverwatchConfig } from '../config/schema';
+import type { TraefikTenant } from '../models/traefik';
+import { resolveCertResolver } from '../config/loader';
+import { buildTraefikLabels } from './traefikLabels';
 
 /** Escape a value for safe use inside a double-quoted YAML string */
 function yamlEscape(value: string): string {
@@ -10,17 +13,13 @@ function yamlEscape(value: string): string {
     .replace(/\r/g, '\\r');
 }
 
-/** Validate that a value is safe to embed in a Traefik backtick-delimited rule */
-function sanitizeTraefikValue(value: string): string {
-  // Backticks and double quotes would break the label structure
-  return value.replace(/[`"\\]/g, '');
-}
-
 interface GenerateOptions {
   app: AppDefinition;
   tenantId: string;
   domain: string;
   config: OverwatchConfig;
+  /** Optional per-tenant Traefik overrides (host aliases, middleware overrides, raw labels). */
+  tenantTraefik?: TraefikTenant;
 }
 
 /**
@@ -28,8 +27,18 @@ interface GenerateOptions {
  * Produces YAML as a string (no external YAML library dependency needed).
  */
 export function generateComposeFile(options: GenerateOptions): string {
-  const { app, tenantId, domain, config } = options;
+  const { app, tenantId, domain, config, tenantTraefik } = options;
   const prefix = config.project.prefix;
+  // Determine the cert resolver name: explicit tenant override > domain pattern > http fallback.
+  // For legacy installs (no traefik.cert_resolvers), the resolver helper still works against
+  // the synthesized shim; the resulting name is what the legacy tenant.yml template carries.
+  let certResolverName: string;
+  try {
+    certResolverName = resolveCertResolver(domain, config.traefik, tenantTraefik?.cert_resolver).name;
+  } catch (err) {
+    // Fallback for misconfigured legacy installs — old behavior used the env var.
+    certResolverName = '${CERT_RESOLVER}';
+  }
   const externalNetwork = config.networking?.external_network || `${prefix}-network`;
   const internalNetworkTemplate = config.networking?.internal_network_template || `${prefix}-\${tenantId}-internal`;
   const internalNetwork = internalNetworkTemplate
@@ -161,49 +170,19 @@ export function generateComposeFile(options: GenerateOptions): string {
       }
     }
 
-    // Traefik labels for routable services
-    if (!service.is_init_container && service.ports?.internal && service.routing?.enabled !== false) {
-      const routerName = `${app.id}-${tenantId}-${service.name}`;
-      const pathPrefix = service.routing?.path_prefix;
-      const priority = service.routing?.priority;
-
+    // Traefik labels for routable services (built via traefikLabels.ts)
+    const traefikLabelLines = buildTraefikLabels({
+      app,
+      tenantId,
+      domain,
+      service,
+      certResolverName,
+      traefik: config.traefik,
+      tenantOverrides: tenantTraefik,
+    });
+    if (traefikLabelLines.length > 0) {
       lines.push('    labels:');
-      lines.push('      - "traefik.enable=true"');
-
-      // Host rule with optional path prefix(es)
-      const safeDomain = sanitizeTraefikValue(domain);
-      let rule = `Host(\`${safeDomain}\`)`;
-      const additionalPrefixes = service.routing?.additional_path_prefixes;
-      if (pathPrefix && additionalPrefixes && additionalPrefixes.length > 0) {
-        const allPrefixes = [pathPrefix, ...additionalPrefixes];
-        rule += ` && (${allPrefixes.map(p => `PathPrefix(\`${sanitizeTraefikValue(p)}\`)`).join(' || ')})`;
-      } else if (pathPrefix) {
-        rule += ` && PathPrefix(\`${sanitizeTraefikValue(pathPrefix)}\`)`;
-      }
-      lines.push(`      - "traefik.http.routers.${routerName}.rule=${rule}"`);
-      lines.push(`      - "traefik.http.routers.${routerName}.entrypoints=websecure"`);
-      lines.push(`      - "traefik.http.routers.${routerName}.tls=true"`);
-
-      if (priority !== undefined) {
-        const safePriority = Number.isInteger(Number(priority)) ? Number(priority) : undefined;
-        if (safePriority !== undefined) {
-          lines.push(`      - "traefik.http.routers.${routerName}.priority=${safePriority}"`);
-        }
-      }
-
-      // Cert resolver: use env var set per-tenant based on domain matching
-      lines.push(`      - "traefik.http.routers.${routerName}.tls.certresolver=\${CERT_RESOLVER}"`);
-
-      // StripPrefix middleware
-      if (pathPrefix && service.routing?.strip_prefix) {
-        const allPrefixes = additionalPrefixes && additionalPrefixes.length > 0
-          ? [pathPrefix, ...additionalPrefixes].map(p => sanitizeTraefikValue(p)).join(',')
-          : sanitizeTraefikValue(pathPrefix);
-        lines.push(`      - "traefik.http.middlewares.${routerName}-strip.stripprefix.prefixes=${allPrefixes}"`);
-        lines.push(`      - "traefik.http.routers.${routerName}.middlewares=${routerName}-strip"`);
-      }
-
-      lines.push(`      - "traefik.http.services.${routerName}.loadbalancer.server.port=${service.ports.internal}"`);
+      lines.push(...traefikLabelLines);
     }
   }
 

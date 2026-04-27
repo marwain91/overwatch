@@ -18,6 +18,7 @@ import envVarsRouter from './routes/envVars';
 import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
 import databaseRouter from './routes/database';
+import traefikRouter from './routes/traefik';
 import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions } from './services/envVars';
 import { startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns } from './services/scheduler';
 import { flushAuditLog } from './middleware/audit';
@@ -133,6 +134,7 @@ async function start() {
   app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
   app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
   app.use('/api/database', authMiddleware, apiLimiter, auditLog, databaseRouter);
+  app.use('/api/traefik', authMiddleware, apiLimiter, destructiveLimiter, auditLog, traefikRouter);
 
   // Serve frontend for all other routes (SPA fallback)
   app.get('*', (_req, res) => {

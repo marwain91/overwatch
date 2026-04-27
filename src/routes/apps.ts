@@ -7,6 +7,7 @@ import { validateAppId } from '../middleware/validators';
 import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
+import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
 
 const router = Router();
 
@@ -96,6 +97,18 @@ router.post('/:appId/registry/test', validateAppId, requireRole('editor'), async
     console.error(`Registry test failed for app ${app.id}:`, error.message);
     res.status(500).json({ success: false, error: 'Registry connection failed. Check credentials and configuration.' });
   }
+}));
+
+// App-scoped Traefik config — middleware library + default_middlewares.
+// Editor+ matches the rest of the app/tenant editing surface.
+router.get('/:appId/traefik', validateAppId, asyncHandler(async (req, res) => {
+  const t = await getAppTraefik(req.params.appId);
+  res.json(t ?? null);
+}));
+
+router.put('/:appId/traefik', validateAppId, requireRole('editor'), asyncHandler(async (req, res) => {
+  const t = await updateAppTraefik(req.params.appId, req.body);
+  res.json(t);
 }));
 
 export default router;

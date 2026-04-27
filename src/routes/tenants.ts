@@ -8,6 +8,7 @@ import { isValidSlug } from '../utils/validators';
 import { validateTenantId } from '../middleware/validators';
 import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
+import { getTenantTraefik, updateTenantTraefik } from '../services/traefikConfig';
 
 const router = Router({ mergeParams: true });
 
@@ -153,6 +154,19 @@ router.post('/:tenantId/access-token', validateTenantId, requireRole('admin'), a
     token: adminToken,
     expiresIn: '1 hour',
   });
+}));
+
+// Per-tenant Traefik overrides: cert resolver, host aliases, middleware overrides, raw labels.
+router.get('/:tenantId/traefik', validateTenantId, asyncHandler(async (req, res) => {
+  const { appId, tenantId } = req.params;
+  const t = await getTenantTraefik(appId, tenantId);
+  res.json(t ?? null);
+}));
+
+router.put('/:tenantId/traefik', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
+  const { appId, tenantId } = req.params;
+  const t = await updateTenantTraefik(appId, tenantId, req.body);
+  res.json(t ?? null);
 }));
 
 export default router;

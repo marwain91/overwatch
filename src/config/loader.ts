@@ -3,8 +3,72 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { OverwatchConfigSchema, OverwatchConfig } from './schema';
 import type { AppDefinition } from '../models/app';
+import type { CertResolver, MiddlewareSpec, TraefikApp, TraefikGlobal } from '../models/traefik';
 
 let cachedConfig: OverwatchConfig | null = null;
+let legacyShimWarned = false;
+
+/**
+ * Apply backwards-compat shim: if `traefik.cert_resolvers` is absent but
+ * `networking.cert_resolvers: {wildcard, default}` is present, synthesize the
+ * equivalent named list at load time. The synthesized entries have placeholder
+ * provider/email fields — the existing static `traefik.yml` template still
+ * carries the real values for legacy installs, so this shim is only used for
+ * runtime cert-resolver name lookup, not template regeneration. Run
+ * `overwatch config traefik migrate` to rewrite the config in the new shape.
+ */
+function applyLegacyTraefikShim(config: OverwatchConfig): OverwatchConfig {
+  if (config.traefik?.cert_resolvers && config.traefik.cert_resolvers.length > 0) {
+    return config;
+  }
+  const legacy = config.networking?.cert_resolvers;
+  if (!legacy) return config;
+
+  if (!legacyShimWarned) {
+    process.stderr.write(
+      '[33mDEPRECATION: networking.cert_resolvers is deprecated. ' +
+      'Run `overwatch config traefik migrate` to upgrade to traefik.cert_resolvers.[0m\n'
+    );
+    legacyShimWarned = true;
+  }
+
+  const synthesized: CertResolver[] = [
+    {
+      name: legacy.wildcard,
+      challenge: 'dns',
+      provider: 'legacy',
+      acme_email: 'legacy@overwatch.local',
+      domain_patterns: ['*'],
+    },
+    {
+      name: legacy.default,
+      challenge: 'http',
+      acme_email: 'legacy@overwatch.local',
+      entrypoint: 'web',
+    },
+  ];
+
+  return {
+    ...config,
+    traefik: {
+      log_level: 'INFO',
+      ...(config.traefik ?? {}),
+      cert_resolvers: synthesized,
+    },
+  };
+}
+
+/**
+ * Whether the loaded config used the legacy cert_resolvers shim. Generators
+ * use this to decide whether to regenerate `traefik.yml` (no — legacy installs
+ * keep their hand-rolled template) or treat config as authoritative (yes).
+ */
+export function isUsingLegacyCertResolvers(): boolean {
+  const raw = loadRawConfig();
+  const hasNew = raw?.traefik?.cert_resolvers && Array.isArray(raw.traefik.cert_resolvers) && raw.traefik.cert_resolvers.length > 0;
+  const hasLegacy = !!raw?.networking?.cert_resolvers;
+  return hasLegacy && !hasNew;
+}
 
 /**
  * Find the overwatch.yaml config file by searching common locations.
@@ -76,8 +140,85 @@ export function loadConfig(): OverwatchConfig {
     throw new Error(`Invalid configuration:\n${errors}`);
   }
 
-  cachedConfig = parseResult.data;
+  cachedConfig = applyLegacyTraefikShim(parseResult.data);
   return cachedConfig;
+}
+
+/**
+ * Match a domain against a Traefik-style glob pattern.
+ * Supports leading `*.` (matches any single label or chain) and bare `*` (matches anything).
+ * Otherwise exact match.
+ */
+export function domainMatchesPattern(domain: string, pattern: string): boolean {
+  if (pattern === '*') return true;
+  if (pattern.startsWith('*.')) {
+    const base = pattern.slice(2);
+    return domain === base || domain.endsWith(`.${base}`);
+  }
+  return domain === pattern;
+}
+
+/**
+ * Resolve which cert resolver applies to a given tenant domain.
+ *
+ * Order:
+ *   1. explicit `tenantOverride` (if it names a real resolver)
+ *   2. longest matching `domain_patterns` across resolvers
+ *   3. first http-challenge resolver with no patterns (implicit fallback)
+ *   4. error
+ */
+export function resolveCertResolver(
+  domain: string,
+  traefik: TraefikGlobal | undefined,
+  tenantOverride?: string,
+): { name: string; resolver: CertResolver | null } {
+  const resolvers = traefik?.cert_resolvers ?? [];
+
+  if (tenantOverride) {
+    const r = resolvers.find(x => x.name === tenantOverride);
+    if (!r) {
+      throw new Error(`Tenant cert_resolver "${tenantOverride}" is not defined in traefik.cert_resolvers`);
+    }
+    return { name: r.name, resolver: r };
+  }
+
+  // Longest pattern match wins on ties — prevents `*.example.com` from being shadowed by `*`.
+  let best: { resolver: CertResolver; pattern: string } | null = null;
+  for (const r of resolvers) {
+    for (const pattern of r.domain_patterns ?? []) {
+      if (!domainMatchesPattern(domain, pattern)) continue;
+      if (!best || pattern.length > best.pattern.length) {
+        best = { resolver: r, pattern };
+      }
+    }
+  }
+  if (best) return { name: best.resolver.name, resolver: best.resolver };
+
+  const fallback = resolvers.find(r => r.challenge === 'http' && (!r.domain_patterns || r.domain_patterns.length === 0));
+  if (fallback) return { name: fallback.name, resolver: fallback };
+
+  throw new Error(
+    `No cert resolver matches domain "${domain}". ` +
+    `Define a resolver with matching domain_patterns, an explicit cert_resolver on the tenant, ` +
+    `or an http-challenge resolver with no patterns to act as a fallback.`,
+  );
+}
+
+/**
+ * Resolve middleware references against the available scopes (global → app library).
+ * Returns expanded specs in the same order as the input names. Throws on dangling refs.
+ */
+export function resolveMiddlewareChain(
+  refs: string[],
+  scopes: { global?: TraefikGlobal['middlewares']; app?: TraefikApp['middlewares'] } = {},
+): Array<{ name: string; spec: MiddlewareSpec }> {
+  return refs.map(name => {
+    const spec = scopes.app?.[name] ?? scopes.global?.[name];
+    if (!spec) {
+      throw new Error(`Middleware "${name}" is not defined in app.traefik.middlewares or traefik.middlewares`);
+    }
+    return { name, spec };
+  });
 }
 
 /** Allowed env var name pattern — prevents access to arbitrary process vars */
