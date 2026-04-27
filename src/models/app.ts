@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TraefikAppSchema, RawLabelsSchema } from './traefik';
 
 // Registry auth configuration for app
 export const AppRegistryAuthSchema = z.object({
@@ -46,6 +47,8 @@ export const AppServiceRoutingSchema = z.object({
   additional_path_prefixes: z.array(z.string()).optional(),
   priority: z.number().optional(),
   strip_prefix: z.boolean().default(false),
+  middlewares: z.array(z.string()).optional().describe('Middleware names from the app or global library to apply to this router'),
+  raw_labels: RawLabelsSchema.optional().describe('Escape-hatch traefik.* labels (denylisted keys are rejected)'),
 });
 
 // Service volume configuration
@@ -167,6 +170,7 @@ export const AppDefinitionSchema = z.object({
     'Override project-level db_prefix for this app. Empty string means no prefix (DB name = ${appId}_${tenantId}). Omit to inherit project.db_prefix.'
   ),
   default_image_tag: z.string().default('latest'),
+  traefik: TraefikAppSchema.optional().describe('App-scoped Traefik middleware library and defaults'),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

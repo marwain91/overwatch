@@ -37,10 +37,102 @@ networking:
   external_network: string        # Shared Docker network name
   apps_path: string               # Directory where app/tenant configs are stored
   internal_network_template: string  # Template for tenant networks (default: "${prefix}-${tenantId}-internal")
-  cert_resolvers:                 # Traefik TLS cert resolver names (optional)
-    wildcard: string              # Resolver for wildcard/DNS-challenge domains (default: "letsencrypt")
-    default: string               # Resolver for non-wildcard/HTTP-challenge domains (default: "letsencrypt-http")
+  cert_resolvers:                 # [DEPRECATED] Use top-level `traefik.cert_resolvers` instead.
+    wildcard: string              #   Synthesized into the new shape at load time;
+    default: string               #   migrate via `overwatch config traefik migrate`.
 ```
+
+### Traefik Configuration
+
+The `traefik:` section gives you full control of the reverse proxy: cert resolvers
+(any DNS-01 provider Traefik supports), a typed middleware library with an escape
+hatch (`raw_labels`), the dashboard router, and the Overwatch admin's own routing.
+
+```yaml
+traefik:
+  log_level: INFO                 # DEBUG | INFO | WARN | ERROR (default: INFO)
+
+  cert_resolvers:                 # Named TLS resolvers (replaces networking.cert_resolvers)
+    - name: cf-prod
+      challenge: dns
+      provider: cloudflare        # Any string Traefik supports (cloudflare, gandi, route53, ...)
+      acme_email: ops@example.com
+      env:                        # Provider env vars passed to the Traefik container
+        CF_DNS_API_TOKEN: ${CF_TOKEN}
+      domain_patterns:            # Tenants whose domain matches a pattern auto-pick this resolver
+        - "*.app.example.com"
+    - name: http
+      challenge: http
+      acme_email: ops@example.com
+      entrypoint: web             # Implicit fallback when no patterns match
+
+  middlewares:                    # Global middleware library (referenceable from app/tenant/dashboard)
+    admin-auth:
+      type: basicAuth
+      users: ["admin:$apr1$REPLACE"]
+    hsts:
+      type: headers
+      sts_seconds: 31536000
+      sts_include_subdomains: true
+      sts_preload: true
+
+  default_middlewares: [hsts]     # Applied to every router unless explicitly omitted
+
+  dashboard:                      # Traefik dashboard router (replaces dynamic/dashboard.yml)
+    enabled: true
+    host: "traefik.example.com"
+    cert_resolver: cf-prod
+    middlewares: [admin-auth]
+
+  overwatch:                      # Overwatch admin's own routing (replaces hardcoded labels)
+    host: "overwatch.example.com"
+    cert_resolver: cf-prod
+    middlewares: [admin-auth]
+```
+
+#### Cert-resolver selection per tenant
+
+When a tenant is created, the resolver is chosen in this order (first match wins):
+
+1. Explicit `tenant.traefik.cert_resolver` override.
+2. Longest matching `domain_patterns` across all resolvers.
+3. The first `challenge: http` resolver with no patterns (implicit fallback).
+4. Hard error — no silent fallback to a wrong cert.
+
+#### Middleware library and references
+
+Define middlewares once under `traefik.middlewares` (global) or `app.traefik.middlewares` (per-app), then reference them by name from a service:
+
+```yaml
+# In app definition (data/apps.d/<id>.json):
+traefik:
+  middlewares:
+    strict-rl: { type: rateLimit, average: 50, burst: 100 }
+  default_middlewares: [hsts]      # Applied to every service in this app
+services:
+  - name: web
+    routing:
+      middlewares: [strict-rl]    # Plus the app/global defaults
+```
+
+Tenants override per-service via `apps/<id>/tenants/<tid>/traefik.yaml`:
+
+```yaml
+middleware_overrides:
+  web: [strict-rl, ip-allowlist-corp]   # REPLACES the app's middleware list for this service
+host_aliases: ["legacy.example.com"]
+cert_resolver: gandi-eu                  # Explicit override of the auto-pick
+```
+
+#### Raw labels (escape hatch)
+
+For Traefik features not covered by the typed middleware schemas, set `raw_labels: { "key": "value" }` on a service or tenant. The following keys are denylisted because they would break multi-tenancy guarantees:
+
+- `traefik.enable`
+- `traefik.http.routers.*.rule`
+- `traefik.http.routers.*.tls.certresolver`
+- `traefik.http.routers.*.entrypoints`
+- `traefik.http.routers.*.tls`
 
 ### Credentials Configuration
 

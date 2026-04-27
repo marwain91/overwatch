@@ -139,6 +139,13 @@ export function Sidebar() {
             </svg>
             Database
           </NavLink>
+          <NavLink to="/infrastructure/traefik" className={navItemClass}>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path d="M3 12l2-2 2 2 2-4 2 4 2-3 2 3 2-1 2 1 2-2 2 2v3a2 2 0 01-2 2H5a2 2 0 01-2-2v-3z" />
+              <path d="M3 17h18" />
+            </svg>
+            Traefik
+          </NavLink>
         </div>
       </nav>
 

@@ -4,6 +4,8 @@ import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { loadConfig, getAppsDir, resolveAppDbPrefix } from '../config';
+import { resolveCertResolver } from '../config/loader';
+import { readTenantTraefik } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
 import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
 import { getApp, applyApp } from './app';
@@ -110,12 +112,15 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     // Generate shared.env for this tenant
     await generateSharedEnvFile(appId, tenantId);
 
-    // Generate docker-compose.yml from app service definitions
+    // Generate docker-compose.yml from app service definitions.
+    // Tenant overrides don't exist yet at create-time — they're added later via
+    // `PUT /api/apps/:id/tenants/:tid/traefik`. Pass undefined.
     const composeContent = generateComposeFile({
       app,
       tenantId,
       domain,
       config,
+      tenantTraefik: undefined,
     });
     await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), composeContent);
     composeWritten = true;
@@ -306,7 +311,8 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
     const domain = domainMatch ? domainMatch[1] : '';
 
     try {
-      const composeContent = generateComposeFile({ app, tenantId, domain, config });
+      const tenantTraefik = await readTenantTraefik(appId, tenantId);
+      const composeContent = generateComposeFile({ app, tenantId, domain, config, tenantTraefik });
       await fs.writeFile(composePath, composeContent);
     } catch (err) {
       console.warn('Failed to regenerate docker-compose.yml:', err);
@@ -408,18 +414,25 @@ function generateEnvContent(
   const db = getDatabaseAdapter(app);
   const dbName = db.getDatabaseName(`${app.id}_${tenantId}`);
 
-  // Determine cert resolver based on domain matching
-  const certResolvers = config.networking?.cert_resolvers;
+  // Resolve cert resolver via the new `traefik.cert_resolvers` model.
+  // The loader-level shim synthesizes this from the legacy `networking.cert_resolvers`
+  // for installs that haven't migrated yet — both paths share the same resolution code.
   let certResolver: string;
-  if (app.domain_template.startsWith('*.')) {
-    const baseDomain = app.domain_template.slice(2);
-    if (domain.endsWith(`.${baseDomain}`)) {
-      certResolver = certResolvers?.wildcard || 'letsencrypt';
+  try {
+    certResolver = resolveCertResolver(domain, config.traefik).name;
+  } catch {
+    // Fall back to legacy domain-pattern matching when the resolver helper can't
+    // pick one (e.g. no http fallback resolver configured) — keeps tenant create
+    // working on partially-configured installs while the operator finishes setup.
+    const certResolvers = config.networking?.cert_resolvers;
+    if (app.domain_template.startsWith('*.')) {
+      const baseDomain = app.domain_template.slice(2);
+      certResolver = domain.endsWith(`.${baseDomain}`)
+        ? (certResolvers?.wildcard || 'letsencrypt')
+        : (certResolvers?.default || 'letsencrypt-http');
     } else {
       certResolver = certResolvers?.default || 'letsencrypt-http';
     }
-  } else {
-    certResolver = certResolvers?.default || 'letsencrypt-http';
   }
 
   return `# ${config.project.name} Tenant Configuration

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { TraefikGlobalSchema } from '../models/traefik';
 
 // Database configuration schema
 export const DatabaseConfigSchema = z.object({
@@ -46,10 +47,12 @@ export const CredentialsSchema = z.object({
   jwt_secret_length: z.number().default(64).describe('Length of auto-generated JWT secrets'),
 });
 
-// Cert resolver configuration
+// Cert resolver configuration (DEPRECATED — use top-level `traefik.cert_resolvers` instead).
+// Kept for backwards compatibility; the loader synthesizes a TraefikGlobal.cert_resolvers list
+// from these two fields when the new section is absent. Will be removed in v2.x.
 export const CertResolversSchema = z.object({
-  wildcard: z.string().default('letsencrypt').describe('Cert resolver name for wildcard/DNS-challenge domains'),
-  default: z.string().default('letsencrypt-http').describe('Cert resolver name for non-wildcard/HTTP-challenge domains'),
+  wildcard: z.string().default('letsencrypt').describe('[DEPRECATED] Cert resolver name for wildcard/DNS-challenge domains'),
+  default: z.string().default('letsencrypt-http').describe('[DEPRECATED] Cert resolver name for non-wildcard/HTTP-challenge domains'),
 });
 
 // Networking configuration
@@ -57,7 +60,7 @@ export const NetworkingSchema = z.object({
   external_network: z.string().describe('Shared Docker network name for inter-service communication'),
   internal_network_template: z.string().default('${prefix}-${tenantId}-internal').describe('Template for tenant-specific internal network names'),
   apps_path: z.string().optional().describe('Path where app/tenant directories are stored'),
-  cert_resolvers: CertResolversSchema.optional().describe('TLS cert resolver names for Traefik'),
+  cert_resolvers: CertResolversSchema.optional().describe('[DEPRECATED] TLS cert resolver names for Traefik. Use top-level `traefik.cert_resolvers` instead.'),
 });
 
 // Main Overwatch configuration schema (slimmed — infrastructure only)
@@ -70,6 +73,7 @@ export const OverwatchConfigSchema = z.object({
   database: DatabaseConfigSchema.describe('Database connection configuration'),
   credentials: CredentialsSchema.optional().describe('Auto-generated credential settings'),
   networking: NetworkingSchema.optional().describe('Docker networking configuration'),
+  traefik: TraefikGlobalSchema.optional().describe('Traefik reverse-proxy configuration: cert resolvers, middleware library, dashboard, Overwatch self-routing'),
   monitoring: MonitoringConfigSchema.optional().describe('Container monitoring configuration'),
   alert_rules: z.array(AlertRuleSchema).optional().describe('Alert rules for monitoring'),
   retention: RetentionConfigSchema.optional().describe('Log retention configuration'),

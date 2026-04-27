@@ -4,6 +4,8 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { loadConfig } from '../config';
 import { EMBEDDED_TEMPLATES } from '../generated/embeddedTemplates';
+import { buildTraefikStaticYml, buildTraefikDynamicYml, shouldUseDynamicTraefik } from './traefikDynamicGenerator';
+import { buildInfraComposeYml, buildOverwatchComposeYml } from './infraComposeGenerator';
 
 const execFileAsync = promisify(execFile);
 
@@ -132,9 +134,31 @@ export async function deployInfra(options: {
   const vars = resolveDeployVars(deployDir);
   const changes: InfraFileChange[] = [];
 
+  const config = loadConfig();
+  const useDynamic = shouldUseDynamicTraefik(config);
+
   for (const tpl of TEMPLATE_FILES) {
-    const raw = readTemplate(tpl.source);
-    const rendered = renderTemplate(raw, vars);
+    let rendered: string;
+
+    // When the user has the new traefik.cert_resolvers schema, drive the four
+    // Traefik-related templates from the generators. Other templates (mariadb
+    // scaffolding, etc.) keep using the embedded statics.
+    if (useDynamic && tpl.source === 'infrastructure/traefik/traefik.yml') {
+      rendered = renderTemplate(buildTraefikStaticYml(config.traefik!), vars);
+    } else if (useDynamic && tpl.source === 'infrastructure/traefik/dynamic.yml') {
+      rendered = renderTemplate(buildTraefikDynamicYml(config.traefik!), vars);
+    } else if (useDynamic && tpl.source === 'infrastructure/traefik/dynamic/dashboard.yml') {
+      // Dashboard is folded into dynamic.yml when generated. Skip the separate file.
+      continue;
+    } else if (useDynamic && tpl.source === 'infrastructure/docker-compose.yml') {
+      rendered = renderTemplate(buildInfraComposeYml(config), vars);
+    } else if (useDynamic && tpl.source === 'overwatch/docker-compose.yml') {
+      rendered = renderTemplate(buildOverwatchComposeYml(config), vars);
+    } else {
+      const raw = readTemplate(tpl.source);
+      rendered = renderTemplate(raw, vars);
+    }
+
     const destPath = path.join(deployDir, tpl.dest);
     const existing = await readDestIfExists(destPath);
     let status: InfraFileChange['status'];
@@ -149,6 +173,17 @@ export async function deployInfra(options: {
       await writeAtomic(destPath, rendered);
     }
     changes.push({ path: destPath, status });
+  }
+
+  // When generated dynamic.yml contains the dashboard, remove the legacy file
+  // so Traefik doesn't load conflicting routers from both sources.
+  if (useDynamic && !dryRun) {
+    const legacyDashboard = path.join(deployDir, 'infrastructure/traefik/dynamic/dashboard.yml');
+    try {
+      await fs.unlink(legacyDashboard);
+    } catch (err: any) {
+      if (err.code !== 'ENOENT') throw err;
+    }
   }
 
   let composeRestarted = false;
