@@ -1,12 +1,26 @@
 import { z } from 'zod';
 import { TraefikAppSchema, RawLabelsSchema } from './traefik';
 
-// Registry auth configuration for app
+// Registry auth configuration for app.
+// `type === 'github_app'` mints short-lived installation tokens from a
+// GitHub App's private key (org-owned, fine-grained per-repo permissions),
+// rotating roughly hourly. See docs/registry-github-app.md for setup.
 export const AppRegistryAuthSchema = z.object({
-  type: z.enum(['token', 'basic', 'aws_iam']),
+  type: z.enum(['token', 'basic', 'aws_iam', 'github_app']),
   username_env: z.string().optional(),
   token_env: z.string().optional(),
   aws_region_env: z.string().optional(),
+  app_id_env: z.string().optional(),
+  installation_id_env: z.string().optional(),
+  private_key_env: z.string().optional(),
+}).superRefine((auth, ctx) => {
+  if (auth.type === 'github_app') {
+    for (const f of ['app_id_env', 'installation_id_env', 'private_key_env'] as const) {
+      if (!auth[f]) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [f], message: `${f} is required when auth.type === 'github_app'` });
+      }
+    }
+  }
 });
 
 // Registry configuration for app

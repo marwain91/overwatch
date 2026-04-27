@@ -103,10 +103,13 @@ export interface AppRegistry {
   url: string;
   repository: string;
   auth: {
-    type: 'token' | 'aws_ecr' | 'basic';
+    type: 'token' | 'aws_ecr' | 'basic' | 'github_app';
     username_env?: string;
     token_env?: string;
     aws_region_env?: string;
+    app_id_env?: string;
+    installation_id_env?: string;
+    private_key_env?: string;
   };
   tag_pattern?: string;
 }

@@ -355,10 +355,13 @@ environment:
 
 | Registry | Type | Auth Type | Required Env Vars |
 |----------|------|-----------|-------------------|
-| GHCR | `ghcr` | `token` | `GHCR_TOKEN` (PAT with `read:packages`) |
+| GHCR | `ghcr` | `token` | `GHCR_TOKEN` (PAT with `read:packages`, plus `repo` for private source repos) |
+| GHCR (org repos, recommended) | `ghcr` | `github_app` | `GH_APP_ID`, `GH_APP_INSTALLATION_ID`, `GH_APP_PRIVATE_KEY` — see [registry-github-app.md](./registry-github-app.md) |
 | Docker Hub | `dockerhub` | `basic` | `DOCKER_USERNAME`, `DOCKER_PASSWORD` |
 | AWS ECR | `ecr` | `aws_iam` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | Custom | `custom` | `token` or `basic` | Varies |
+
+> **Note:** For repos in a GitHub organisation, prefer `github_app` auth over a long-lived PAT. Installation tokens auto-rotate hourly, are scoped to the specific repo, and survive when the user who set them up leaves the org. See the dedicated guide at [docs/registry-github-app.md](./registry-github-app.md).
 
 ---
 
@@ -383,6 +386,9 @@ environment:
 | Variable | Description |
 |----------|-------------|
 | `GHCR_TOKEN` | GitHub Personal Access Token (GHCR) |
+| `GH_APP_ID` | GitHub App numeric ID (when `auth.type: github_app`) |
+| `GH_APP_INSTALLATION_ID` | GitHub App installation ID for the target org/repo |
+| `GH_APP_PRIVATE_KEY` | GitHub App private key — raw PEM or base64-encoded PEM |
 | `DOCKER_USERNAME` | Docker Hub username |
 | `DOCKER_PASSWORD` | Docker Hub password/token |
 | `AWS_ACCESS_KEY_ID` | AWS access key (ECR) |
