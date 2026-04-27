@@ -11,9 +11,10 @@ import {
   useReloadTraefik,
 } from '../hooks/useTraefik';
 import {
-  CertResolver, CertResolverDns, CertResolverHttp, Entrypoint, MiddlewareSpec, MIDDLEWARE_TYPES,
+  CertResolver, CertResolverDns, CertResolverHttp, Entrypoint, MiddlewareSpec,
   TraefikDashboard, TraefikGlobal, TraefikOverwatchRouting, TlsTermination,
 } from '../lib/types';
+import { MiddlewareEditor } from '../components/MiddlewareEditor';
 
 type Tab = 'resolvers' | 'middlewares' | 'entrypoints' | 'dashboard' | 'overwatch';
 
@@ -335,7 +336,7 @@ function MiddlewaresTab() {
       )}
 
       {(editing || adding) && (
-        <MiddlewareModal
+        <MiddlewareEditor
           initial={editing ?? undefined}
           onClose={() => { setEditing(null); setAdding(false); }}
           onSubmit={({ name, spec }) => {
@@ -351,82 +352,6 @@ function MiddlewaresTab() {
       )}
     </div>
   );
-}
-
-function MiddlewareModal({
-  initial, onClose, onSubmit,
-}: {
-  initial?: { name: string; spec: MiddlewareSpec };
-  onClose: () => void;
-  onSubmit: (body: { name: string; spec: MiddlewareSpec }) => void;
-}) {
-  const [name, setName] = useState(initial?.name ?? '');
-  const [type, setType] = useState<MiddlewareSpec['type']>(initial?.spec.type ?? 'headers');
-  const [json, setJson] = useState(initial ? JSON.stringify(initial.spec, null, 2) : JSON.stringify({ type: 'headers', sts_seconds: 31536000 }, null, 2));
-
-  const submit = () => {
-    if (!name.trim()) return toast.error('Name required');
-    let parsed: any;
-    try { parsed = JSON.parse(json); } catch (e: any) { return toast.error(`Invalid JSON: ${e?.message}`); }
-    if (parsed.type !== type) parsed.type = type;
-    onSubmit({ name, spec: parsed as MiddlewareSpec });
-  };
-
-  return (
-    <Modal title={initial ? `Edit "${initial.name}"` : 'Add middleware'} onClose={onClose} size="xl">
-      <div className="space-y-3 text-sm">
-        <Field label="Name">
-          <input value={name} onChange={e => setName(e.target.value)} disabled={!!initial} className={inputCls} placeholder="my-rate-limit" />
-        </Field>
-        <Field label="Type">
-          <select
-            value={type}
-            onChange={e => {
-              const t = e.target.value as MiddlewareSpec['type'];
-              setType(t);
-              const tpl = templateFor(t);
-              setJson(JSON.stringify(tpl, null, 2));
-            }}
-            className={inputCls}
-          >
-            {MIDDLEWARE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </Field>
-        <Field label="Spec (JSON)">
-          <textarea
-            value={json}
-            onChange={e => setJson(e.target.value)}
-            className={`${inputCls} font-mono text-xs`}
-            rows={12}
-          />
-          <p className="mt-1 text-xs text-content-faint">Edit the JSON spec directly. See the docs for each middleware type's fields.</p>
-        </Field>
-        <div className="flex justify-end gap-2 pt-2">
-          <button onClick={onClose} className="rounded-lg border border-border px-3 py-2 text-content-secondary hover:bg-surface-subtle">Cancel</button>
-          <button onClick={submit} className="rounded-lg bg-brand-600 px-3 py-2 text-white hover:bg-brand-500">Save</button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function templateFor(type: MiddlewareSpec['type']): any {
-  switch (type) {
-    case 'rateLimit':       return { type, average: 100, burst: 200 };
-    case 'basicAuth':       return { type, users: ['admin:$apr1$REPLACE'] };
-    case 'forwardAuth':     return { type, address: 'http://auth/verify' };
-    case 'ipAllowList':     return { type, source_range: ['10.0.0.0/8'] };
-    case 'headers':         return { type, sts_seconds: 31536000, sts_include_subdomains: true, sts_preload: true };
-    case 'redirectScheme':  return { type, scheme: 'https', permanent: true };
-    case 'redirectRegex':   return { type, regex: '^http://(.+)$', replacement: 'https://$1', permanent: true };
-    case 'compress':        return { type };
-    case 'retry':           return { type, attempts: 3, initial_interval: '100ms' };
-    case 'circuitBreaker':  return { type, expression: 'NetworkErrorRatio() > 0.5' };
-    case 'replacePath':     return { type, path: '/new-path' };
-    case 'replacePathRegex':return { type, regex: '^/old/(.*)', replacement: '/new/$1' };
-    case 'inFlightReq':     return { type, amount: 50 };
-    case 'chain':           return { type, middlewares: ['mw-a', 'mw-b'] };
-  }
 }
 
 // ─── Dashboard tab ─────────────────────────────────────────────────────────

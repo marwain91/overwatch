@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useUpdateApp, useDeleteApp } from '../hooks/useApps';
 import type { AppService, AppRegistry, AppBackup, AppAdminAccess } from '../lib/types';
+import { AppTraefikSection } from '../components/AppTraefikSection';
 
 export function AppSettingsPage() {
   const { appId } = useParams<{ appId: string }>();
@@ -297,6 +298,8 @@ export function AppSettingsPage() {
       </div>
 
       {/* Danger Zone */}
+      <AppTraefikSection appId={appId!} />
+
       <div className="card border-red-900/50">
         <h2 className="mb-4 text-lg font-semibold text-red-400">Danger Zone</h2>
         {!showDelete ? (
