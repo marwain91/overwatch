@@ -114,6 +114,7 @@ export function AppSettingsPage() {
                 <label className="label">Type</label>
                 <select className="input" value={registry.type} onChange={(e) => setRegistry({ ...registry, type: e.target.value as AppRegistry['type'] })}>
                   <option value="ghcr">GHCR</option>
+                  <option value="gitlab">GitLab</option>
                   <option value="dockerhub">Docker Hub</option>
                   <option value="ecr">AWS ECR</option>
                   <option value="custom">Custom</option>
@@ -124,6 +125,30 @@ export function AppSettingsPage() {
                 <input className="input" value={registry.url} onChange={(e) => setRegistry({ ...registry, url: e.target.value })} />
               </div>
             </div>
+            {registry.type === 'gitlab' && (
+              <div>
+                <label className="label">
+                  API URL <span className="text-content-faint">(optional for gitlab.com SaaS)</span>
+                </label>
+                <input
+                  className="input"
+                  value={registry.api_url || ''}
+                  onChange={(e) => setRegistry({ ...registry, api_url: e.target.value || undefined })}
+                  placeholder="https://gitlab.acme.com"
+                />
+                <p className="mt-1 text-xs text-content-faint">
+                  Required for self-hosted GitLab. Leave empty when using <code>gitlab.com</code>. See{' '}
+                  <a
+                    href="https://github.com/marwain91/overwatch/blob/main/docs/registry-gitlab.md"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline hover:text-content-muted"
+                  >
+                    registry-gitlab.md
+                  </a>.
+                </p>
+              </div>
+            )}
             <div>
               <label className="label">Repository</label>
               <input className="input" value={registry.repository} onChange={(e) => setRegistry({ ...registry, repository: e.target.value })} />

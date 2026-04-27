@@ -23,10 +23,14 @@ export const AppRegistryAuthSchema = z.object({
   }
 });
 
-// Registry configuration for app
+// Registry configuration for app.
+// `api_url` is required for self-hosted GitLab where the registry host
+// (e.g. registry.acme.com:5050) and the REST API host (gitlab.acme.com)
+// differ. Unused (and unset) for GHCR/DockerHub/ECR/Custom.
 export const AppRegistrySchema = z.object({
-  type: z.enum(['ghcr', 'dockerhub', 'ecr', 'custom']),
+  type: z.enum(['ghcr', 'dockerhub', 'ecr', 'custom', 'gitlab']),
   url: z.string(),
+  api_url: z.string().optional(),
   repository: z.string(),
   auth: AppRegistryAuthSchema,
   tag_pattern: z.string().optional(),

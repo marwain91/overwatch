@@ -26,7 +26,7 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 
 **Databases:** MySQL / MariaDB, PostgreSQL
 
-**Container Registries:** GitHub Container Registry (GHCR), Docker Hub, Amazon ECR, Custom registries. Org repos can authenticate via a [GitHub App](docs/registry-github-app.md) for short-lived, fine-grained tokens — recommended over personal access tokens.
+**Container Registries:** GitHub Container Registry (GHCR), [GitLab](docs/registry-gitlab.md) (SaaS + self-hosted), Docker Hub, Amazon ECR, Custom registries. Org repos can authenticate via a [GitHub App](docs/registry-github-app.md) for short-lived, fine-grained tokens — recommended over personal access tokens.
 
 **Backup Providers:** S3-compatible storage (AWS S3, Cloudflare R2, MinIO, etc.)
 

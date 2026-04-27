@@ -30,10 +30,13 @@ export interface RegistryAdapter {
  * Configuration passed to registry adapters.
  * `githubApp` carries resolved GitHub App credentials when auth.type === 'github_app';
  * adapters mint installation tokens on demand instead of using a static `token`.
+ * `apiUrl` is the REST-API base for registries where it differs from the
+ * registry host — currently only GitLab self-hosted.
  */
 export interface RegistryAdapterConfig {
-  type: 'ghcr' | 'dockerhub' | 'ecr' | 'custom';
+  type: 'ghcr' | 'dockerhub' | 'ecr' | 'custom' | 'gitlab';
   url: string;
+  apiUrl?: string;
   repository: string;
   username?: string;
   token?: string;
@@ -71,6 +74,7 @@ export function toAdapterConfig(config: RegistryConfig): RegistryAdapterConfig {
   return {
     type: config.type,
     url: config.url,
+    apiUrl: config.api_url,
     repository: config.repository,
     username: auth.username_env ? process.env[auth.username_env] : undefined,
     token: auth.token_env ? process.env[auth.token_env] : undefined,

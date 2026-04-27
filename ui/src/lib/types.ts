@@ -99,8 +99,9 @@ export interface TraefikTenant {
 }
 
 export interface AppRegistry {
-  type: 'ghcr' | 'dockerhub' | 'ecr' | 'custom';
+  type: 'ghcr' | 'dockerhub' | 'ecr' | 'custom' | 'gitlab';
   url: string;
+  api_url?: string;
   repository: string;
   auth: {
     type: 'token' | 'aws_ecr' | 'basic' | 'github_app';

@@ -357,6 +357,8 @@ environment:
 |----------|------|-----------|-------------------|
 | GHCR | `ghcr` | `token` | `GHCR_TOKEN` (PAT with `read:packages`, plus `repo` for private source repos) |
 | GHCR (org repos, recommended) | `ghcr` | `github_app` | `GH_APP_ID`, `GH_APP_INSTALLATION_ID`, `GH_APP_PRIVATE_KEY` — see [registry-github-app.md](./registry-github-app.md) |
+| GitLab (SaaS) | `gitlab` | `token` | `GITLAB_TOKEN` (Group/Project/Personal AT with `read_api` + `read_registry`) — see [registry-gitlab.md](./registry-gitlab.md) |
+| GitLab (self-hosted) | `gitlab` | `token` | `GITLAB_TOKEN` plus `api_url` set to the GitLab web URL (e.g. `https://gitlab.acme.com`) |
 | Docker Hub | `dockerhub` | `basic` | `DOCKER_USERNAME`, `DOCKER_PASSWORD` |
 | AWS ECR | `ecr` | `aws_iam` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | Custom | `custom` | `token` or `basic` | Varies |
@@ -389,11 +391,13 @@ environment:
 | `GH_APP_ID` | GitHub App numeric ID (when `auth.type: github_app`) |
 | `GH_APP_INSTALLATION_ID` | GitHub App installation ID for the target org/repo |
 | `GH_APP_PRIVATE_KEY` | GitHub App private key — raw PEM or base64-encoded PEM |
+| `GITLAB_TOKEN` | GitLab Group/Project/Personal Access Token with `read_api` + `read_registry` |
 | `DOCKER_USERNAME` | Docker Hub username |
 | `DOCKER_PASSWORD` | Docker Hub password/token |
 | `AWS_ACCESS_KEY_ID` | AWS access key (ECR) |
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key (ECR) |
 | `AWS_REGION` | AWS region (ECR) |
+| `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL` | `1` to allow registries/APIs on private networks (RFC1918, loopback). Off by default. |
 
 ### Backup (optional, from app config)
 

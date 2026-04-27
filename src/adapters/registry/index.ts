@@ -1,5 +1,6 @@
 import { RegistryAdapter, RegistryAdapterConfig, toAdapterConfig } from './types';
 import { GHCRAdapter } from './ghcr';
+import { GitLabAdapter } from './gitlab';
 import { DockerHubAdapter } from './dockerhub';
 import { ECRAdapter } from './ecr';
 import { CustomRegistryAdapter } from './custom';
@@ -7,6 +8,7 @@ import { AppDefinition, AppRegistry } from '../../models/app';
 
 export * from './types';
 export { GHCRAdapter } from './ghcr';
+export { GitLabAdapter } from './gitlab';
 export { DockerHubAdapter } from './dockerhub';
 export { ECRAdapter } from './ecr';
 export { CustomRegistryAdapter } from './custom';
@@ -21,6 +23,8 @@ export function createRegistryAdapter(adapterConfig: RegistryAdapterConfig): Reg
   switch (adapterConfig.type) {
     case 'ghcr':
       return new GHCRAdapter(adapterConfig);
+    case 'gitlab':
+      return new GitLabAdapter(adapterConfig);
     case 'dockerhub':
       return new DockerHubAdapter(adapterConfig);
     case 'ecr':
@@ -49,6 +53,7 @@ function appRegistryToAdapterConfig(registry: AppRegistry): RegistryAdapterConfi
   return {
     type: registry.type,
     url: registry.url,
+    apiUrl: registry.api_url,
     repository: registry.repository,
     username: auth.username_env ? process.env[auth.username_env] : undefined,
     token: auth.token_env ? process.env[auth.token_env] : undefined,

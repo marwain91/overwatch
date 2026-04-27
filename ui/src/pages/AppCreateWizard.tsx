@@ -141,9 +141,20 @@ export function AppCreateWizard() {
               <select
                 className="input"
                 value={registry.type}
-                onChange={(e) => setRegistry({ ...registry, type: e.target.value as AppRegistry['type'] })}
+                onChange={(e) => {
+                  const next = e.target.value as AppRegistry['type'];
+                  // Smart defaults when switching to GitLab/GHCR — preserves any token_env already entered.
+                  if (next === 'gitlab' && registry.type !== 'gitlab') {
+                    setRegistry({ ...registry, type: next, url: 'registry.gitlab.com', auth: { ...registry.auth, type: 'token' } });
+                  } else if (next === 'ghcr' && registry.type !== 'ghcr') {
+                    setRegistry({ ...registry, type: next, url: 'ghcr.io' });
+                  } else {
+                    setRegistry({ ...registry, type: next });
+                  }
+                }}
               >
                 <option value="ghcr">GitHub Container Registry</option>
+                <option value="gitlab">GitLab Container Registry</option>
                 <option value="dockerhub">Docker Hub</option>
                 <option value="ecr">AWS ECR</option>
                 <option value="custom">Custom</option>
@@ -153,6 +164,30 @@ export function AppCreateWizard() {
               <label className="label">Registry URL</label>
               <input className="input" value={registry.url} onChange={(e) => setRegistry({ ...registry, url: e.target.value })} placeholder="ghcr.io" />
             </div>
+            {registry.type === 'gitlab' && (
+              <div>
+                <label className="label">
+                  API URL <span className="text-content-faint">(optional for gitlab.com SaaS)</span>
+                </label>
+                <input
+                  className="input"
+                  value={registry.api_url || ''}
+                  onChange={(e) => setRegistry({ ...registry, api_url: e.target.value || undefined })}
+                  placeholder="https://gitlab.acme.com"
+                />
+                <p className="mt-1 text-xs text-content-faint">
+                  Required for self-hosted GitLab — registry host and API host commonly differ. Leave empty when using <code>gitlab.com</code>. See{' '}
+                  <a
+                    href="https://github.com/marwain91/overwatch/blob/main/docs/registry-gitlab.md"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline hover:text-content-muted"
+                  >
+                    registry-gitlab.md
+                  </a>.
+                </p>
+              </div>
+            )}
             <div>
               <label className="label">Repository</label>
               <input className="input" value={registry.repository} onChange={(e) => setRegistry({ ...registry, repository: e.target.value })} placeholder="org/repo" />

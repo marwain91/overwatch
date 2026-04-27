@@ -105,8 +105,9 @@ export const RegistryAuthSchema = z.object({
 });
 
 export const RegistryConfigSchema = z.object({
-  type: z.enum(['ghcr', 'dockerhub', 'ecr', 'custom']),
+  type: z.enum(['ghcr', 'dockerhub', 'ecr', 'custom', 'gitlab']),
   url: z.string(),
+  api_url: z.string().optional(),
   repository: z.string(),
   auth: RegistryAuthSchema,
   tag_pattern: z.string().optional(),
