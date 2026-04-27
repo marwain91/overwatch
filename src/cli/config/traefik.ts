@@ -7,6 +7,9 @@ import { promisify } from 'util';
 import { findConfigPath, loadConfig, clearConfigCache, isUsingLegacyCertResolvers } from '../../config/loader';
 import { OverwatchConfigSchema } from '../../config/schema';
 import type { CertResolver, TraefikGlobal } from '../../models/traefik';
+import { listApps } from '../../services/app';
+import { getAppsDir } from '../../config';
+import { validateTraefik, collectPresentEnvVars, collectTenantOverrides } from '../../services/traefikDoctor';
 import { BOLD, CYAN, DIM, GREEN, NC, YELLOW, header, success, warn, info, fail } from './utils';
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +21,7 @@ export async function runConfigTraefik(args: string[]): Promise<void> {
     case 'migrate':        return migrate();
     case 'resolver':       return resolver(args.slice(1));
     case 'reload':         return reload();
+    case 'doctor':         return doctor();
     case '--help':
     case '-h':
     case undefined:        return showHelp();
@@ -39,6 +43,7 @@ function showHelp(): void {
   console.log(`    resolver remove <name>        Remove a cert resolver`);
   console.log(`    migrate                       Rewrite legacy networking.cert_resolvers as traefik.cert_resolvers`);
   console.log(`    reload                        Restart the Traefik container`);
+  console.log(`    doctor                        Validate references, trust lists, and env vars`);
   console.log('');
   console.log(`  ${DIM}Use the Web UI for middleware library, dashboard auth, and per-tenant overrides.${NC}`);
   console.log('');
@@ -250,6 +255,43 @@ async function migrate(): Promise<void> {
 
   success('Migration complete.');
   info('Next: review overwatch.yaml, then run `overwatch infra deploy` to regenerate Traefik templates.');
+}
+
+// ─── doctor ─────────────────────────────────────────────────────────────────
+
+async function doctor(): Promise<void> {
+  header('Traefik Doctor');
+  const config = loadConfig();
+  const apps = await listApps();
+  const appsDir = getAppsDir();
+  const deployDir = path.dirname(findConfigPath());
+  const issues = validateTraefik({
+    config,
+    apps,
+    tenantOverrides: collectTenantOverrides(appsDir),
+    presentEnvVars: collectPresentEnvVars(deployDir),
+  });
+
+  if (issues.length === 0) {
+    success('No issues found.');
+    return;
+  }
+
+  const errors = issues.filter(i => i.severity === 'error');
+  const warnings = issues.filter(i => i.severity === 'warning');
+
+  for (const i of issues) {
+    const tag = i.severity === 'error' ? fail : warn;
+    tag(`${i.scope}`);
+    console.log(`    ${i.message}`);
+    if (i.hint) console.log(`    ${DIM}hint: ${i.hint}${NC}`);
+  }
+  console.log('');
+  if (errors.length > 0) {
+    console.log(`  ${BOLD}${errors.length} error(s)${NC}, ${warnings.length} warning(s)`);
+    process.exit(1);
+  }
+  console.log(`  ${BOLD}${warnings.length} warning(s)${NC}`);
 }
 
 // ─── reload ─────────────────────────────────────────────────────────────────

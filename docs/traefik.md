@@ -2,9 +2,9 @@
 
 From v1.6 Overwatch ships a first-class Traefik configuration surface. Cert resolvers, the global middleware library, the dashboard, Overwatch's own routing, and per-tenant overrides all live under one schema and are editable from three places:
 
-- **Web UI** — Sidebar → Traefik (admin only). Tabs: Cert Resolvers, Middlewares, Dashboard, Overwatch Server.
+- **Web UI** — Sidebar → Traefik (admin only): Cert Resolvers, Middlewares, Entrypoints, Dashboard, Overwatch Server. Per-app middleware library is on the App Settings page; per-tenant overrides live behind the **Routing** action on each tenant row.
 - **REST API** — `/api/traefik/*` and `/api/apps/:appId/traefik`, `/api/apps/:appId/tenants/:tenantId/traefik`.
-- **CLI** — `overwatch config traefik [view|resolver|migrate|reload]`.
+- **CLI** — `overwatch config traefik [view|resolver|migrate|reload|doctor]`.
 
 Sensitive cert-resolver env values are masked on read in all three surfaces. The legacy `networking.cert_resolvers` field is shimmed automatically for backwards compatibility — operators upgrade with `overwatch config traefik migrate`.
 
@@ -200,6 +200,25 @@ tls_termination: upstream
 | **Direct (default)** | leave `tls_termination` unset; Traefik manages certs via `cert_resolvers` |
 
 After changing entrypoint config or `tls_termination`, run **Reload Traefik** (UI button or `overwatch config traefik reload`) — those settings are read at start-time.
+
+## Validation: `overwatch config traefik doctor`
+
+Cross-check the resolved Traefik configuration against the loaded apps and tenant overrides:
+
+```bash
+overwatch config traefik doctor
+```
+
+Reports errors (exit 1) and warnings (exit 0) for:
+
+- Middleware references that don't resolve in any of `traefik.middlewares`, `app.traefik.middlewares` (per-app library), or tenant `middleware_overrides`.
+- Tenant `cert_resolver` overrides that point to a resolver name that isn't defined.
+- Cert-resolver `env: { KEY: ${VAR} }` entries where `VAR` is missing from the deploy `.env` and `process.env`.
+- `tls_termination: upstream` on the global config when the chosen `upstream_entrypoint` either isn't defined or has no `forwarded_headers.trusted_ips` configured.
+- `cert_resolvers` lacking a fallback (no `challenge: http` resolver without patterns AND no resolver with a `*` pattern) — every tenant domain must match an explicit pattern, otherwise tenant-create fails.
+- Cert resolvers still carrying placeholder values from the legacy `networking.cert_resolvers` shim — i.e. you haven't run `overwatch config traefik migrate` yet.
+
+The same checks are pure functions (`validateTraefik` in `src/services/traefikDoctor.ts`) so a CI hook or REST endpoint can use them.
 
 ## Migration from `networking.cert_resolvers`
 

@@ -12,6 +12,7 @@ import { UpdateTenantModal } from './tenants/UpdateTenantModal';
 import { DeleteTenantModal } from './tenants/DeleteTenantModal';
 import { BackupsModal } from './tenants/BackupsModal';
 import { TenantEnvVarsModal } from './tenants/TenantEnvVarsModal';
+import { TenantRoutingModal } from '../components/TenantRoutingModal';
 
 export function TenantsPage() {
   const { appId } = useParams<{ appId: string }>();
@@ -28,6 +29,7 @@ export function TenantsPage() {
   const [showDelete, setShowDelete] = useState<string | null>(null);
   const [showBackups, setShowBackups] = useState<string | null>(null);
   const [showEnvVars, setShowEnvVars] = useState<string | null>(null);
+  const [showRouting, setShowRouting] = useState<string | null>(null);
 
   // Filter and sort
   const filtered = (tenants || [])
@@ -90,6 +92,7 @@ export function TenantsPage() {
               onDelete={() => setShowDelete(tenant.tenantId)}
               onBackups={() => setShowBackups(tenant.tenantId)}
               onEnvVars={() => setShowEnvVars(tenant.tenantId)}
+              onRouting={() => setShowRouting(tenant.tenantId)}
             />
           ))}
         </div>
@@ -111,6 +114,9 @@ export function TenantsPage() {
       {showEnvVars && (
         <TenantEnvVarsModal appId={appId!} tenantId={showEnvVars} onClose={() => setShowEnvVars(null)} />
       )}
+      {showRouting && (
+        <TenantRoutingModal appId={appId!} tenantId={showRouting} onClose={() => setShowRouting(null)} />
+      )}
     </div>
   );
 }
@@ -123,6 +129,7 @@ function TenantCard({
   onDelete,
   onBackups,
   onEnvVars,
+  onRouting,
 }: {
   tenant: Tenant;
   appId: string;
@@ -131,6 +138,7 @@ function TenantCard({
   onDelete: () => void;
   onBackups: () => void;
   onEnvVars: () => void;
+  onRouting: () => void;
 }) {
   const action = useTenantAction(appId);
   const accessToken = useAccessToken(appId);
@@ -211,6 +219,7 @@ function TenantCard({
             <div className="my-1 border-t border-border" />
             <MenuItem onClick={() => { setMenuOpen(false); onUpdate(); }}>Update Version</MenuItem>
             <MenuItem onClick={() => { setMenuOpen(false); onEnvVars(); }}>Environment</MenuItem>
+            <MenuItem onClick={() => { setMenuOpen(false); onRouting(); }}>Routing</MenuItem>
             <MenuItem onClick={() => { setMenuOpen(false); onBackups(); }}>Backups</MenuItem>
             <div className="my-1 border-t border-border" />
             <MenuItem onClick={() => { setMenuOpen(false); onDelete(); }} className="text-red-400 hover:text-red-300">Delete</MenuItem>
