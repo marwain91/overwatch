@@ -1,6 +1,25 @@
 import type { AppDefinition, AppService } from '../models/app';
-import type { MiddlewareSpec, TraefikGlobal, TraefikTenant } from '../models/traefik';
+import type { MiddlewareSpec, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
 import { isDenylistedLabelKey } from '../models/traefik';
+
+/**
+ * Resolve the effective TLS termination mode for a single router.
+ *
+ * Order: tenant override > service override > global default > "traefik".
+ *
+ * Exported so callers (compose generators, doctor) can reason about routing
+ * without re-implementing the precedence rules.
+ */
+export function resolveTlsTermination(
+  service: AppService,
+  traefik: TraefikGlobal | undefined,
+  tenantOverrides: TraefikTenant | undefined,
+): TlsTermination {
+  return tenantOverrides?.tls_termination
+      ?? service.routing?.tls_termination
+      ?? traefik?.tls_termination
+      ?? 'traefik';
+}
 
 /** Sanitize a value for safe embedding inside a Traefik backtick-delimited rule. */
 export function sanitizeTraefikValue(value: string): string {
@@ -54,9 +73,20 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
   }
 
   push(`traefik.http.routers.${routerName}.rule=${hostExpr}`);
-  push(`traefik.http.routers.${routerName}.entrypoints=websecure`);
-  push(`traefik.http.routers.${routerName}.tls=true`);
-  push(`traefik.http.routers.${routerName}.tls.certresolver=${sanitizeTraefikValue(certResolverName)}`);
+
+  // Choose the entrypoint based on TLS termination mode:
+  //   "traefik": Traefik terminates TLS — route through `websecure` and emit cert resolver.
+  //   "upstream": an upstream proxy already terminates TLS — route plain HTTP through the
+  //   configured upstream entrypoint (default `web`) and skip TLS labels entirely.
+  const termination = resolveTlsTermination(service, traefik, tenantOverrides);
+  if (termination === 'upstream') {
+    const upstreamEp = traefik?.upstream_entrypoint ?? 'web';
+    push(`traefik.http.routers.${routerName}.entrypoints=${sanitizeTraefikValue(upstreamEp)}`);
+  } else {
+    push(`traefik.http.routers.${routerName}.entrypoints=websecure`);
+    push(`traefik.http.routers.${routerName}.tls=true`);
+    push(`traefik.http.routers.${routerName}.tls.certresolver=${sanitizeTraefikValue(certResolverName)}`);
+  }
 
   if (service.routing?.priority !== undefined) {
     const p = Number(service.routing.priority);

@@ -59,7 +59,11 @@ export interface Entrypoint {
   name: string;
   port: number;
   redirect_to?: string;
+  forwarded_headers?: { trusted_ips: string[] };
+  proxy_protocol?: { trusted_ips: string[] };
 }
+
+export type TlsTermination = 'traefik' | 'upstream';
 
 export interface TraefikDashboard {
   enabled: boolean;
@@ -84,6 +88,8 @@ export interface TraefikGlobal {
   middlewares?: Record<string, MiddlewareSpec>;
   default_middlewares?: string[];
   overwatch?: TraefikOverwatchRouting;
+  tls_termination?: TlsTermination;
+  upstream_entrypoint?: string;
 }
 
 export interface TraefikApp {
@@ -96,6 +102,7 @@ export interface TraefikTenant {
   host_aliases?: string[];
   middleware_overrides?: Record<string, string[]>;
   raw_labels?: Record<string, Record<string, string>>;
+  tls_termination?: TlsTermination;
 }
 
 export interface AppRegistry {

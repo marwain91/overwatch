@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { TraefikAppSchema, RawLabelsSchema } from './traefik';
+import { TraefikAppSchema, RawLabelsSchema, TlsTerminationSchema } from './traefik';
 
 // Registry auth configuration for app.
 // `type === 'github_app'` mints short-lived installation tokens from a
@@ -67,6 +67,7 @@ export const AppServiceRoutingSchema = z.object({
   strip_prefix: z.boolean().default(false),
   middlewares: z.array(z.string()).optional().describe('Middleware names from the app or global library to apply to this router'),
   raw_labels: RawLabelsSchema.optional().describe('Escape-hatch traefik.* labels (denylisted keys are rejected)'),
+  tls_termination: TlsTerminationSchema.optional().describe('Override TLS termination mode for this service (defaults to global traefik.tls_termination, or "traefik")'),
 });
 
 // Service volume configuration
