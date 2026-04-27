@@ -107,6 +107,7 @@ export function useRestoreBackup(appId: string) {
       api.post(`/apps/${appId}/backups/${snapshotId}/restore`, { tenantId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tenants', appId] });
+      qc.invalidateQueries({ queryKey: ['backup-summary', appId] });
     },
   });
 }
@@ -114,7 +115,7 @@ export function useRestoreBackup(appId: string) {
 export function useDeleteBackup(appId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (snapshotId: string) => api.delete(`/apps/${appId}/backups/${snapshotId}`),
+    mutationFn: (snapshotId: string) => api.delete(`/apps/${appId}/backups/${snapshotId}`, snapshotId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['backups', appId] });
       qc.invalidateQueries({ queryKey: ['backup-summary', appId] });

@@ -10,6 +10,7 @@ import { readTenantAppDef } from './tenantAppDef';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
 import { writeJsonAtomic } from '../utils/atomicJson';
+import { invalidateBackupCache } from './backupCache';
 
 const execFileAsync = promisify(execFile);
 
@@ -167,6 +168,7 @@ export async function initializeRepository(appId: string): Promise<void> {
   const app = await getApp(appId);
   if (!app) throw new Error(`App '${appId}' not found`);
   await execFileAsync('restic', ['init'], { env: getResticEnv(app) });
+  invalidateBackupCache(appId);
 }
 
 export async function unlockRepository(appId: string): Promise<{ success: boolean; error?: string }> {
@@ -175,6 +177,7 @@ export async function unlockRepository(appId: string): Promise<{ success: boolea
 
   try {
     await execFileAsync('restic', ['unlock', '--remove-all'], { env: getResticEnv(app), timeout: 30000 });
+    invalidateBackupCache(appId);
     return { success: true };
   } catch (error: any) {
     console.error('[Backup] Unlock failed:', error.message);
@@ -203,10 +206,13 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
   if (!app) return [];
 
   try {
-    const args = ['snapshots', '--json'];
-    if (tenantId) {
-      args.push('--tag', `tenant:${tenantId}`);
-    }
+    // Apps may share an S3 bucket, so the repo is NOT app-scoped — filter by
+    // app: tag to keep counts per-app correct. Restic ORs across multiple
+    // --tag flags but ANDs across comma-separated values within ONE flag, so
+    // pack both tags into a single --tag.
+    const tags = [`app:${appId}`];
+    if (tenantId) tags.push(`tenant:${tenantId}`);
+    const args = ['snapshots', '--json', '--tag', tags.join(',')];
 
     const { stdout } = await execFileAsync('restic', args, { env: getResticEnv(app) });
     const snapshots = JSON.parse(stdout || '[]') as any[];
@@ -353,6 +359,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
       snapshotId = summary.snapshot_id;
     }
 
+    invalidateBackupCache(appId);
     return { success: true, snapshotId };
   } catch (error: any) {
     console.error('Backup failed:', error);
@@ -546,6 +553,7 @@ export async function deleteSnapshot(appId: string, snapshotId: string): Promise
       env: getResticEnv(app),
       timeout: 60000
     });
+    invalidateBackupCache(appId);
     return { success: true };
   } catch (error: any) {
     const formatted = formatError(error);
@@ -565,6 +573,7 @@ export async function pruneBackups(appId: string, keepDaily: number = 7, keepWee
       '--keep-monthly', String(keepMonthly),
       '--prune',
     ], { env: getResticEnv(app) });
+    invalidateBackupCache(appId);
     return { success: true };
   } catch (error: any) {
     console.error('[Backup] Prune failed:', error.message);

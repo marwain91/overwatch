@@ -4,7 +4,7 @@ import { VERSION } from '../version';
 import { listContainers, getContainerLogs, restartContainer, listTenants, extractContainerInfo } from '../services/docker';
 import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
-import { getBackupInfo, listSnapshots } from '../services/backup';
+import { getBackupInfoCached, listSnapshotsCached } from '../services/backupCache';
 import { asyncHandler } from '../utils/asyncHandler';
 import { isValidContainerId } from '../utils/validators';
 import { requireRole } from '../middleware/requireRole';
@@ -104,21 +104,19 @@ router.get('/config', asyncHandler(async (req, res) => {
 // Get backup summaries for all apps
 router.get('/backup-summaries', asyncHandler(async (req, res) => {
   const apps = await listApps();
-  const summaries: Record<string, { configured: boolean; initialized: boolean; schedule: string | null; lastBackup: string | null; totalSnapshots: number }> = {};
 
-  for (const app of apps) {
+  const entries = await Promise.all(apps.map(async (app) => {
     if (!app.backup?.enabled) {
-      summaries[app.id] = { configured: false, initialized: false, schedule: null, lastBackup: null, totalSnapshots: 0 };
-      continue;
+      return [app.id, { configured: false, initialized: false, schedule: null, lastBackup: null, totalSnapshots: 0 }] as const;
     }
 
-    const info = await getBackupInfo(app.id);
+    const info = await getBackupInfoCached(app.id);
     let lastBackup: string | null = null;
     let totalSnapshots = 0;
 
     if (info.configured && info.initialized) {
       try {
-        const snapshots = await listSnapshots(app.id);
+        const snapshots = await listSnapshotsCached(app.id);
         totalSnapshots = snapshots.length;
         if (snapshots.length > 0) {
           lastBackup = snapshots[0].time;
@@ -128,16 +126,16 @@ router.get('/backup-summaries', asyncHandler(async (req, res) => {
       }
     }
 
-    summaries[app.id] = {
+    return [app.id, {
       configured: info.configured,
       initialized: info.initialized,
       schedule: app.backup.schedule || null,
       lastBackup,
       totalSnapshots,
-    };
-  }
+    }] as const;
+  }));
 
-  res.json(summaries);
+  res.json(Object.fromEntries(entries));
 }));
 
 // Get all tenants across all apps (global view)

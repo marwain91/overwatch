@@ -1,15 +1,14 @@
 import { Router } from 'express';
 import {
-  getBackupInfo,
   initializeRepository,
   unlockRepository,
-  listSnapshots,
   createBackup,
   backupAllTenants,
   restoreBackup,
   deleteSnapshot,
   pruneBackups,
 } from '../services/backup';
+import { getBackupInfoCached, listSnapshotsCached } from '../services/backupCache';
 import { getApp } from '../services/app';
 import { createTenant } from '../services/tenant';
 import { getTenantInfo } from '../services/docker';
@@ -28,13 +27,13 @@ router.get('/summary', asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'App not found' });
   }
 
-  const info = await getBackupInfo(appId);
+  const info = await getBackupInfoCached(appId);
 
   let lastBackup: string | null = null;
   let totalSnapshots = 0;
 
   if (info.configured && info.initialized) {
-    const snapshots = await listSnapshots(appId);
+    const snapshots = await listSnapshotsCached(appId);
     totalSnapshots = snapshots.length;
     if (snapshots.length > 0) {
       lastBackup = snapshots[0].time; // already sorted desc
@@ -64,7 +63,7 @@ router.get('/summary', asyncHandler(async (req, res) => {
 // Get backup configuration status for an app
 router.get('/status', asyncHandler(async (req, res) => {
   const { appId } = req.params;
-  const info = await getBackupInfo(appId);
+  const info = await getBackupInfoCached(appId);
   res.json(info);
 }));
 
@@ -101,7 +100,7 @@ router.get('/', asyncHandler(async (req, res) => {
   const year = rawYear ? parseInt(rawYear as string, 10) : undefined;
   const month = rawMonth ? parseInt(rawMonth as string, 10) : undefined;
 
-  let snapshots = await listSnapshots(appId, tenantId);
+  let snapshots = await listSnapshotsCached(appId, tenantId);
 
   // Filter by month if valid year and month are provided
   if (Number.isInteger(year) && Number.isInteger(month) && month! >= 1 && month! <= 12) {
