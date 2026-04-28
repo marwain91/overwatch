@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { getAppsDir } from '../config';
 import { TraefikTenantSchema, type TraefikTenant } from '../models/traefik';
+import { withFileLock } from './fileLock';
 
 /**
  * Per-tenant Traefik overrides — host aliases, middleware overrides,
@@ -43,22 +44,29 @@ export async function readTenantTraefik(
 
 /**
  * Write tenant Traefik overrides. Pass undefined / null to delete the file.
+ *
+ * Serialised per (appId, tenantId) via withFileLock so concurrent UI/API
+ * writers can't interleave. Atomic via tmp+rename — the parent dir is the
+ * tenant's own directory under the bind-mounted apps tree, so this works
+ * (the single-file bind-mount problem only applies to overwatch.yaml).
  */
 export async function writeTenantTraefik(
   appId: string,
   tenantId: string,
   overrides: TraefikTenant | undefined | null,
 ): Promise<void> {
-  const file = getTenantTraefikPath(appId, tenantId);
-  if (!overrides || isEmpty(overrides)) {
-    try { await fs.unlink(file); } catch (err: any) { if (err.code !== 'ENOENT') throw err; }
-    return;
-  }
-  const validated = TraefikTenantSchema.parse(overrides);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, yaml.dump(validated, { lineWidth: 120, noRefs: true }), { mode: 0o644 });
-  await fs.rename(tmp, file);
+  return withFileLock(`tenant-traefik-${appId}-${tenantId}`, async () => {
+    const file = getTenantTraefikPath(appId, tenantId);
+    if (!overrides || isEmpty(overrides)) {
+      try { await fs.unlink(file); } catch (err: any) { if (err.code !== 'ENOENT') throw err; }
+      return;
+    }
+    const validated = TraefikTenantSchema.parse(overrides);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.tmp-${process.pid}`;
+    await fs.writeFile(tmp, yaml.dump(validated, { lineWidth: 120, noRefs: true }), { mode: 0o644 });
+    await fs.rename(tmp, file);
+  });
 }
 
 function isEmpty(o: TraefikTenant): boolean {
