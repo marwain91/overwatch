@@ -214,20 +214,48 @@ function effectiveGlobalTermination(t: TraefikGlobal | undefined): 'traefik' | '
   return t?.tls_termination ?? 'traefik';
 }
 
-/** Read every key=value from the deploy `.env` next to overwatch.yaml plus process.env. */
+/**
+ * Collect env var names visible to the deploy from all relevant sources:
+ *   - process.env (the running shell)
+ *   - <deployDir>/.env  (the dir containing overwatch.yaml)
+ *   - <deployDir>/../<sibling>/.env  (sibling dirs at the project root, e.g.
+ *     `infrastructure/.env` where Traefik provider tokens like CF_DNS_API_TOKEN
+ *     typically live in the standard install layout)
+ *
+ * Falls back to just process.env when deployDir is undefined or no .env files
+ * exist. Errors reading any individual file are swallowed silently.
+ */
 export function collectPresentEnvVars(deployDir?: string): Set<string> {
   const out = new Set<string>(Object.keys(process.env));
   if (!deployDir) return out;
-  const envPath = path.join(deployDir, '.env');
-  if (!fs.existsSync(envPath)) return out;
+
+  const candidates = new Set<string>();
+  candidates.add(path.join(deployDir, '.env'));
+
+  // Sibling .env files: scan the parent of deployDir for any `*/.env`. This
+  // covers the typical layout where overwatch.yaml lives in `<root>/overwatch/`
+  // alongside `<root>/infrastructure/.env`, etc.
   try {
-    const text = fs.readFileSync(envPath, 'utf-8');
-    for (const line of text.split('\n')) {
-      const lineMatch = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=/);
-      if (lineMatch) out.add(lineMatch[1]);
+    const parent = path.dirname(deployDir);
+    for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      candidates.add(path.join(parent, entry.name, '.env'));
     }
   } catch {
-    // ignore — env file is optional
+    // parent unreadable — skip sibling scan
+  }
+
+  for (const envPath of candidates) {
+    if (!fs.existsSync(envPath)) continue;
+    try {
+      const text = fs.readFileSync(envPath, 'utf-8');
+      for (const line of text.split('\n')) {
+        const lineMatch = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=/);
+        if (lineMatch) out.add(lineMatch[1]);
+      }
+    } catch {
+      // ignore — individual env file unreadable
+    }
   }
   return out;
 }
