@@ -28,8 +28,6 @@ export interface RegistryAdapter {
 
 /**
  * Configuration passed to registry adapters.
- * `githubApp` carries resolved GitHub App credentials when auth.type === 'github_app';
- * adapters mint installation tokens on demand instead of using a static `token`.
  * `apiUrl` is the REST-API base for registries where it differs from the
  * registry host — currently only GitLab self-hosted.
  */
@@ -41,36 +39,14 @@ export interface RegistryAdapterConfig {
   username?: string;
   token?: string;
   awsRegion?: string;
-  githubApp?: {
-    appId: string;
-    privateKey: string;
-    installationId: string;
-  };
   tagPattern?: RegExp;
-}
-
-function resolveGitHubAppCreds(auth: {
-  app_id_env?: string;
-  installation_id_env?: string;
-  private_key_env?: string;
-}): RegistryAdapterConfig['githubApp'] {
-  if (!auth.app_id_env || !auth.installation_id_env || !auth.private_key_env) return undefined;
-  const appId = process.env[auth.app_id_env];
-  const installationId = process.env[auth.installation_id_env];
-  const privateKey = process.env[auth.private_key_env];
-  if (!appId || !installationId || !privateKey) return undefined;
-  return { appId, installationId, privateKey };
 }
 
 /**
  * Convert Overwatch config to adapter config
  */
 export function toAdapterConfig(config: RegistryConfig): RegistryAdapterConfig {
-  const auth = config.auth as RegistryConfig['auth'] & {
-    app_id_env?: string;
-    installation_id_env?: string;
-    private_key_env?: string;
-  };
+  const auth = config.auth;
   return {
     type: config.type,
     url: config.url,
@@ -79,7 +55,6 @@ export function toAdapterConfig(config: RegistryConfig): RegistryAdapterConfig {
     username: auth.username_env ? process.env[auth.username_env] : undefined,
     token: auth.token_env ? process.env[auth.token_env] : undefined,
     awsRegion: auth.aws_region_env ? process.env[auth.aws_region_env] : undefined,
-    githubApp: auth.type === 'github_app' ? resolveGitHubAppCreds(auth) : undefined,
     tagPattern: config.tag_pattern ? new RegExp(config.tag_pattern) : undefined,
   };
 }

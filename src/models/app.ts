@@ -2,25 +2,19 @@ import { z } from 'zod';
 import { TraefikAppSchema, RawLabelsSchema, TlsTerminationSchema } from './traefik';
 
 // Registry auth configuration for app.
-// `type === 'github_app'` mints short-lived installation tokens from a
-// GitHub App's private key (org-owned, fine-grained per-repo permissions),
-// rotating roughly hourly. See docs/registry-github-app.md for setup.
+//
+// Note on github_app removal (v1.6.7): GitHub Apps installed on an org with
+// `Packages:Read` were intended to authenticate to private/internal GHCR
+// packages, but GHCR's actual permission model only honors App tokens for
+// PUBLIC packages. After end-to-end testing the auth grant simply doesn't
+// resolve for non-public images, regardless of repo linkage, GHA push history,
+// or "Manage Actions access" bindings. The clean path for service-to-service
+// pulls is a PAT (classic or fine-grained) under a service-account user.
 export const AppRegistryAuthSchema = z.object({
-  type: z.enum(['token', 'basic', 'aws_iam', 'github_app']),
+  type: z.enum(['token', 'basic', 'aws_iam']),
   username_env: z.string().optional(),
   token_env: z.string().optional(),
   aws_region_env: z.string().optional(),
-  app_id_env: z.string().optional(),
-  installation_id_env: z.string().optional(),
-  private_key_env: z.string().optional(),
-}).superRefine((auth, ctx) => {
-  if (auth.type === 'github_app') {
-    for (const f of ['app_id_env', 'installation_id_env', 'private_key_env'] as const) {
-      if (!auth[f]) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [f], message: `${f} is required when auth.type === 'github_app'` });
-      }
-    }
-  }
 });
 
 // Registry configuration for app.

@@ -41,15 +41,6 @@ export function createRegistryAdapter(adapterConfig: RegistryAdapterConfig): Reg
  */
 function appRegistryToAdapterConfig(registry: AppRegistry): RegistryAdapterConfig {
   const auth = registry.auth;
-  let githubApp: RegistryAdapterConfig['githubApp'];
-  if (auth.type === 'github_app' && auth.app_id_env && auth.installation_id_env && auth.private_key_env) {
-    const appId = process.env[auth.app_id_env];
-    const installationId = process.env[auth.installation_id_env];
-    const privateKey = process.env[auth.private_key_env];
-    if (appId && installationId && privateKey) {
-      githubApp = { appId, installationId, privateKey };
-    }
-  }
   return {
     type: registry.type,
     url: registry.url,
@@ -58,7 +49,6 @@ function appRegistryToAdapterConfig(registry: AppRegistry): RegistryAdapterConfi
     username: auth.username_env ? process.env[auth.username_env] : undefined,
     token: auth.token_env ? process.env[auth.token_env] : undefined,
     awsRegion: auth.aws_region_env ? process.env[auth.aws_region_env] : undefined,
-    githubApp,
     tagPattern: registry.tag_pattern ? new RegExp(registry.tag_pattern) : undefined,
   };
 }
@@ -77,10 +67,16 @@ export function getRegistryAdapterForApp(app: AppDefinition): RegistryAdapter {
 }
 
 /**
- * Clear the adapter cache (useful for config changes)
+ * Drop the cached adapter for a single app (call this after the app's
+ * registry config changes so the next pull/login uses the new auth/repo).
+ * Pass undefined / no argument to clear the whole cache.
  */
-export function clearAdapterCache(): void {
-  adapterCache.clear();
+export function clearAdapterCache(appId?: string): void {
+  if (appId === undefined) {
+    adapterCache.clear();
+  } else {
+    adapterCache.delete(appId);
+  }
 }
 
 /**

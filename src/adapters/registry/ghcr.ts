@@ -1,6 +1,5 @@
 import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
-import { getInstallationToken } from '../../services/githubApp';
 
 interface GitHubTag {
   name: string;
@@ -14,11 +13,12 @@ interface GitHubTag {
  * UI surfaces coordinated cross-service release tags rather than per-image
  * registry tags (which diverge across backend/frontend/migrator images).
  *
- * Two auth paths:
- * - PAT: `config.token` is the bearer for both docker login and the tags API.
- * - GitHub App: `config.githubApp` mints short-lived installation tokens via
- *   `getInstallationToken()`. The same minted token is used for both surfaces;
- *   permissions needed: Contents:Read (tags) + Packages:Read (GHCR pull).
+ * Auth: PAT only. `config.token` is the bearer for both docker login and the
+ * tags API. GitHub App auth was attempted in v1.6.x but removed in v1.6.7
+ * because GHCR's permission model doesn't honor App tokens for non-public
+ * packages — see the rationale in models/app.ts. For service-to-service
+ * pulls of private/internal packages, use a fine-grained PAT under a
+ * dedicated service-account user.
  */
 export class GHCRAdapter implements RegistryAdapter {
   private config: RegistryAdapterConfig;
@@ -27,25 +27,8 @@ export class GHCRAdapter implements RegistryAdapter {
     this.config = config;
   }
 
-  private isGitHubApp(): boolean {
-    return !!this.config.githubApp;
-  }
-
-  private async resolveToken(): Promise<string | undefined> {
-    if (this.config.githubApp) {
-      return getInstallationToken(this.config.githubApp);
-    }
-    return this.config.token;
-  }
-
   async login(): Promise<void> {
-    let token: string | undefined;
-    try {
-      token = await this.resolveToken();
-    } catch (error) {
-      console.error('Failed to mint GitHub App installation token:', error);
-      throw error;
-    }
+    const token = this.config.token;
 
     if (!token) {
       console.log('GHCR auth not configured, skipping registry login');
@@ -54,8 +37,7 @@ export class GHCRAdapter implements RegistryAdapter {
 
     try {
       console.log('Authenticating with GitHub Container Registry...');
-      // GitHub App installation tokens require the literal username 'x-access-token'.
-      const username = this.isGitHubApp() ? 'x-access-token' : (this.config.username || 'x-access-token');
+      const username = this.config.username || 'x-access-token';
 
       const result = spawnSync(
         'docker', ['login', this.config.url, '-u', username, '--password-stdin'],
@@ -74,7 +56,7 @@ export class GHCRAdapter implements RegistryAdapter {
   }
 
   async getImageTags(): Promise<string[]> {
-    const token = await this.resolveToken();
+    const token = this.config.token;
     if (!token) {
       throw new Error('GHCR auth not configured');
     }
@@ -89,10 +71,10 @@ export class GHCRAdapter implements RegistryAdapter {
     });
 
     if (response.status === 401 || response.status === 403) {
-      const hint = this.isGitHubApp()
-        ? `the configured GitHub App needs Contents:Read permission and must be installed on ${this.config.repository}`
-        : `GHCR_TOKEN needs the 'repo' scope to list tags for ${this.config.repository}`;
-      throw new Error(`GitHub API denied access (HTTP ${response.status}). ${hint}.`);
+      throw new Error(
+        `GitHub API denied access (HTTP ${response.status}). ` +
+        `GHCR_TOKEN (or the configured token_env) needs the 'repo' scope to list tags for ${this.config.repository}.`,
+      );
     }
     if (response.status === 404) {
       throw new Error(
