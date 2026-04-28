@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { validateTraefik, type DoctorContext } from '../services/traefikDoctor';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { validateTraefik, collectPresentEnvVars, type DoctorContext } from '../services/traefikDoctor';
 import type { OverwatchConfig } from '../config/schema';
 import type { AppDefinition } from '../models/app';
 import type { TraefikGlobal, TraefikTenant } from '../models/traefik';
@@ -185,5 +188,49 @@ describe('validateTraefik — upstream TLS', () => {
       config: withTraefik({} as TraefikGlobal),
     }));
     expect(issues.filter(i => i.scope.includes('forwarded_headers'))).toEqual([]);
+  });
+});
+
+describe('collectPresentEnvVars', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'overwatch-doctor-env-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('reads keys from <deployDir>/.env', () => {
+    const overwatchDir = path.join(tmp, 'overwatch');
+    fs.mkdirSync(overwatchDir, { recursive: true });
+    fs.writeFileSync(path.join(overwatchDir, '.env'), 'JWT_SECRET=abc\nGOOGLE_CLIENT_ID=xyz\n');
+    const out = collectPresentEnvVars(overwatchDir);
+    expect(out.has('JWT_SECRET')).toBe(true);
+    expect(out.has('GOOGLE_CLIENT_ID')).toBe(true);
+  });
+
+  it('also reads sibling .env files (e.g. infrastructure/.env)', () => {
+    // Mirrors the standard layout: <root>/overwatch/.env + <root>/infrastructure/.env
+    const overwatchDir = path.join(tmp, 'overwatch');
+    const infraDir = path.join(tmp, 'infrastructure');
+    fs.mkdirSync(overwatchDir, { recursive: true });
+    fs.mkdirSync(infraDir, { recursive: true });
+    fs.writeFileSync(path.join(overwatchDir, '.env'), 'JWT_SECRET=abc\n');
+    fs.writeFileSync(path.join(infraDir, '.env'), 'CF_DNS_API_TOKEN=token-xyz\nACME_EMAIL=a@b.c\n');
+    const out = collectPresentEnvVars(overwatchDir);
+    expect(out.has('JWT_SECRET')).toBe(true);
+    expect(out.has('CF_DNS_API_TOKEN')).toBe(true);
+    expect(out.has('ACME_EMAIL')).toBe(true);
+  });
+
+  it('still returns process.env when deployDir is undefined', () => {
+    const out = collectPresentEnvVars(undefined);
+    expect(out.has('PATH')).toBe(true);
+  });
+
+  it('handles missing .env files silently', () => {
+    const out = collectPresentEnvVars(tmp);
+    expect(out.size).toBeGreaterThan(0); // process.env keys at minimum
   });
 });
