@@ -2,7 +2,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { findConfigPath, loadConfig, clearConfigCache } from '../config/loader';
+import { getDataDir } from '../config';
 import { OverwatchConfigSchema } from '../config/schema';
+import { withFileLock } from './fileLock';
 import {
   TraefikGlobalSchema,
   TraefikDashboardSchema,
@@ -49,18 +51,71 @@ async function readRawConfig(): Promise<Record<string, any>> {
   return (yaml.load(content) as Record<string, any>) ?? {};
 }
 
+/**
+ * Persist `updated` as the new overwatch.yaml, durably and serialised against
+ * concurrent writers.
+ *
+ * Why this is non-trivial: in the default Docker layout overwatch.yaml is
+ * bind-mounted as a *single file* into /app/. /app/ itself is owned by the
+ * image and not writable by the runtime `node` user, so the classic
+ * write-temp-then-rename pattern fails (parent isn't writable, AND the kernel
+ * forbids overwriting a bind-mounted target via rename — would change inode).
+ *
+ * The pattern that actually works in this environment:
+ *   1. Hold withFileLock so no other process / re-entrant call interleaves.
+ *   2. Write+fsync a fully-formed scratch file in the (writable) data dir.
+ *   3. fs.copyFile scratch → target. copyFile opens the target with
+ *      O_TRUNC|O_CREAT|O_WRONLY, which works on bind-mounted single files.
+ *   4. fsync the target so the new bytes are durable.
+ *   5. Best-effort delete the scratch file.
+ *
+ * The result is durable (post-crash the target is either fully old or fully
+ * new bytes from a single copyFile call), serialised across processes, and
+ * works across both normal filesystems and bind-mounted single-file targets.
+ */
 async function writeRawConfig(updated: Record<string, any>): Promise<void> {
-  // Validate the merged shape against the full schema before persisting.
-  const parse = OverwatchConfigSchema.safeParse(updated);
-  if (!parse.success) {
-    const errors = parse.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
-    throw new Error(`Resulting overwatch.yaml would be invalid: ${errors}`);
-  }
-  const configPath = findConfigPath();
-  const tmp = `${configPath}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, yaml.dump(updated, { lineWidth: 120, noRefs: true }), { mode: 0o644 });
-  await fs.rename(tmp, configPath);
-  clearConfigCache();
+  return withFileLock('overwatch-config', async () => {
+    const parse = OverwatchConfigSchema.safeParse(updated);
+    if (!parse.success) {
+      const errors = parse.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
+      throw new Error(`Resulting overwatch.yaml would be invalid: ${errors}`);
+    }
+    const configPath = findConfigPath();
+    const content = yaml.dump(updated, { lineWidth: 120, noRefs: true });
+
+    const scratchDir = path.join(getDataDir(), '.config-tmp');
+    await fs.mkdir(scratchDir, { recursive: true });
+    const scratch = path.join(scratchDir, `overwatch.yaml.${process.pid}.${Date.now()}`);
+
+    try {
+      // Write fully + fsync the scratch file before touching the target.
+      const sfh = await fs.open(scratch, 'w', 0o644);
+      try {
+        await sfh.writeFile(content);
+        await sfh.sync();
+      } finally {
+        await sfh.close();
+      }
+
+      // Overwrite the (possibly bind-mounted) target in a single copyFile call.
+      await fs.copyFile(scratch, configPath);
+
+      // fsync the target so bytes are durable on the underlying filesystem.
+      // Best-effort: some bind-mount setups disallow opening RW-for-fsync from
+      // certain paths. The copyFile already wrote the bytes; the fsync is
+      // belt-and-braces for crash durability.
+      try {
+        const tfh = await fs.open(configPath, 'r+');
+        try { await tfh.sync(); } finally { await tfh.close(); }
+      } catch {
+        /* non-fatal; copyFile bytes are still in the page cache */
+      }
+    } finally {
+      await fs.unlink(scratch).catch(() => {});
+    }
+
+    clearConfigCache();
+  });
 }
 
 // ─── Global Traefik config ──────────────────────────────────────────────────

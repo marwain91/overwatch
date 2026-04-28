@@ -108,7 +108,9 @@ export function buildOverwatchComposeYml(config: OverwatchConfig): string {
     volumes: [
       '/var/run/docker.sock:/var/run/docker.sock',
       '/root/.docker:/root/.docker:ro',
-      './overwatch.yaml:/app/overwatch.yaml:ro',
+      // Mounted RW so the admin UI / REST API can persist edits (Traefik
+      // config, etc.). Host file permissions still gate writes.
+      './overwatch.yaml:/app/overwatch.yaml',
       './data:/app/data',
       '${APPS_PATH_ON_HOST}:/app/apps',
     ],
