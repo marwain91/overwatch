@@ -115,17 +115,24 @@ router.put('/overwatch', requireRole('admin'), asyncHandler(async (req: Request,
 //
 // Admin-only is enough here — there's nothing to typo into the URL (no path
 // param to mismatch), and the UI already wraps this in a confirmation modal.
-// requireConfirmId expects a route param to compare against; not applicable.
+//
+// Important: the client's HTTP request reaches this admin endpoint *through*
+// Traefik. Awaiting `docker restart` before sending the response means the
+// connection dies mid-flight and the browser surfaces "Failed to fetch" —
+// even though the restart itself succeeded. Reply first, then kick the
+// restart off fire-and-forget. Restart failures are logged server-side
+// (rare — the Docker daemon is local) and visible in the next page reload.
 
 router.post('/reload', requireRole('admin'), asyncHandler(async (_req: Request, res: Response) => {
   const config = loadConfig();
   const containerName = `${config.project.prefix}-traefik`;
-  try {
-    await execFileAsync('docker', ['restart', containerName]);
-    res.json({ success: true, container: containerName });
-  } catch (err: any) {
-    res.status(500).json({ error: `Failed to restart Traefik: ${err?.message || err}` });
-  }
+  res.json({ success: true, container: containerName, note: 'Restart scheduled — brief routing pause expected.' });
+  // Detach: the response is already on its way; we don't await this.
+  setImmediate(() => {
+    execFileAsync('docker', ['restart', containerName]).catch((err: any) => {
+      console.error(`[traefik reload] Failed to restart ${containerName}:`, err?.message || err);
+    });
+  });
 }));
 
 export default router;
