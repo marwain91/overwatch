@@ -112,8 +112,12 @@ router.put('/overwatch', requireRole('admin'), asyncHandler(async (req: Request,
 }));
 
 // ─── Reload Traefik container ───────────────────────────────────────────────
+//
+// Admin-only is enough here — there's nothing to typo into the URL (no path
+// param to mismatch), and the UI already wraps this in a confirmation modal.
+// requireConfirmId expects a route param to compare against; not applicable.
 
-router.post('/reload', requireRole('admin'), requireConfirmId('reload'), asyncHandler(async (_req: Request, res: Response) => {
+router.post('/reload', requireRole('admin'), asyncHandler(async (_req: Request, res: Response) => {
   const config = loadConfig();
   const containerName = `${config.project.prefix}-traefik`;
   try {
