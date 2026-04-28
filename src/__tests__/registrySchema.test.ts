@@ -1,68 +1,40 @@
 import { describe, it, expect } from 'vitest';
 import { AppRegistryAuthSchema, AppRegistrySchema } from '../models/app';
 
-describe('AppRegistryAuthSchema — github_app discriminator', () => {
-  it('accepts type=github_app with all three *_env fields', () => {
+describe('AppRegistryAuthSchema — supported types', () => {
+  it('accepts type=token with token_env', () => {
     const result = AppRegistryAuthSchema.safeParse({
-      type: 'github_app',
-      app_id_env: 'GH_APP_ID',
-      installation_id_env: 'GH_APP_INSTALLATION_ID',
-      private_key_env: 'GH_APP_PRIVATE_KEY',
+      type: 'token',
+      token_env: 'GHCR_TOKEN',
     });
     expect(result.success).toBe(true);
   });
 
-  it('rejects type=github_app missing app_id_env, naming the field', () => {
+  it('accepts type=basic with username_env + token_env', () => {
     const result = AppRegistryAuthSchema.safeParse({
-      type: 'github_app',
-      installation_id_env: 'X',
-      private_key_env: 'Y',
+      type: 'basic',
+      username_env: 'REG_USERNAME',
+      token_env: 'REG_PASSWORD',
     });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.issues.some((i) => i.path.join('.') === 'app_id_env')).toBe(true);
-    }
+    expect(result.success).toBe(true);
   });
 
-  it('rejects type=github_app missing installation_id_env', () => {
+  it('accepts type=aws_iam with aws_region_env', () => {
     const result = AppRegistryAuthSchema.safeParse({
-      type: 'github_app',
-      app_id_env: 'X',
-      private_key_env: 'Y',
+      type: 'aws_iam',
+      aws_region_env: 'AWS_REGION',
     });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.issues.some((i) => i.path.join('.') === 'installation_id_env')).toBe(true);
-    }
+    expect(result.success).toBe(true);
   });
 
-  it('rejects type=github_app missing private_key_env', () => {
+  it('rejects the removed github_app type (v1.6.7+)', () => {
     const result = AppRegistryAuthSchema.safeParse({
       type: 'github_app',
       app_id_env: 'X',
       installation_id_env: 'Y',
+      private_key_env: 'Z',
     });
     expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.issues.some((i) => i.path.join('.') === 'private_key_env')).toBe(true);
-    }
-  });
-
-  it('still accepts the legacy type=token shape', () => {
-    const result = AppRegistryAuthSchema.safeParse({
-      type: 'token',
-      token_env: 'GHCR_TOKEN',
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it('does not require github-app fields when type=token, even if extra fields are absent', () => {
-    const result = AppRegistryAuthSchema.safeParse({
-      type: 'token',
-      username_env: 'GHCR_USERNAME',
-      token_env: 'GHCR_TOKEN',
-    });
-    expect(result.success).toBe(true);
   });
 });
 

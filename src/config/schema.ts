@@ -87,21 +87,10 @@ export type OverwatchConfig = z.infer<typeof OverwatchConfigSchema>;
 // ─── Legacy schemas (kept for migration from old format) ────────────────────
 
 export const RegistryAuthSchema = z.object({
-  type: z.enum(['token', 'basic', 'aws_iam', 'github_app']),
+  type: z.enum(['token', 'basic', 'aws_iam']),
   username_env: z.string().optional(),
   token_env: z.string().optional(),
   aws_region_env: z.string().optional(),
-  app_id_env: z.string().optional(),
-  installation_id_env: z.string().optional(),
-  private_key_env: z.string().optional(),
-}).superRefine((auth, ctx) => {
-  if (auth.type === 'github_app') {
-    for (const f of ['app_id_env', 'installation_id_env', 'private_key_env'] as const) {
-      if (!auth[f]) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [f], message: `${f} is required when auth.type === 'github_app'` });
-      }
-    }
-  }
 });
 
 export const RegistryConfigSchema = z.object({

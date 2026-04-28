@@ -162,7 +162,6 @@ export function AppSettingsPage() {
                 onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, type: e.target.value as AppRegistry['auth']['type'] } })}
               >
                 <option value="token">Personal Access Token</option>
-                <option value="github_app">GitHub App (recommended for org repos)</option>
                 <option value="basic">Basic (username/password)</option>
                 <option value="aws_ecr">AWS ECR</option>
               </select>
@@ -188,51 +187,6 @@ export function AppSettingsPage() {
                   />
                 </div>
               </div>
-            )}
-            {registry.auth.type === 'github_app' && (
-              <>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="label">App ID Env Var</label>
-                    <input
-                      className="input"
-                      value={registry.auth.app_id_env || ''}
-                      onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, app_id_env: e.target.value } })}
-                      placeholder="GH_APP_ID"
-                    />
-                  </div>
-                  <div>
-                    <label className="label">Installation ID Env Var</label>
-                    <input
-                      className="input"
-                      value={registry.auth.installation_id_env || ''}
-                      onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, installation_id_env: e.target.value } })}
-                      placeholder="GH_APP_INSTALLATION_ID"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="label">Private Key Env Var</label>
-                  <input
-                    className="input"
-                    value={registry.auth.private_key_env || ''}
-                    onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, private_key_env: e.target.value } })}
-                    placeholder="GH_APP_PRIVATE_KEY"
-                  />
-                  <p className="mt-1 text-xs text-content-faint">
-                    The env var holds the PEM private key (raw or base64). See{' '}
-                    <a
-                      href="https://github.com/marwain91/overwatch/blob/main/docs/registry-github-app.md"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline hover:text-content-muted"
-                    >
-                      registry-github-app.md
-                    </a>{' '}
-                    for setup steps.
-                  </p>
-                </div>
-              </>
             )}
             {registry.auth.type === 'aws_ecr' && (
               <div>

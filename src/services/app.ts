@@ -13,6 +13,7 @@ import {
   ApplyResult,
 } from '../models/app';
 import { withFileLock } from './fileLock';
+import { clearAdapterCache } from '../adapters/registry';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 
 const APPS_D_DIR = 'apps.d';
@@ -138,6 +139,8 @@ async function removeStatic(id: string): Promise<void> {
   } catch (err: any) {
     if (err.code !== 'ENOENT') throw err;
   }
+  // Drop any cached registry adapter for this app — registry config is gone.
+  clearAdapterCache(id);
 }
 
 async function upsertRuntime(id: string, mutator: (prev: AppRuntimeEntry | undefined) => AppRuntimeEntry): Promise<AppRuntimeEntry> {
@@ -285,6 +288,11 @@ export async function applyApp(
       }
       const now = new Date().toISOString();
       await writeJsonAtomic(currentFile, next, { mode: 0o644 });
+      // Invalidate cached registry adapter so registry-config changes take
+      // effect on the next pull/login without a container restart. Without
+      // this, edits to auth.type / repository / env vars use the stale
+      // adapter built at process start.
+      clearAdapterCache(next.id);
       const entry = await upsertRuntime(next.id, prevEntry => ({
         createdAt: prevEntry?.createdAt ?? now,
         updatedAt: now,
@@ -299,6 +307,7 @@ export async function applyApp(
 
     const now = new Date().toISOString();
     await writeJsonAtomic(currentFile, next, { mode: 0o644 });
+    clearAdapterCache(next.id);
     const entry = await upsertRuntime(next.id, () => ({ createdAt: now, updatedAt: now }));
     await reconcileEnvVarDeclarations(next);
     return {
