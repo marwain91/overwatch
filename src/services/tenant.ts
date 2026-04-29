@@ -52,6 +52,35 @@ export function getTenantPath(appId: string, tenantId: string): string {
   return path.join(getAppsDir(), appId, 'tenants', tenantId);
 }
 
+/**
+ * Pure overlay function — combines a frozen tenant snapshot with the current
+ * global app definition's *infrastructure* fields (registry + default_image_tag).
+ * Returns the snapshot unchanged if the global is missing.
+ *
+ * Why this exists (v1.6.8): the frozen-snapshot mechanism (v1.5.5) was
+ * designed to isolate tenants from app schema changes — services, backups,
+ * env_vars declarations, traefik library — so a tenant on v1.0 doesn't break
+ * when v2.0 adds a new service or changes an env var contract. That isolation
+ * is correct for those fields. But it also captured `registry` and
+ * `default_image_tag`, which are infrastructure decisions ("where do we pull
+ * from?", "what tag if none specified?") that should always reflect the
+ * current global config — admins changing the source repo expect the change
+ * to take effect on existing tenants without reseeding each snapshot.
+ */
+export function overlayInfrastructure(snapshot: AppDefinition, global: AppDefinition | null): AppDefinition {
+  if (!global) return snapshot;
+  return {
+    ...snapshot,
+    registry: global.registry,
+    default_image_tag: global.default_image_tag,
+  };
+}
+
+async function overlayInfrastructureFromGlobal(snapshot: AppDefinition): Promise<AppDefinition> {
+  const global = await getApp(snapshot.id);
+  return overlayInfrastructure(snapshot, global);
+}
+
 export async function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
   const { appId, tenantId, domain, imageTag } = input;
   const config = loadConfig();
@@ -259,6 +288,15 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
   if (!app) {
     throw new Error(`App '${appId}' not found`);
   }
+  // Overlay infrastructure-level fields (`registry`, `default_image_tag`)
+  // from the global definition. The frozen snapshot owns service-level
+  // schema (services, backup, env_vars declarations, traefik library) so
+  // a tenant on v1.0 doesn't break when v2.0 changes the schema — but
+  // *registry* is a "where do we pull from" decision that should always
+  // reflect the current global config. Without this, an admin's "switch
+  // app to a new repo" edit silently fails to propagate to existing
+  // tenants until each is manually reseeded.
+  app = await overlayInfrastructureFromGlobal(app);
 
   // Read current .env
   const originalEnvContent = await fs.readFile(envPath, 'utf-8');
@@ -292,7 +330,12 @@ export async function updateTenant(appId: string, tenantId: string, newTag: stri
         emit('manifest', 'completed', 'noop (manifest matches current definition)');
       }
       const reloaded = await readTenantAppDef(appId, tenantId);
-      if (reloaded) app = reloaded;
+      // Re-apply the overlay: manifest sync can overwrite the registry block
+      // with whatever is in the image's embedded /overwatch/app.json, which
+      // for older images may carry a stale repo. The global definition is
+      // the source of truth for "where do we pull from"; manifest content
+      // for that field is ignored.
+      if (reloaded) app = await overlayInfrastructureFromGlobal(reloaded);
     } else {
       emit('manifest', 'skipped', 'image carries no /overwatch/app.json — keeping existing definition');
     }
