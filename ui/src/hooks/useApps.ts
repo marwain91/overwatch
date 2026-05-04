@@ -20,7 +20,7 @@ export function useApp(appId: string) {
 export function useAppTags(appId: string) {
   return useQuery({
     queryKey: ['apps', appId, 'tags'],
-    queryFn: () => api.get<{ tags: string[] }>(`/apps/${appId}/tags`),
+    queryFn: () => api.get<{ tags: string[]; error?: string }>(`/apps/${appId}/tags`),
     enabled: !!appId,
   });
 }

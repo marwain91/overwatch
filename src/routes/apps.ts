@@ -74,14 +74,23 @@ router.delete('/:appId', validateAppId, requireRole('admin'), requireConfirmId('
   res.json({ success: true });
 }));
 
-// Get available image tags for an app
+// Get available image tags for an app.
+// Failures from the upstream registry (missing scope, 4xx/5xx, network) are
+// returned as 200 with `{ tags: [], error }` so the UI can show the reason
+// inline without a noisy 500 in the browser console — listing tags is a
+// best-effort convenience, not a hard dependency.
 router.get('/:appId/tags', validateAppId, asyncHandler(async (req, res) => {
   const app = await getApp(req.params.appId);
   if (!app) {
     return res.status(404).json({ error: 'App not found' });
   }
-  const tags = await getImageTagsForApp(app);
-  res.json({ tags });
+  try {
+    const tags = await getImageTagsForApp(app);
+    res.json({ tags });
+  } catch (error: any) {
+    console.error(`Tag listing failed for app ${app.id}:`, error?.message || error);
+    res.json({ tags: [], error: error?.message || 'Failed to list tags from registry' });
+  }
 }));
 
 // Test registry connection for an app — editor+ (reads non-secret status).
