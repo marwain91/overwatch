@@ -155,16 +155,20 @@ traefik:
 
   entrypoints:
     - name: web
-      port: 80
+      port: 80                       # container-side port Traefik listens on
+      host_port: 8080                # host-side published port (optional; defaults to `port`)
+      host_bind: "127.0.0.1"         # host-side bind address (optional; defaults to "0.0.0.0")
       forwarded_headers:
         # CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust.
         # Without this, Traefik strips them and apps see the upstream's IP.
-        trusted_ips: ["10.0.0.0/8", "172.16.0.0/12"]
+        trusted_ips: ["127.0.0.1/32"]
       proxy_protocol:
         # PROXY protocol v1/v2 for HAProxy / AWS NLB. Optional.
         trusted_ips: ["10.0.0.0/8"]
       # No `redirect_to` — the upstream already terminates HTTPS.
 ```
+
+`host_port` and `host_bind` (v1.6.10+) control the compose `ports:` mapping for Traefik. Use them when the host already has another process on 80/443 — e.g. an upstream nginx terminating TLS with pre-issued certs and proxying to Traefik on loopback. Omit both to publish on `0.0.0.0:port`.
 
 When `tls_termination: upstream` is in effect for a router, the generator:
 

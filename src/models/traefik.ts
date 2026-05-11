@@ -205,6 +205,8 @@ export const ProxyProtocolSchema = z.object({
 export const EntrypointSchema = z.object({
   name: z.string().min(1),
   port: z.number().int().min(1).max(65535),
+  host_port: z.number().int().min(1).max(65535).optional().describe('Host-side published port (default: same as container `port`). Use to avoid clashing with another process on the host — e.g. an upstream nginx already owning 80/443.'),
+  host_bind: z.string().optional().describe('Host-side bind address for the published port (default: "0.0.0.0", all interfaces). Set to "127.0.0.1" to expose Traefik only on loopback when an upstream proxy on the same host forwards to it.'),
   redirect_to: z.string().optional().describe('Name of another entrypoint to redirect HTTP→HTTPS to (omit when sitting behind an upstream HTTPS terminator)'),
   forwarded_headers: ForwardedHeadersSchema.optional().describe('Trust X-Forwarded-* headers from these upstream IPs'),
   proxy_protocol: ProxyProtocolSchema.optional().describe('Accept PROXY protocol from these upstream IPs'),
