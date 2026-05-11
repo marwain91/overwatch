@@ -125,13 +125,17 @@ export function buildOverwatchComposeYml(config: OverwatchConfig): string {
     container_name: '${PROJECT_PREFIX}-overwatch',
     restart: 'unless-stopped',
     environment: {
-      OVERWATCH_UID: '"${OVERWATCH_UID:-1001}"',
-      OVERWATCH_GID: '"${OVERWATCH_GID:-1001}"',
+      OVERWATCH_UID: '${OVERWATCH_UID:-1001}',
+      OVERWATCH_GID: '${OVERWATCH_GID:-1001}',
       PORT: 3002,
       MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD}',
       GOOGLE_CLIENT_ID: '${GOOGLE_CLIENT_ID}',
+      GOOGLE_CLIENT_SECRET: '${GOOGLE_CLIENT_SECRET}',
       JWT_SECRET: '${JWT_SECRET}',
       GHCR_TOKEN: '${GHCR_TOKEN}',
+      GITHUB_APP_ID: '${GITHUB_APP_ID}',
+      GITHUB_INSTALLATION_ID: '${GITHUB_INSTALLATION_ID}',
+      GITHUB_APP_PRIVATE_KEY: '${GITHUB_APP_PRIVATE_KEY}',
       AUTH_SERVICE_SECRET: '${AUTH_SERVICE_SECRET}',
       RESTIC_PASSWORD: '${RESTIC_PASSWORD}',
       R2_ACCOUNT_ID: '${R2_ACCOUNT_ID}',
@@ -158,7 +162,7 @@ export function buildOverwatchComposeYml(config: OverwatchConfig): string {
       retries: 3,
       start_period: '10s',
     },
-    deploy: { resources: { limits: { memory: '512M', cpus: '"1.0"' } } },
+    deploy: { resources: { limits: { memory: '512M', cpus: 1.0 } } },
   };
 
   const out: any = {
