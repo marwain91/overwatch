@@ -1,6 +1,6 @@
 import * as yaml from 'js-yaml';
 import type { OverwatchConfig } from '../config/schema';
-import type { CertResolver, MiddlewareSpec, TraefikGlobal } from '../models/traefik';
+import type { CertResolver, Entrypoint, MiddlewareSpec, TraefikGlobal } from '../models/traefik';
 
 /**
  * Build the Traefik static configuration (traefik.yml) from the new
@@ -8,10 +8,14 @@ import type { CertResolver, MiddlewareSpec, TraefikGlobal } from '../models/trae
  * driven entirely by overwatch.yaml.
  */
 export function buildTraefikStaticYml(traefik: TraefikGlobal): string {
-  const entrypoints = traefik.entrypoints ?? [
-    { name: 'web', port: 80, redirect_to: 'websecure' },
-    { name: 'websecure', port: 443 },
-  ];
+  const upstreamMode = traefik.tls_termination === 'upstream';
+  const defaultEntrypoints: Entrypoint[] = upstreamMode
+    ? [{ name: traefik.upstream_entrypoint ?? 'web', port: 80 }]
+    : [
+        { name: 'web', port: 80, redirect_to: 'websecure' },
+        { name: 'websecure', port: 443 },
+      ];
+  const entrypoints: Entrypoint[] = traefik.entrypoints ?? defaultEntrypoints;
   const entryPointsObj: Record<string, any> = {};
   for (const ep of entrypoints) {
     const eobj: any = { address: `:${ep.port}` };
@@ -206,5 +210,7 @@ function yamlHeader(comment: string): string {
  * templates.
  */
 export function shouldUseDynamicTraefik(config: OverwatchConfig): boolean {
-  return !!(config.traefik?.cert_resolvers && config.traefik.cert_resolvers.length > 0);
+  const hasResolvers = !!(config.traefik?.cert_resolvers && config.traefik.cert_resolvers.length > 0);
+  const upstreamMode = config.traefik?.tls_termination === 'upstream';
+  return hasResolvers || upstreamMode;
 }

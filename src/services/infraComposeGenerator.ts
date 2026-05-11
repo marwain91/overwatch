@@ -1,6 +1,6 @@
 import * as yaml from 'js-yaml';
 import type { OverwatchConfig } from '../config/schema';
-import type { TraefikGlobal, TraefikOverwatch } from '../models/traefik';
+import type { Entrypoint, TraefikGlobal, TraefikOverwatch } from '../models/traefik';
 import { isDenylistedLabelKey } from '../models/traefik';
 import { sanitizeTraefikValue } from './traefikLabels';
 
@@ -13,13 +13,16 @@ import { sanitizeTraefikValue } from './traefikLabels';
  */
 export function buildInfraComposeYml(config: OverwatchConfig): string {
   const traefik = config.traefik;
-  if (!traefik?.cert_resolvers || traefik.cert_resolvers.length === 0) {
-    throw new Error('buildInfraComposeYml requires traefik.cert_resolvers; use the static template for legacy installs.');
+  const hasResolvers = (traefik?.cert_resolvers?.length ?? 0) > 0;
+  const upstreamMode = traefik?.tls_termination === 'upstream';
+  if (!traefik || (!hasResolvers && !upstreamMode)) {
+    throw new Error('buildInfraComposeYml requires traefik.cert_resolvers OR traefik.tls_termination="upstream"; use the static template for legacy installs.');
   }
 
   // Compose env block: per-resolver email vars, plus passthrough for any provider envs.
+  // Empty when running in pure upstream-termination mode with no resolvers defined.
   const envLines: string[] = [];
-  for (const r of traefik.cert_resolvers) {
+  for (const r of traefik.cert_resolvers ?? []) {
     const envName = `TRAEFIK_CERTIFICATESRESOLVERS_${toEnvKey(r.name)}_ACME_EMAIL`;
     envLines.push(`${envName}=${r.acme_email}`);
     if (r.challenge === 'dns' && r.env) {
@@ -31,18 +34,21 @@ export function buildInfraComposeYml(config: OverwatchConfig): string {
     }
   }
 
+  // Preserve key order to match v1.6.9 output for existing deploys.
+  // `environment` is always present (empty array under upstream-only mode);
+  // js-yaml renders `environment: []` cleanly and compose ignores it.
   const traefikSvc: any = {
     image: 'traefik:v3.6',
     container_name: '${PROJECT_PREFIX}-traefik',
     restart: 'unless-stopped',
     security_opt: ['no-new-privileges:true'],
-    ports: ['80:80', '443:443'],
+    ports: buildPortsList(traefik.entrypoints),
     environment: envLines,
     volumes: [
       '/var/run/docker.sock:/var/run/docker.sock:ro',
       './traefik/traefik.yml:/etc/traefik/traefik.yml:ro',
       './traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro',
-      'traefik-letsencrypt:/letsencrypt',
+      ...(hasResolvers ? ['traefik-letsencrypt:/letsencrypt'] : []),
       'traefik-logs:/var/log/traefik',
     ],
     networks: ['shared'],
@@ -66,14 +72,43 @@ export function buildInfraComposeYml(config: OverwatchConfig): string {
     },
   };
 
+  // Preserve key order to match v1.6.9 output for existing deploys (with
+  // cert_resolvers). For upstream-only deploys the letsencrypt volume is
+  // omitted entirely.
+  const volumes: any = {};
+  if (hasResolvers) {
+    volumes['traefik-letsencrypt'] = null;
+  }
+  volumes['traefik-logs'] = null;
+  volumes['mariadb-data'] = null;
+
   const out: any = {
     services: { traefik: traefikSvc, mariadb: mariadbSvc },
     networks: { shared: { name: '${NETWORK_NAME}', external: true } },
-    volumes: { 'traefik-letsencrypt': null, 'traefik-logs': null, 'mariadb-data': null },
+    volumes,
   };
 
   return banner('Shared infrastructure stack — Traefik + MariaDB. Generated from overwatch.yaml.') +
     yaml.dump(out, { lineWidth: 120, noRefs: true, quotingType: '"' });
+}
+
+/**
+ * Build the compose `ports:` list for Traefik.
+ *
+ * - If `entrypoints` is defined, emit one mapping per entrypoint, honoring
+ *   `host_bind` (default omit) and `host_port` (default = `port`).
+ * - Otherwise, fall back to the legacy `80:80` + `443:443` for backward compat.
+ */
+function buildPortsList(entrypoints: Entrypoint[] | undefined): string[] {
+  if (!entrypoints || entrypoints.length === 0) {
+    return ['80:80', '443:443'];
+  }
+  return entrypoints.map((e) => {
+    const hostPort = e.host_port ?? e.port;
+    return e.host_bind
+      ? `${e.host_bind}:${hostPort}:${e.port}`
+      : `${hostPort}:${e.port}`;
+  });
 }
 
 /**
@@ -83,7 +118,7 @@ export function buildInfraComposeYml(config: OverwatchConfig): string {
  */
 export function buildOverwatchComposeYml(config: OverwatchConfig): string {
   const ow = config.traefik?.overwatch;
-  const labels = ow ? buildOverwatchLabels(ow, config.traefik!) : legacyOverwatchLabels();
+  const labels = ow ? buildOverwatchLabels(ow, config.traefik!) : legacyOverwatchLabels(config.traefik);
 
   const overwatchSvc: any = {
     image: 'ghcr.io/marwain91/overwatch:latest',
@@ -136,14 +171,18 @@ export function buildOverwatchComposeYml(config: OverwatchConfig): string {
 }
 
 function buildOverwatchLabels(ow: TraefikOverwatch, traefik: TraefikGlobal): string[] {
+  const upstream = traefik.tls_termination === 'upstream';
+  const entrypoint = upstream ? (traefik.upstream_entrypoint ?? 'web') : 'websecure';
   const out: string[] = [];
   out.push('traefik.enable=true');
   const safeHost = sanitizeTraefikValue(ow.host);
   out.push(`traefik.http.routers.admin.rule=Host(\`${safeHost}\`)`);
-  out.push('traefik.http.routers.admin.entrypoints=websecure');
-  out.push('traefik.http.routers.admin.tls=true');
-  if (ow.cert_resolver) {
-    out.push(`traefik.http.routers.admin.tls.certresolver=${sanitizeTraefikValue(ow.cert_resolver)}`);
+  out.push(`traefik.http.routers.admin.entrypoints=${entrypoint}`);
+  if (!upstream) {
+    out.push('traefik.http.routers.admin.tls=true');
+    if (ow.cert_resolver) {
+      out.push(`traefik.http.routers.admin.tls.certresolver=${sanitizeTraefikValue(ow.cert_resolver)}`);
+    }
   }
 
   const mws: string[] = ow.middlewares ?? [];
@@ -160,15 +199,20 @@ function buildOverwatchLabels(ow: TraefikOverwatch, traefik: TraefikGlobal): str
   return out;
 }
 
-function legacyOverwatchLabels(): string[] {
-  return [
+function legacyOverwatchLabels(traefik?: TraefikGlobal): string[] {
+  const upstream = traefik?.tls_termination === 'upstream';
+  const entrypoint = upstream ? (traefik?.upstream_entrypoint ?? 'web') : 'websecure';
+  const labels = [
     'traefik.enable=true',
     'traefik.http.routers.admin.rule=Host(`${OVERWATCH_ADMIN_HOST}`)',
-    'traefik.http.routers.admin.entrypoints=websecure',
-    'traefik.http.routers.admin.tls=true',
-    'traefik.http.routers.admin.tls.certresolver=${OVERWATCH_ADMIN_CERT_RESOLVER:-letsencrypt}',
-    'traefik.http.services.admin.loadbalancer.server.port=3002',
+    `traefik.http.routers.admin.entrypoints=${entrypoint}`,
   ];
+  if (!upstream) {
+    labels.push('traefik.http.routers.admin.tls=true');
+    labels.push('traefik.http.routers.admin.tls.certresolver=${OVERWATCH_ADMIN_CERT_RESOLVER:-letsencrypt}');
+  }
+  labels.push('traefik.http.services.admin.loadbalancer.server.port=3002');
+  return labels;
 }
 
 function toEnvKey(name: string): string {
