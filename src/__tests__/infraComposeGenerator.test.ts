@@ -61,6 +61,41 @@ describe('buildInfraComposeYml — tls_termination=upstream', () => {
   });
 });
 
+describe('buildOverwatchComposeYml — env vars and YAML quoting', () => {
+  it('emits OVERWATCH_UID/GID without extra inner quotes that Compose rejects', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({
+      log_level: 'INFO',
+      tls_termination: 'upstream',
+    }));
+    // Acceptable (Compose passes the value unchanged): bare ${VAR} or "${VAR}".
+    // BAD: OVERWATCH_UID: "\"${OVERWATCH_UID:-1001}\""  — Compose rejects on YAML parse.
+    expect(yml).toMatch(/OVERWATCH_UID:\s+"?\$\{OVERWATCH_UID:-1001\}"?$/m);
+    expect(yml).toMatch(/OVERWATCH_GID:\s+"?\$\{OVERWATCH_GID:-1001\}"?$/m);
+    expect(yml).not.toMatch(/OVERWATCH_UID:\s+"\\"/);
+    expect(yml).not.toMatch(/OVERWATCH_GID:\s+"\\"/);
+  });
+
+  it('emits cpus as a number (Compose-compatible), not an over-quoted string', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({
+      log_level: 'INFO',
+      tls_termination: 'upstream',
+    }));
+    expect(yml).toMatch(/cpus:\s+(1|1\.0)$/m);
+    expect(yml).not.toMatch(/cpus:\s+"\\"/);
+  });
+
+  it('includes GITHUB_APP_* and GOOGLE_CLIENT_SECRET env passthroughs', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({
+      log_level: 'INFO',
+      tls_termination: 'upstream',
+    }));
+    expect(yml).toContain('GITHUB_APP_ID: ${GITHUB_APP_ID}');
+    expect(yml).toContain('GITHUB_INSTALLATION_ID: ${GITHUB_INSTALLATION_ID}');
+    expect(yml).toContain('GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}');
+    expect(yml).toContain('GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}');
+  });
+});
+
 describe('buildOverwatchComposeYml — tls_termination=upstream', () => {
   it('emits HTTP-only admin labels (no tls=true, no certresolver) under upstream mode with overwatch block', () => {
     const yml = buildOverwatchComposeYml(makeConfig({
