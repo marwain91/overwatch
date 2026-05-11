@@ -49,10 +49,13 @@ export function buildTraefikStaticYml(traefik: TraefikGlobal): string {
     certificatesResolvers[r.name] = certResolverToTraefik(r);
   }
 
+  // Traefik v3 rejects `certificatesResolvers: {}` as a standalone element.
+  // Omit the key entirely when no resolvers are configured (e.g. upstream-mode
+  // deploys where nginx handles TLS).
   const out: any = {
     api: { dashboard: !!traefik.dashboard?.enabled, insecure: false },
     entryPoints: entryPointsObj,
-    certificatesResolvers,
+    ...(Object.keys(certificatesResolvers).length > 0 ? { certificatesResolvers } : {}),
     providers: {
       docker: {
         endpoint: 'unix:///var/run/docker.sock',
