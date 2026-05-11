@@ -5,6 +5,14 @@ All notable changes to Overwatch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.13] — 2026-05-11
+
+### Fixed
+- **Database dumps for non-trivial DBs.** `MySQLAdapter.dumpDatabase` and `PostgresAdapter.dumpDatabase` buffered the entire `mysqldump`/`pg_dump` stdout in memory (`execFile` with `maxBuffer: 100 MB`). Dumps larger than 100 MB crashed Overwatch with `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`; smaller-but-still-multi-MB dumps caused memory pressure. Both adapters now stream stdout directly to the output file via `spawn` + pipe, matching the existing `restoreDatabase` pattern. No upper bound on dump size.
+
+### Added
+- **`R2_ENDPOINT` as a first-class .env variable.** The generated Overwatch compose now emits `R2_ENDPOINT: ${R2_ENDPOINT:-https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com}`. Existing deploys keep working unchanged (fallback constructs the non-jurisdictional URL from `R2_ACCOUNT_ID`). Operators on EU / FedRAMP / other jurisdictional buckets can now set `R2_ENDPOINT` explicitly in `overwatch/.env` instead of relying on the constructed URL — required for `<account>.eu.r2.cloudflarestorage.com` buckets.
+
 ## [1.6.12] — 2026-05-11
 
 ### Fixed
@@ -35,6 +43,7 @@ Regression introduced in 1.6.10.
 ### Compatibility
 Existing deploys with `cert_resolvers` (every production deploy today) produce byte-identical generator output to 1.6.9. New behavior only activates when an operator opts into `tls_termination: upstream`. Verified by `src/__tests__/regression-v1.6.10.test.ts`.
 
+[1.6.13]: https://github.com/marwain91/overwatch/compare/v1.6.12...v1.6.13
 [1.6.12]: https://github.com/marwain91/overwatch/compare/v1.6.11...v1.6.12
 [1.6.11]: https://github.com/marwain91/overwatch/compare/v1.6.10...v1.6.11
 [1.6.10]: https://github.com/marwain91/overwatch/compare/v1.6.9...v1.6.10

@@ -94,6 +94,16 @@ describe('buildOverwatchComposeYml — env vars and YAML quoting', () => {
     expect(yml).toContain('GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}');
     expect(yml).toContain('GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}');
   });
+
+  it('R2_ENDPOINT defaults from R2_ACCOUNT_ID but can be overridden by .env', () => {
+    // Important for jurisdictional R2 buckets (.eu, .fedramp) where the default
+    // construction does not produce the right URL.
+    const yml = buildOverwatchComposeYml(makeConfig({
+      log_level: 'INFO',
+      tls_termination: 'upstream',
+    }));
+    expect(yml).toContain('R2_ENDPOINT: ${R2_ENDPOINT:-https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com}');
+  });
 });
 
 describe('buildOverwatchComposeYml — tls_termination=upstream', () => {
