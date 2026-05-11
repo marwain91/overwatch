@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-import { createReadStream } from 'fs';
+import { createReadStream, createWriteStream } from 'fs';
 import { DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from './types';
 import { BaseDatabaseAdapter } from './base';
 
@@ -96,15 +96,33 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Use execFile (no shell) to avoid password injection; pass password via MYSQL_PWD env
-    const { stdout } = await execFileAsync('docker', [
-      'exec', '-e', `MYSQL_PWD=${this.config.rootPassword}`,
-      containerName, 'mysqldump', '-u', this.config.rootUser,
-      '--single-transaction', dbName,
-    ], { maxBuffer: 100 * 1024 * 1024 });
+    // Stream mysqldump's stdout directly to disk. Previously we buffered the
+    // entire dump in memory via execFile (with a 100 MB cap), which broke for
+    // any DB whose dump exceeded that — and crashed the Overwatch container
+    // for very large dumps even before the cap. spawn + pipe handles arbitrary
+    // sizes. Password is passed via MYSQL_PWD env, never as an argv flag.
+    return new Promise<void>((resolve, reject) => {
+      const proc = spawn('docker', [
+        'exec', '-e', `MYSQL_PWD=${this.config.rootPassword}`,
+        containerName, 'mysqldump', '-u', this.config.rootUser,
+        '--single-transaction', dbName,
+      ]);
 
-    const fs = await import('fs/promises');
-    await fs.writeFile(outputPath, stdout);
+      const out = createWriteStream(outputPath, { mode: 0o600 });
+      proc.stdout.pipe(out);
+
+      let stderr = '';
+      proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+      const fail = (err: Error) => { out.destroy(); reject(err); };
+      proc.on('error', fail);
+      out.on('error', fail);
+      proc.on('close', (code) => {
+        out.end();
+        if (code === 0) resolve();
+        else reject(new Error(`mysqldump exited ${code}: ${stderr.slice(0, 1000)}`));
+      });
+    });
   }
 
   async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {

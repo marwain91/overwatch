@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-import { createReadStream } from 'fs';
+import { createReadStream, createWriteStream } from 'fs';
 import { DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from './types';
 import { BaseDatabaseAdapter } from './base';
 
@@ -127,14 +127,30 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Use execFile (no shell) to avoid password injection; pass password via PGPASSWORD env
-    const { stdout } = await execFileAsync('docker', [
-      'exec', '-e', `PGPASSWORD=${this.config.rootPassword}`,
-      containerName, 'pg_dump', '-U', this.config.rootUser, '-d', dbName,
-    ], { maxBuffer: 100 * 1024 * 1024 });
+    // Stream pg_dump's stdout directly to disk. See mysql.ts for the same fix —
+    // the previous execFile-with-stdout-buffer pattern broke for dumps larger
+    // than the 100 MB cap. Password passed via PGPASSWORD env, never argv.
+    return new Promise<void>((resolve, reject) => {
+      const proc = spawn('docker', [
+        'exec', '-e', `PGPASSWORD=${this.config.rootPassword}`,
+        containerName, 'pg_dump', '-U', this.config.rootUser, '-d', dbName,
+      ]);
 
-    const fs = await import('fs/promises');
-    await fs.writeFile(outputPath, stdout);
+      const out = createWriteStream(outputPath, { mode: 0o600 });
+      proc.stdout.pipe(out);
+
+      let stderr = '';
+      proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+      const fail = (err: Error) => { out.destroy(); reject(err); };
+      proc.on('error', fail);
+      out.on('error', fail);
+      proc.on('close', (code) => {
+        out.end();
+        if (code === 0) resolve();
+        else reject(new Error(`pg_dump exited ${code}: ${stderr.slice(0, 1000)}`));
+      });
+    });
   }
 
   async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {
