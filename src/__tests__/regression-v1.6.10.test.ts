@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildInfraComposeYml, buildOverwatchComposeYml } from "/app/src/services/infraComposeGenerator";
-import type { OverwatchConfig } from "/app/src/config/schema";
+import { buildInfraComposeYml, buildOverwatchComposeYml } from "../services/infraComposeGenerator";
+import type { OverwatchConfig } from "../config/schema";
 
 // Mimic an existing production deploy (daktela-vms.diteco.eu).
 const existingConfig: OverwatchConfig = {
