@@ -97,11 +97,8 @@ async function start() {
     next();
   });
 
-  // Serve React UI from ui/dist/ (falls back to public/ if ui/dist doesn't exist)
-  const uiDistPath = path.join(__dirname, '../ui/dist');
-  const publicPath = path.join(__dirname, '../public');
+  const staticPath = path.join(__dirname, '../ui/dist');
   const fs = require('fs');
-  const staticPath = fs.existsSync(uiDistPath) ? uiDistPath : publicPath;
   app.use(express.static(staticPath));
 
   // Rate limiting

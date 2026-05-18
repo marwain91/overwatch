@@ -14,7 +14,8 @@ export const CONTAINER_NAME_RE = /^[a-z0-9][a-z0-9_.-]*$/;
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Basic email validation */
-export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Bounded quantifiers cap input length and rule out the polynomial-backtracking shape CodeQL flagged.
+export const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{1,63}$/;
 
 export function isValidSlug(id: string, maxLength: number = 63): boolean {
   return id.length <= maxLength && SLUG_RE.test(id);
@@ -29,5 +30,5 @@ export function isValidSnapshotId(id: string): boolean {
 }
 
 export function isValidEmail(email: string): boolean {
-  return EMAIL_RE.test(email);
+  return email.length <= 254 && EMAIL_RE.test(email);
 }
