@@ -10,8 +10,8 @@ const existingConfig: OverwatchConfig = {
   traefik: {
     log_level: "INFO",
     cert_resolvers: [
-      { name: "letsencrypt-cf", challenge: "dns", provider: "cloudflare", acme_email: "jirka@havliczech.eu", env: { CF_DNS_API_TOKEN: "${CF_DNS_API_TOKEN}" }, domain_patterns: ["*.acme.io"] },
-      { name: "letsencrypt", challenge: "http", acme_email: "jirka@havliczech.eu", entrypoint: "web" },
+      { name: "letsencrypt-cf", challenge: "dns", provider: "cloudflare", acme_email: "admin@example.com", env: { CF_DNS_API_TOKEN: "${CF_DNS_API_TOKEN}" }, domain_patterns: ["*.acme.io"] },
+      { name: "letsencrypt", challenge: "http", acme_email: "admin@example.com", entrypoint: "web" },
     ],
   },
 } as any;
@@ -27,8 +27,8 @@ describe("v1.6.10 regression: existing prod configs produce v1.6.9-style output"
 
   it("emits the cert-resolver ACME_EMAIL env vars", () => {
     const yml = buildInfraComposeYml(existingConfig);
-    expect(yml).toContain("TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_CF_ACME_EMAIL=jirka@havliczech.eu");
-    expect(yml).toContain("TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=jirka@havliczech.eu");
+    expect(yml).toContain("TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_CF_ACME_EMAIL=admin@example.com");
+    expect(yml).toContain("TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL=admin@example.com");
     expect(yml).toContain("CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}");
   });
 
