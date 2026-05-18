@@ -44,7 +44,7 @@
     "dockerode": "^4.0.2",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "google-auth-library": "^9.4.1",
+    "google-auth-library": "^10.6.2",
     "js-yaml": "^4.1.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.22.3",
