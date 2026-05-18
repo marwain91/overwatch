@@ -33,7 +33,7 @@ describe('R3 requireConfirmId middleware', () => {
   it('rejects with 400 when header is missing', () => {
     const mw = requireConfirmId('appId');
     const res = mkRes();
-    mw(mkReq({ appId: 'kwoutr' }), res, () => { throw new Error('should not call next'); });
+    mw(mkReq({ appId: 'acme' }), res, () => { throw new Error('should not call next'); });
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/X-Confirm-Id/);
   });
@@ -41,7 +41,7 @@ describe('R3 requireConfirmId middleware', () => {
   it('rejects with 400 when header does not match', () => {
     const mw = requireConfirmId('appId');
     const res = mkRes();
-    mw(mkReq({ appId: 'kwoutr' }, { 'X-Confirm-Id': 'finalio' }), res, () => { throw new Error('should not call next'); });
+    mw(mkReq({ appId: 'acme' }, { 'X-Confirm-Id': 'gadgets' }), res, () => { throw new Error('should not call next'); });
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toMatch(/mismatch/);
   });
@@ -50,7 +50,7 @@ describe('R3 requireConfirmId middleware', () => {
     const mw = requireConfirmId('appId');
     const res = mkRes();
     let called = false;
-    mw(mkReq({ appId: 'kwoutr' }, { 'X-Confirm-Id': 'kwoutr' }), res, () => { called = true; });
+    mw(mkReq({ appId: 'acme' }, { 'X-Confirm-Id': 'acme' }), res, () => { called = true; });
     expect(called).toBe(true);
     expect(res.statusCode).toBe(200);
   });
@@ -59,7 +59,7 @@ describe('R3 requireConfirmId middleware', () => {
     const mw = requireConfirmId('appId');
     const res = mkRes();
     let called = false;
-    mw(mkReq({ appId: 'kwoutr' }, {}, { confirmId: 'kwoutr' }), res, () => { called = true; });
+    mw(mkReq({ appId: 'acme' }, {}, { confirmId: 'acme' }), res, () => { called = true; });
     expect(called).toBe(true);
   });
 });
@@ -69,18 +69,18 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
     const dataDir = path.join(tmpRoot, 'data');
     const appsDir = path.join(tmpRoot, 'apps');
     await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
-    await fs.mkdir(path.join(appsDir, 'kwoutr', 'tenants', 't1'), { recursive: true });
+    await fs.mkdir(path.join(appsDir, 'acme', 'tenants', 't1'), { recursive: true });
     const staticDef = {
-      id: 'kwoutr',
-      name: 'Kwoutr',
-      domain_template: '*.kwoutr.com',
+      id: 'acme',
+      name: 'Acme',
+      domain_template: '*.acme.com',
       registry: { type: 'ghcr', url: 'ghcr.io', repository: 'a/b', auth: { type: 'token' } },
       services: [{ name: 'web' }],
       default_image_tag: 'latest',
     };
-    await fs.writeFile(path.join(dataDir, 'apps.d', 'kwoutr.json'), JSON.stringify(staticDef));
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'acme.json'), JSON.stringify(staticDef));
     await fs.writeFile(path.join(dataDir, 'apps.runtime.json'), JSON.stringify({
-      kwoutr: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+      acme: { createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
     }));
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
     vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir }));
@@ -91,23 +91,23 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
   it('refuses delete without force when tenants exist', async () => {
     const { dataDir } = await setupApp();
     const { deleteApp } = await import('../services/app');
-    await expect(deleteApp('kwoutr', false)).rejects.toThrow(/tenant/i);
+    await expect(deleteApp('acme', false)).rejects.toThrow(/tenant/i);
     // apps.d untouched
     const after = await fs.readdir(path.join(dataDir, 'apps.d'));
-    expect(after).toEqual(['kwoutr.json']);
+    expect(after).toEqual(['acme.json']);
   });
 
   it('soft-deletes to apps.trashed.json when force=true with active tenants', async () => {
     const { dataDir } = await setupApp();
     const { deleteApp } = await import('../services/app');
-    await deleteApp('kwoutr', true, 'test@local');
+    await deleteApp('acme', true, 'test@local');
 
     const active = await fs.readdir(path.join(dataDir, 'apps.d'));
     expect(active).toEqual([]);
 
     const trashed = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.trashed.json'), 'utf-8'));
     expect(trashed).toHaveLength(1);
-    expect(trashed[0].app.id).toBe('kwoutr');
+    expect(trashed[0].app.id).toBe('acme');
     expect(trashed[0].deletedBy).toBe('test@local');
     expect(trashed[0].tenantCount).toBe(1);
   });
@@ -115,11 +115,11 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
   it('restoreApp moves the entry back to apps.d/', async () => {
     const { dataDir } = await setupApp();
     const { deleteApp, restoreApp } = await import('../services/app');
-    await deleteApp('kwoutr', true, 'test@local');
-    await restoreApp('kwoutr');
+    await deleteApp('acme', true, 'test@local');
+    await restoreApp('acme');
 
     const active = await fs.readdir(path.join(dataDir, 'apps.d'));
-    expect(active).toEqual(['kwoutr.json']);
+    expect(active).toEqual(['acme.json']);
 
     const trashed = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.trashed.json'), 'utf-8'));
     expect(trashed).toHaveLength(0);
@@ -128,8 +128,8 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
   it('purgeApp permanently removes from trash', async () => {
     const { dataDir } = await setupApp();
     const { deleteApp, purgeApp } = await import('../services/app');
-    await deleteApp('kwoutr', true, 'test@local');
-    await purgeApp('kwoutr');
+    await deleteApp('acme', true, 'test@local');
+    await purgeApp('acme');
 
     const trashed = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.trashed.json'), 'utf-8'));
     expect(trashed).toHaveLength(0);

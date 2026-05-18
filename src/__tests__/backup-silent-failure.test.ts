@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockApp = {
-  id: 'finalio',
-  name: 'Finalio',
+  id: 'gadgets',
+  name: 'Gadgets',
   domain_template: '*.example.com',
   registry: { type: 'ghcr' as const, url: 'ghcr.io', repository: 'x/y', auth: { type: 'token' as const } },
   services: [],
@@ -19,7 +19,7 @@ const mockApp = {
 const mockDumpDatabase = vi.fn();
 
 vi.mock('../config', () => ({
-  loadConfig: () => ({ project: { name: 'kwoutr', prefix: 'kwoutr', db_prefix: 'kwoutr' } }),
+  loadConfig: () => ({ project: { name: 'acme', prefix: 'acme', db_prefix: 'acme' } }),
   getAppsDir: () => '/tmp/apps',
   resolveEnvValue: (s: string) => s,
 }));
@@ -37,8 +37,8 @@ vi.mock('../services/app', () => ({
 }));
 
 vi.mock('../services/docker', () => ({
-  getTenantInfo: vi.fn(async (_appId: string, tenantId: string) => ({ appId: 'finalio', tenantId })),
-  listTenants: vi.fn(async () => [{ appId: 'finalio', tenantId: 'daktela' }]),
+  getTenantInfo: vi.fn(async (_appId: string, tenantId: string) => ({ appId: 'gadgets', tenantId })),
+  listTenants: vi.fn(async () => [{ appId: 'gadgets', tenantId: 'daktela' }]),
 }));
 
 vi.mock('child_process', () => ({
@@ -62,9 +62,9 @@ describe('Scheduler silent-failure regression', () => {
   });
 
   it('createBackup returns success:false when mysqldump throws Unknown database', async () => {
-    mockDumpDatabase.mockRejectedValueOnce(new Error("mysqldump: Got error: 1049: \"Unknown database 'kwoutr_finalio_daktela'\""));
+    mockDumpDatabase.mockRejectedValueOnce(new Error("mysqldump: Got error: 1049: \"Unknown database 'acme_gadgets_daktela'\""));
 
-    const result = await createBackup('finalio', 'daktela');
+    const result = await createBackup('gadgets', 'daktela');
 
     expect(mockDumpDatabase).toHaveBeenCalledOnce();
     expect(result.success).toBe(false);
@@ -72,9 +72,9 @@ describe('Scheduler silent-failure regression', () => {
   });
 
   it('backupAllTenants reports failCount=1 when DB dump fails', async () => {
-    mockDumpDatabase.mockRejectedValueOnce(new Error("Unknown database 'kwoutr_finalio_daktela'"));
+    mockDumpDatabase.mockRejectedValueOnce(new Error("Unknown database 'acme_gadgets_daktela'"));
 
-    const result = await backupAllTenants('finalio');
+    const result = await backupAllTenants('gadgets');
 
     expect(result.successCount).toBe(0);
     expect(result.failCount).toBe(1);

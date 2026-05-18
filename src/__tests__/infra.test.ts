@@ -22,14 +22,14 @@ afterEach(async () => {
 
 describe('renderTemplate', () => {
   const vars = {
-    PROJECT_PREFIX: 'kwoutr',
-    NETWORK_NAME: 'kwoutr-network',
-    APPS_PATH_ON_HOST: '/opt/kwoutr/deploy/apps',
+    PROJECT_PREFIX: 'acme',
+    NETWORK_NAME: 'acme-network',
+    APPS_PATH_ON_HOST: '/opt/acme/deploy/apps',
   };
 
   it('substitutes known keys', () => {
     expect(renderTemplate('container_name: ${PROJECT_PREFIX}-traefik', vars))
-      .toBe('container_name: kwoutr-traefik');
+      .toBe('container_name: acme-traefik');
   });
 
   it('passes unknown ${FOO} through untouched (left to docker compose)', () => {
@@ -45,9 +45,9 @@ describe('renderTemplate', () => {
       'pass: ${MYSQL_ROOT_PASSWORD}',
     ].join('\n');
     const output = renderTemplate(input, vars);
-    expect(output).toContain('name: kwoutr');
-    expect(output).toContain('network: kwoutr-network');
-    expect(output).toContain('apps_mount: /opt/kwoutr/deploy/apps:/app/apps');
+    expect(output).toContain('name: acme');
+    expect(output).toContain('network: acme-network');
+    expect(output).toContain('apps_mount: /opt/acme/deploy/apps:/app/apps');
     expect(output).toContain('pass: ${MYSQL_ROOT_PASSWORD}');
   });
 
@@ -58,7 +58,7 @@ describe('renderTemplate', () => {
 });
 
 describe('deployInfra', () => {
-  async function seedConfig(prefix = 'kwoutr'): Promise<void> {
+  async function seedConfig(prefix = 'acme'): Promise<void> {
     const configPath = path.join(deployDir, 'overwatch', 'overwatch.yaml');
     await fs.mkdir(path.dirname(configPath), { recursive: true });
     await fs.writeFile(configPath, `

@@ -104,7 +104,7 @@ describe('G4 audit describeAction — records force=true tag', () => {
     const req: any = {
       method: 'DELETE',
       baseUrl: '/api/apps',
-      path: '/kwoutr',
+      path: '/acme',
       query: { force: 'true' },
       body: {},
       ip: '1.2.3.4',
@@ -118,7 +118,7 @@ describe('G4 audit describeAction — records force=true tag', () => {
     // Give the fire-and-forget appendFile a tick
     await new Promise(r => setTimeout(r, 50));
     const log = await fs.readFile(path.join(dataDir, 'audit.log'), 'utf-8');
-    expect(log).toContain('"action":"delete app kwoutr (force=true)"');
+    expect(log).toContain('"action":"delete app acme (force=true)"');
     expect(log).toContain('"force":true');
     expect(log).toContain('"query"');
   });

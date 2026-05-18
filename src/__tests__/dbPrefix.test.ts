@@ -18,34 +18,34 @@ function makeConfig(dbPrefix: string, type: 'mariadb' | 'postgres' = 'mariadb'):
 }
 
 describe('Adapter getDatabaseName / getUserName — per-app prefix', () => {
-  const tenantId = 'finalio_daktela'; // callers pass appId_tenantId
+  const tenantId = 'gadgets_daktela'; // callers pass appId_tenantId
 
-  it('MySQL: project prefix "kwoutr" (no app override) → kwoutr_finalio_daktela', () => {
-    const a = new MySQLAdapter(makeConfig('kwoutr'));
-    expect(a.getDatabaseName(tenantId)).toBe('kwoutr_finalio_daktela');
-    expect(a.getUserName(tenantId)).toBe('kwoutr_finalio_daktela');
+  it('MySQL: project prefix "acme" (no app override) → acme_gadgets_daktela', () => {
+    const a = new MySQLAdapter(makeConfig('acme'));
+    expect(a.getDatabaseName(tenantId)).toBe('acme_gadgets_daktela');
+    expect(a.getUserName(tenantId)).toBe('acme_gadgets_daktela');
   });
 
-  it('MySQL: empty prefix "" (app override) → finalio_daktela', () => {
+  it('MySQL: empty prefix "" (app override) → gadgets_daktela', () => {
     const a = new MySQLAdapter(makeConfig(''));
-    expect(a.getDatabaseName(tenantId)).toBe('finalio_daktela');
-    expect(a.getUserName(tenantId)).toBe('finalio_daktela');
+    expect(a.getDatabaseName(tenantId)).toBe('gadgets_daktela');
+    expect(a.getUserName(tenantId)).toBe('gadgets_daktela');
   });
 
-  it('MySQL: custom prefix "custom" (app override) → custom_finalio_daktela', () => {
+  it('MySQL: custom prefix "custom" (app override) → custom_gadgets_daktela', () => {
     const a = new MySQLAdapter(makeConfig('custom'));
-    expect(a.getDatabaseName(tenantId)).toBe('custom_finalio_daktela');
-    expect(a.getUserName(tenantId)).toBe('custom_finalio_daktela');
+    expect(a.getDatabaseName(tenantId)).toBe('custom_gadgets_daktela');
+    expect(a.getUserName(tenantId)).toBe('custom_gadgets_daktela');
   });
 
-  it('Postgres: empty prefix → finalio_daktela', () => {
+  it('Postgres: empty prefix → gadgets_daktela', () => {
     const a = new PostgresAdapter(makeConfig('', 'postgres'));
-    expect(a.getDatabaseName(tenantId)).toBe('finalio_daktela');
+    expect(a.getDatabaseName(tenantId)).toBe('gadgets_daktela');
   });
 
-  it('Postgres: non-empty prefix → custom_finalio_daktela', () => {
+  it('Postgres: non-empty prefix → custom_gadgets_daktela', () => {
     const a = new PostgresAdapter(makeConfig('custom', 'postgres'));
-    expect(a.getDatabaseName(tenantId)).toBe('custom_finalio_daktela');
+    expect(a.getDatabaseName(tenantId)).toBe('custom_gadgets_daktela');
   });
 });
 

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockApp = {
-  id: 'finalio',
-  name: 'Finalio',
+  id: 'gadgets',
+  name: 'Gadgets',
   domain_template: '*.example.com',
   registry: { type: 'ghcr' as const, url: 'ghcr.io', repository: 'x/y', auth: { type: 'token' as const } },
   services: [],
@@ -19,7 +19,7 @@ const mockApp = {
 const execCalls: Array<{ cmd: string; args: string[] }> = [];
 
 vi.mock('../config', () => ({
-  loadConfig: () => ({ project: { name: 'kwoutr', prefix: 'kwoutr', db_prefix: 'kwoutr' } }),
+  loadConfig: () => ({ project: { name: 'acme', prefix: 'acme', db_prefix: 'acme' } }),
   getAppsDir: () => '/tmp/apps',
   resolveEnvValue: (s: string) => s,
 }));
@@ -66,19 +66,19 @@ describe('listSnapshots tag filter', () => {
   });
 
   it('filters by app: tag only when no tenantId is given', async () => {
-    await listSnapshots('finalio');
+    await listSnapshots('gadgets');
     const snapshotsCall = execCalls.find(c => c.args[0] === 'snapshots');
     expect(snapshotsCall).toBeDefined();
-    expect(snapshotsCall!.args).toEqual(['snapshots', '--json', '--tag', 'app:finalio']);
+    expect(snapshotsCall!.args).toEqual(['snapshots', '--json', '--tag', 'app:gadgets']);
   });
 
   it('ANDs app: and tenant: tags via comma-separated single --tag', async () => {
-    await listSnapshots('finalio', 'daktela');
+    await listSnapshots('gadgets', 'daktela');
     const snapshotsCall = execCalls.find(c => c.args[0] === 'snapshots');
     expect(snapshotsCall).toBeDefined();
     // Single --tag flag, comma-joined values — restic ANDs comma-separated values
     // within one --tag (multiple --tag flags would OR, which is what we want to avoid).
-    expect(snapshotsCall!.args).toEqual(['snapshots', '--json', '--tag', 'app:finalio,tenant:daktela']);
+    expect(snapshotsCall!.args).toEqual(['snapshots', '--json', '--tag', 'app:gadgets,tenant:daktela']);
     const tagFlagCount = snapshotsCall!.args.filter(a => a === '--tag').length;
     expect(tagFlagCount).toBe(1);
   });

@@ -433,7 +433,7 @@ export async function generateSharedEnvFile(appId: string, tenantId: string): Pr
 /**
  * Backfill COMPOSE_PROJECT_NAME into tenant .env files that don't have it.
  * This prevents Docker Compose project name collisions when two apps
- * have tenants with the same ID (e.g. both kwoutr and goalmaster have "daktela").
+ * have tenants with the same ID (e.g. both acme and widgets have "daktela").
  */
 export async function backfillComposeProjectNames(): Promise<number> {
   const appsDir = getAppsDir();

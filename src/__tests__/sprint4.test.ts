@@ -109,7 +109,7 @@ describe('R4 runDocker — error classification (unit, no subprocess)', () => {
 
   it('"No such container" → unknown_container', async () => {
     const { classifyError } = await import('../utils/runDocker');
-    expect(classifyError('Error: No such container: kwoutr-daktela-web', 1, null))
+    expect(classifyError('Error: No such container: acme-daktela-web', 1, null))
       .toBe('unknown_container');
   });
 

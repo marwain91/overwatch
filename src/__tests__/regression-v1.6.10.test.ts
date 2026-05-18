@@ -10,7 +10,7 @@ const existingConfig: OverwatchConfig = {
   traefik: {
     log_level: "INFO",
     cert_resolvers: [
-      { name: "letsencrypt-cf", challenge: "dns", provider: "cloudflare", acme_email: "jirka@havliczech.eu", env: { CF_DNS_API_TOKEN: "${CF_DNS_API_TOKEN}" }, domain_patterns: ["*.kwoutr.io"] },
+      { name: "letsencrypt-cf", challenge: "dns", provider: "cloudflare", acme_email: "jirka@havliczech.eu", env: { CF_DNS_API_TOKEN: "${CF_DNS_API_TOKEN}" }, domain_patterns: ["*.acme.io"] },
       { name: "letsencrypt", challenge: "http", acme_email: "jirka@havliczech.eu", entrypoint: "web" },
     ],
   },

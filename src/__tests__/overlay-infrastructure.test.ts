@@ -4,13 +4,13 @@ import type { AppDefinition } from '../models/app';
 
 function makeApp(overrides: Partial<AppDefinition> = {}): AppDefinition {
   return {
-    id: 'finalio',
-    name: 'Finalio',
-    domain_template: '*.finalio.app',
+    id: 'gadgets',
+    name: 'Gadgets',
+    domain_template: '*.gadgets.app',
     registry: {
       type: 'ghcr',
       url: 'ghcr.io',
-      repository: 'marwain91/finalio',     // OLD repo
+      repository: 'marwain91/gadgets',     // OLD repo
       auth: { type: 'token', token_env: 'GHCR_TOKEN' },
     },
     services: [{ name: 'web', required: true, is_init_container: false, ports: { internal: 3000 } }],
@@ -31,7 +31,7 @@ describe('overlayInfrastructure', () => {
       registry: {
         type: 'ghcr',
         url: 'ghcr.io',
-        repository: 'TheOpenApps/finalio',  // NEW repo
+        repository: 'TheOpenApps/gadgets',  // NEW repo
         auth: { type: 'token', token_env: 'GHCR_DEPLOY_TOKEN' },
       },
       // Global has additional services that the snapshot doesn't know about
@@ -44,7 +44,7 @@ describe('overlayInfrastructure', () => {
     const result = overlayInfrastructure(snapshot, global);
 
     // Registry comes from global (the bug fix)
-    expect(result.registry.repository).toBe('TheOpenApps/finalio');
+    expect(result.registry.repository).toBe('TheOpenApps/gadgets');
     expect(result.registry.auth.token_env).toBe('GHCR_DEPLOY_TOKEN');
 
     // Services come from snapshot (NOT overlaid — schema must stay frozen)
@@ -66,12 +66,12 @@ describe('overlayInfrastructure', () => {
   });
 
   it('preserves all other top-level fields from snapshot (id, name, domain_template, createdAt, updatedAt)', () => {
-    const snapshot = makeApp({ id: 'finalio', name: 'Finalio', createdAt: '2025-12-01T00:00:00Z' });
-    const global = makeApp({ id: 'finalio', name: 'Finalio Renamed', createdAt: '2026-04-28T00:00:00Z' });
+    const snapshot = makeApp({ id: 'gadgets', name: 'Gadgets', createdAt: '2025-12-01T00:00:00Z' });
+    const global = makeApp({ id: 'gadgets', name: 'Gadgets Renamed', createdAt: '2026-04-28T00:00:00Z' });
     const result = overlayInfrastructure(snapshot, global);
     // Snapshot wins on these
-    expect(result.id).toBe('finalio');
-    expect(result.name).toBe('Finalio'); // snapshot
+    expect(result.id).toBe('gadgets');
+    expect(result.name).toBe('Gadgets'); // snapshot
     expect(result.createdAt).toBe('2025-12-01T00:00:00Z'); // snapshot
   });
 });

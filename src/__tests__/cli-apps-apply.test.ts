@@ -67,42 +67,42 @@ afterEach(async () => {
 
 describe('overwatch apps apply — end-to-end', () => {
   it('creates an app from a file', async () => {
-    const appFile = path.join(tmpRoot, 'kwoutr.json');
-    await fs.writeFile(appFile, JSON.stringify(validStatic('kwoutr')));
+    const appFile = path.join(tmpRoot, 'acme.json');
+    await fs.writeFile(appFile, JSON.stringify(validStatic('acme')));
 
     const proc = runCli(['apps', 'apply', appFile]);
     expect(proc.status).toBe(0);
-    expect(proc.stdout).toMatch(/kwoutr created/);
+    expect(proc.stdout).toMatch(/acme created/);
 
-    const onDisk = await fs.readFile(path.join(dataDir, 'apps.d', 'kwoutr.json'), 'utf-8');
-    expect(JSON.parse(onDisk).id).toBe('kwoutr');
+    const onDisk = await fs.readFile(path.join(dataDir, 'apps.d', 'acme.json'), 'utf-8');
+    expect(JSON.parse(onDisk).id).toBe('acme');
   });
 
   it('reads from stdin with "-"', async () => {
-    const proc = runCli(['apps', 'apply', '-'], JSON.stringify(validStatic('goalmaster')));
+    const proc = runCli(['apps', 'apply', '-'], JSON.stringify(validStatic('widgets')));
     expect(proc.status).toBe(0);
-    expect(proc.stdout).toMatch(/goalmaster created/);
+    expect(proc.stdout).toMatch(/widgets created/);
   });
 
   it('is idempotent — second apply reports noop', async () => {
-    const appFile = path.join(tmpRoot, 'kwoutr.json');
-    await fs.writeFile(appFile, JSON.stringify(validStatic('kwoutr')));
+    const appFile = path.join(tmpRoot, 'acme.json');
+    await fs.writeFile(appFile, JSON.stringify(validStatic('acme')));
     runCli(['apps', 'apply', appFile]);
     const proc = runCli(['apps', 'apply', appFile]);
     expect(proc.status).toBe(0);
-    expect(proc.stdout).toMatch(/kwoutr noop/);
+    expect(proc.stdout).toMatch(/acme noop/);
   });
 
   it('writes an audit.log entry', async () => {
-    const appFile = path.join(tmpRoot, 'kwoutr.json');
-    await fs.writeFile(appFile, JSON.stringify(validStatic('kwoutr')));
+    const appFile = path.join(tmpRoot, 'acme.json');
+    await fs.writeFile(appFile, JSON.stringify(validStatic('acme')));
     runCli(['apps', 'apply', appFile]);
 
     const audit = await fs.readFile(path.join(dataDir, 'audit.log'), 'utf-8');
     const lines = audit.trim().split('\n').filter(Boolean);
     expect(lines.length).toBeGreaterThan(0);
     const last = JSON.parse(lines[lines.length - 1]);
-    expect(last.action).toMatch(/apps\.apply kwoutr/);
+    expect(last.action).toMatch(/apps\.apply acme/);
     expect(last.user).toMatch(/^cli:/);
   });
 
@@ -116,11 +116,11 @@ describe('overwatch apps apply — end-to-end', () => {
 
   it('exits 2 when the app is in the trash', async () => {
     await fs.writeFile(path.join(dataDir, 'apps.trashed.json'), JSON.stringify([{
-      app: { ...validStatic('kwoutr'), createdAt: 'x', updatedAt: 'x' },
+      app: { ...validStatic('acme'), createdAt: 'x', updatedAt: 'x' },
       deletedAt: 'x', deletedBy: 'x', tenantCount: 0,
     }]));
-    const appFile = path.join(tmpRoot, 'kwoutr.json');
-    await fs.writeFile(appFile, JSON.stringify(validStatic('kwoutr')));
+    const appFile = path.join(tmpRoot, 'acme.json');
+    await fs.writeFile(appFile, JSON.stringify(validStatic('acme')));
     const proc = runCli(['apps', 'apply', appFile]);
     expect(proc.status).toBe(2);
     expect(proc.stderr).toMatch(/in trash/);

@@ -10,9 +10,9 @@ let configPath: string;
 let dataDir: string;
 
 const LEGACY_YAML = {
-  project: { name: 'Kwoutr', prefix: 'kwoutr', db_prefix: 'kwoutr' },
+  project: { name: 'Acme', prefix: 'acme', db_prefix: 'acme' },
   database: { type: 'mariadb', host: 'db', port: 3306, container_name: 'db', root_user_env: 'DB_ROOT_USER', root_password_env: 'DB_ROOT_PW' },
-  registry: { type: 'ghcr', url: 'ghcr.io', repository: 'kwoutr/app', auth: { type: 'token', username_env: 'GH_USER', token_env: 'GH_TOKEN' } },
+  registry: { type: 'ghcr', url: 'ghcr.io', repository: 'acme/app', auth: { type: 'token', username_env: 'GH_USER', token_env: 'GH_TOKEN' } },
   services: [{ name: 'web', image_suffix: '-web' }],
   data_dir: '',
 };
@@ -42,7 +42,7 @@ describe('isLegacyFormat — populated apps.json guard', () => {
     // (volume swap, data_dir change) but migration clearly already happened.
     await fs.writeFile(
       path.join(dataDir, 'apps.json'),
-      JSON.stringify([{ id: 'kwoutr' }, { id: 'finalio' }, { id: 'goalmaster' }])
+      JSON.stringify([{ id: 'acme' }, { id: 'gadgets' }, { id: 'widgets' }])
     );
     expect(fsSync.existsSync(path.join(dataDir, '.migration-v2-complete'))).toBe(false);
 
@@ -66,7 +66,7 @@ describe('runMigration — refuses to overwrite populated apps.json', () => {
   it('throws if apps.json already contains apps', async () => {
     await fs.writeFile(
       path.join(dataDir, 'apps.json'),
-      JSON.stringify([{ id: 'kwoutr' }, { id: 'finalio' }, { id: 'goalmaster' }])
+      JSON.stringify([{ id: 'acme' }, { id: 'gadgets' }, { id: 'widgets' }])
     );
 
     const { runMigration } = await import('../services/migration');
@@ -75,6 +75,6 @@ describe('runMigration — refuses to overwrite populated apps.json', () => {
     // apps.json must be untouched
     const after = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.json'), 'utf-8'));
     expect(after).toHaveLength(3);
-    expect(after.map((a: any) => a.id).sort()).toEqual(['finalio', 'goalmaster', 'kwoutr']);
+    expect(after.map((a: any) => a.id).sort()).toEqual(['acme', 'gadgets', 'widgets']);
   });
 });

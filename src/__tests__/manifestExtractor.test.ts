@@ -3,13 +3,13 @@ import { AppDefinition } from '../models/app';
 
 function buildApp(overrides: Partial<AppDefinition> = {}): AppDefinition {
   return {
-    id: 'kwoutr',
-    name: 'Kwoutr',
-    domain_template: '*.kwoutr.io',
+    id: 'acme',
+    name: 'Acme',
+    domain_template: '*.acme.io',
     registry: {
       type: 'ghcr',
       url: 'ghcr.io',
-      repository: 'marwain91/kwoutr',
+      repository: 'marwain91/acme',
       auth: { type: 'token', token_env: 'GHCR_TOKEN' },
     },
     services: [
@@ -27,7 +27,7 @@ describe('resolveManifestImageRef', () => {
   it('defaults to the service with image_suffix=backend', async () => {
     const { resolveManifestImageRef } = await import('../services/manifestExtractor');
     const app = buildApp();
-    expect(resolveManifestImageRef(app, 'v1.2.3')).toBe('ghcr.io/marwain91/kwoutr/backend:v1.2.3');
+    expect(resolveManifestImageRef(app, 'v1.2.3')).toBe('ghcr.io/marwain91/acme/backend:v1.2.3');
   });
 
   it('honours an explicit manifest.image_suffix override', async () => {
@@ -35,7 +35,7 @@ describe('resolveManifestImageRef', () => {
     const app = buildApp({
       manifest: { image_suffix: 'frontend', path: '/overwatch/app.json' },
     });
-    expect(resolveManifestImageRef(app, 'v4')).toBe('ghcr.io/marwain91/kwoutr/frontend:v4');
+    expect(resolveManifestImageRef(app, 'v4')).toBe('ghcr.io/marwain91/acme/frontend:v4');
   });
 
   it('returns null when no matching service exists', async () => {
