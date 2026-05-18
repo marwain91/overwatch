@@ -99,6 +99,8 @@ export interface LockInfo {
 }
 
 function parseLockInfo(errorMsg: string): LockInfo | null {
+  // Cap upstream restic stderr so the regexes below run on a bounded input.
+  errorMsg = errorMsg.slice(0, 4096);
   const lockInfo: LockInfo = {};
 
   const pidMatch = errorMsg.match(/PID (\d+)/);

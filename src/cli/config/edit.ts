@@ -39,11 +39,16 @@ function flattenObject(obj: Record<string, unknown>, prefix = ''): Array<{ key: 
   return result;
 }
 
+const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+
 function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
   const parts = path.split('.');
+  if (parts.some(p => UNSAFE_KEYS.has(p))) {
+    throw new Error(`Invalid path: '${path}' contains a reserved key`);
+  }
   let current = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!(parts[i] in current) || typeof current[parts[i]] !== 'object') {
+    if (!Object.prototype.hasOwnProperty.call(current, parts[i]) || typeof current[parts[i]] !== 'object') {
       current[parts[i]] = {};
     }
     current = current[parts[i]] as Record<string, unknown>;

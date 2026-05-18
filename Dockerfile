@@ -35,9 +35,6 @@ COPY dist/ ./dist/
 # Copy React UI build
 COPY --from=ui-build /ui/dist ./ui/dist
 
-# Keep legacy public/ as fallback
-COPY public/ ./public/
-
 # Create data directory with the `node` user as owner so the app can write
 # even after we drop privileges below.
 RUN mkdir -p /app/data && chown -R node:node /app
