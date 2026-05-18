@@ -32,7 +32,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
 
 // Get app details
 router.get('/:appId', validateAppId, asyncHandler(async (req, res) => {
-  const app = await getApp(req.params.appId);
+  const app = await getApp((req.params as Record<string, string>).appId);
   if (!app) {
     return res.status(404).json({ error: 'App not found' });
   }
@@ -42,7 +42,7 @@ router.get('/:appId', validateAppId, asyncHandler(async (req, res) => {
 // Update app config. Admin-only — update payload can change registry creds,
 // admin_access (token-mint URL template), and backup targets.
 router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
-  const app = await updateApp({ ...req.body, id: req.params.appId });
+  const app = await updateApp({ ...req.body, id: (req.params as Record<string, string>).appId });
   res.json(app);
 }));
 
@@ -55,13 +55,13 @@ router.get('/.trashed', asyncHandler(async (_req, res) => {
 
 // Restore a soft-deleted app.
 router.post('/:appId/restore', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
-  const app = await restoreApp(req.params.appId);
+  const app = await restoreApp((req.params as Record<string, string>).appId);
   res.json({ success: true, app });
 }));
 
 // Permanently purge a soft-deleted app from the trash.
 router.delete('/:appId/purge', validateAppId, requireRole('admin'), requireConfirmId('appId'), asyncHandler(async (req, res) => {
-  await purgeApp(req.params.appId);
+  await purgeApp((req.params as Record<string, string>).appId);
   res.json({ success: true });
 }));
 
@@ -70,7 +70,7 @@ router.delete('/:appId/purge', validateAppId, requireRole('admin'), requireConfi
 router.delete('/:appId', validateAppId, requireRole('admin'), requireConfirmId('appId'), asyncHandler(async (req, res) => {
   const force = req.query.force === 'true';
   const actor = getCurrentUserEmail(req) || 'unknown';
-  await deleteApp(req.params.appId, force, actor);
+  await deleteApp((req.params as Record<string, string>).appId, force, actor);
   res.json({ success: true });
 }));
 
@@ -80,7 +80,7 @@ router.delete('/:appId', validateAppId, requireRole('admin'), requireConfirmId('
 // inline without a noisy 500 in the browser console — listing tags is a
 // best-effort convenience, not a hard dependency.
 router.get('/:appId/tags', validateAppId, asyncHandler(async (req, res) => {
-  const app = await getApp(req.params.appId);
+  const app = await getApp((req.params as Record<string, string>).appId);
   if (!app) {
     return res.status(404).json({ error: 'App not found' });
   }
@@ -95,7 +95,7 @@ router.get('/:appId/tags', validateAppId, asyncHandler(async (req, res) => {
 
 // Test registry connection for an app — editor+ (reads non-secret status).
 router.post('/:appId/registry/test', validateAppId, requireRole('editor'), asyncHandler(async (req, res) => {
-  const app = await getApp(req.params.appId);
+  const app = await getApp((req.params as Record<string, string>).appId);
   if (!app) {
     return res.status(404).json({ error: 'App not found' });
   }
@@ -111,12 +111,12 @@ router.post('/:appId/registry/test', validateAppId, requireRole('editor'), async
 // App-scoped Traefik config — middleware library + default_middlewares.
 // Editor+ matches the rest of the app/tenant editing surface.
 router.get('/:appId/traefik', validateAppId, asyncHandler(async (req, res) => {
-  const t = await getAppTraefik(req.params.appId);
+  const t = await getAppTraefik((req.params as Record<string, string>).appId);
   res.json(t ?? null);
 }));
 
 router.put('/:appId/traefik', validateAppId, requireRole('editor'), asyncHandler(async (req, res) => {
-  const t = await updateAppTraefik(req.params.appId, req.body);
+  const t = await updateAppTraefik((req.params as Record<string, string>).appId, req.body);
   res.json(t);
 }));
 

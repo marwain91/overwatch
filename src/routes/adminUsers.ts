@@ -38,7 +38,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req: Request, res: Re
 
 // Remove an admin user — admin role + typed email confirmation required
 router.delete('/:email', requireRole('admin'), requireConfirmId('email'), asyncHandler(async (req: Request, res: Response) => {
-  const email = decodeURIComponent(req.params.email).trim().toLowerCase();
+  const email = decodeURIComponent((req.params as Record<string, string>).email).trim().toLowerCase();
 
   if (!isValidEmail(email)) {
     return res.status(400).json({ error: 'Invalid email format' });

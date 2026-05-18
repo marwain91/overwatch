@@ -21,7 +21,7 @@ const router = Router({ mergeParams: true });
 
 // Get backup summary (status + latest snapshot info)
 router.get('/summary', asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const app = await getApp(appId);
   if (!app) {
     return res.status(404).json({ error: 'App not found' });
@@ -62,21 +62,21 @@ router.get('/summary', asyncHandler(async (req, res) => {
 
 // Get backup configuration status for an app
 router.get('/status', asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const info = await getBackupInfoCached(appId);
   res.json(info);
 }));
 
 // Initialize backup repository for an app — admin (touches encryption setup).
 router.post('/init', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   await initializeRepository(appId);
   res.json({ success: true, message: 'Repository initialized' });
 }));
 
 // Unlock repository — admin (break-glass operation).
 router.post('/unlock', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const result = await unlockRepository(appId);
   if (result.success) {
     res.json({ success: true, message: 'Repository unlocked' });
@@ -87,7 +87,7 @@ router.post('/unlock', requireRole('admin'), asyncHandler(async (req, res) => {
 
 // List backup snapshots for an app (optionally filtered by tenant and/or month)
 router.get('/', asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const rawTenantId = Array.isArray(req.query.tenantId) ? req.query.tenantId[0] : req.query.tenantId;
   const tenantId = typeof rawTenantId === 'string' ? rawTenantId : undefined;
 
@@ -115,7 +115,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
 // Create a new backup for a specific tenant — editor+
 router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const { tenantId } = req.body;
 
   if (!tenantId || !isValidSlug(tenantId)) {
@@ -133,14 +133,14 @@ router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
 
 // Backup all tenants for an app — editor+
 router.post('/all', requireRole('editor'), asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const result = await backupAllTenants(appId);
   res.json(result);
 }));
 
 // Restore a backup to existing tenant — admin (overwrites live tenant data).
 router.post('/:snapshotId/restore', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { appId, snapshotId } = req.params;
+  const { appId, snapshotId } = (req.params as Record<string, string>);
   const { tenantId } = req.body;
 
   if (!isValidSnapshotId(snapshotId)) {
@@ -167,7 +167,7 @@ router.post('/:snapshotId/restore', requireRole('admin'), asyncHandler(async (re
 
 // Create new tenant from backup — admin (creates resources, writes DB creds).
 router.post('/:snapshotId/create-tenant', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { appId, snapshotId } = req.params;
+  const { appId, snapshotId } = (req.params as Record<string, string>);
   const { tenantId, domain, imageTag } = req.body;
 
   if (!isValidSnapshotId(snapshotId)) {
@@ -203,7 +203,7 @@ router.post('/:snapshotId/create-tenant', requireRole('admin'), asyncHandler(asy
 
 // Delete a backup snapshot — admin + typed confirmation.
 router.delete('/:snapshotId', requireRole('admin'), requireConfirmId('snapshotId'), asyncHandler(async (req, res) => {
-  const { appId, snapshotId } = req.params;
+  const { appId, snapshotId } = (req.params as Record<string, string>);
 
   if (!isValidSnapshotId(snapshotId)) {
     return res.status(400).json({ error: 'Invalid snapshot ID format' });
@@ -220,7 +220,7 @@ router.delete('/:snapshotId', requireRole('admin'), requireConfirmId('snapshotId
 
 // Prune old backups — admin (irreversibly drops snapshots).
 router.post('/prune', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const keepDaily = Math.max(0, Math.min(Number(req.body.keepDaily) || 7, 365));
   const keepWeekly = Math.max(0, Math.min(Number(req.body.keepWeekly) || 4, 52));
   const keepMonthly = Math.max(0, Math.min(Number(req.body.keepMonthly) || 12, 120));

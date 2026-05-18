@@ -7,11 +7,11 @@ import { Request, Response, NextFunction } from 'express';
  * Mitigates accidental destruction from double-click, stale tabs, or replayed
  * cURL without the operator realising which id was in scope.
  *
- * The expected id is derived from req.params via `paramKey` (default 'appId').
+ * The expected id is derived from (req.params as Record<string, string>) via `paramKey` (default 'appId').
  */
 export function requireConfirmId(paramKey: string = 'appId') {
   return (req: Request, res: Response, next: NextFunction) => {
-    const expected = req.params[paramKey];
+    const expected = (req.params as Record<string, string>)[paramKey];
     if (!expected) {
       return res.status(400).json({ error: `Missing :${paramKey} in route` });
     }

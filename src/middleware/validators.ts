@@ -3,7 +3,7 @@ import { isValidSlug } from '../utils/validators';
 
 /** Validate tenantId param format */
 export const validateTenantId: RequestHandler = (req, res, next) => {
-  const { tenantId } = req.params;
+  const { tenantId } = (req.params as Record<string, string>);
   if (tenantId && !isValidSlug(tenantId)) {
     return res.status(400).json({ error: 'Invalid tenant ID format' });
   }
@@ -12,7 +12,7 @@ export const validateTenantId: RequestHandler = (req, res, next) => {
 
 /** Validate appId param format */
 export const validateAppId: RequestHandler = (req, res, next) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   if (appId && !isValidSlug(appId)) {
     return res.status(400).json({ error: 'Invalid app ID format' });
   }

@@ -17,7 +17,7 @@ const router = Router({ mergeParams: true });
 
 // List global env vars for an app (sensitive values masked)
 router.get('/', asyncHandler(async (req: Request, res: Response) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const vars = await listEnvVars(appId);
   const masked = vars.map(v => ({
     ...v,
@@ -28,7 +28,7 @@ router.get('/', asyncHandler(async (req: Request, res: Response) => {
 
 // Create or update a global env var for an app — editor+
 router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const { key, value, sensitive, description } = req.body;
 
   if (!key) {
@@ -62,7 +62,7 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
 
 // Delete a global env var for an app — editor+
 router.delete('/:key', requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
-  const { appId, key } = req.params;
+  const { appId, key } = (req.params as Record<string, string>);
   await deleteEnvVar(appId, key);
   const tenantsAffected = await regenerateAllSharedEnvFiles(appId);
   res.json({ success: true, tenantsAffected });
@@ -70,7 +70,7 @@ router.delete('/:key', requireRole('editor'), asyncHandler(async (req: Request, 
 
 // Get effective env vars for a tenant (merged view)
 router.get('/tenants/:tenantId', validateTenantId, asyncHandler(async (req: Request, res: Response) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   const effective = await getEffectiveEnvVars(appId, tenantId);
   const masked = effective.map(v => ({
     ...v,
@@ -81,7 +81,7 @@ router.get('/tenants/:tenantId', validateTenantId, asyncHandler(async (req: Requ
 
 // Set a tenant override — editor+
 router.post('/tenants/:tenantId/overrides', validateTenantId, requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   const { key, value, sensitive } = req.body;
 
   if (!key || value === undefined || value === null) {
@@ -96,7 +96,7 @@ router.post('/tenants/:tenantId/overrides', validateTenantId, requireRole('edito
 
 // Delete a tenant override — editor+
 router.delete('/tenants/:tenantId/overrides/:key', validateTenantId, requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
-  const { appId, tenantId, key } = req.params;
+  const { appId, tenantId, key } = (req.params as Record<string, string>);
   await deleteTenantOverride(appId, tenantId, key);
   await generateSharedEnvFile(appId, tenantId);
 

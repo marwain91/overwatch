@@ -56,17 +56,17 @@ router.get('/cert-resolvers', asyncHandler(async (req: Request, res: Response) =
 }));
 
 router.post('/cert-resolvers/:name', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {
-  const r = await upsertCertResolver(req.params.name, req.body);
+  const r = await upsertCertResolver((req.params as Record<string, string>).name, req.body);
   res.json(r);
 }));
 
 router.put('/cert-resolvers/:name', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {
-  const r = await upsertCertResolver(req.params.name, req.body);
+  const r = await upsertCertResolver((req.params as Record<string, string>).name, req.body);
   res.json(r);
 }));
 
 router.delete('/cert-resolvers/:name', requireRole('admin'), requireConfirmId('name'), asyncHandler(async (req: Request, res: Response) => {
-  await deleteCertResolver(req.params.name);
+  await deleteCertResolver((req.params as Record<string, string>).name);
   res.json({ success: true });
 }));
 
@@ -77,17 +77,17 @@ router.get('/middlewares', asyncHandler(async (req: Request, res: Response) => {
 }));
 
 router.post('/middlewares/:name', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {
-  const m = await upsertGlobalMiddleware(req.params.name, req.body);
+  const m = await upsertGlobalMiddleware((req.params as Record<string, string>).name, req.body);
   res.json(m);
 }));
 
 router.put('/middlewares/:name', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {
-  const m = await upsertGlobalMiddleware(req.params.name, req.body);
+  const m = await upsertGlobalMiddleware((req.params as Record<string, string>).name, req.body);
   res.json(m);
 }));
 
 router.delete('/middlewares/:name', requireRole('admin'), requireConfirmId('name'), asyncHandler(async (req: Request, res: Response) => {
-  await deleteGlobalMiddleware(req.params.name);
+  await deleteGlobalMiddleware((req.params as Record<string, string>).name);
   res.json({ success: true });
 }));
 

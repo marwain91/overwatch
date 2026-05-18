@@ -77,7 +77,7 @@ router.get('/metrics', asyncHandler(async (req, res) => {
 
 // GET /api/monitoring/metrics/:tenantId — metrics for specific tenant
 router.get('/metrics/:appId/:tenantId', asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   if (!SLUG_RE.test(appId) || !SLUG_RE.test(tenantId)) {
     return res.status(400).json({ error: 'Invalid app or tenant ID format' });
   }
@@ -87,7 +87,7 @@ router.get('/metrics/:appId/:tenantId', asyncHandler(async (req, res) => {
 
 // GET /api/monitoring/metrics/history/:containerName — history for a container
 router.get('/metrics/history/:containerName', asyncHandler(async (req, res) => {
-  const { containerName } = req.params;
+  const { containerName } = (req.params as Record<string, string>);
   if (!CONTAINER_NAME_RE.test(containerName) || containerName.length > 200) {
     return res.status(400).json({ error: 'Invalid container name format' });
   }
@@ -155,7 +155,7 @@ router.post('/notifications', requireRole('admin'), asyncHandler(async (req, res
 
 // PUT /api/monitoring/notifications/:id — update channel (admin-only)
 router.put('/notifications/:id', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const { id } = (req.params as Record<string, string>);
   if (!UUID_RE.test(id)) {
     res.status(400).json({ error: 'Invalid channel ID format' });
     return;
@@ -193,7 +193,7 @@ router.put('/notifications/:id', requireRole('admin'), asyncHandler(async (req, 
 
 // DELETE /api/monitoring/notifications/:id — delete channel (admin-only)
 router.delete('/notifications/:id', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const { id } = (req.params as Record<string, string>);
   if (!UUID_RE.test(id)) {
     res.status(400).json({ error: 'Invalid channel ID format' });
     return;
@@ -212,7 +212,7 @@ router.delete('/notifications/:id', requireRole('admin'), asyncHandler(async (re
 
 // POST /api/monitoring/notifications/:id/test — send test notification (admin-only: fires outbound HTTP to channel URL)
 router.post('/notifications/:id/test', requireRole('admin'), asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const { id } = (req.params as Record<string, string>);
   if (!UUID_RE.test(id)) {
     res.status(400).json({ error: 'Invalid channel ID format' });
     return;
