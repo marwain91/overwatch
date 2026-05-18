@@ -86,7 +86,7 @@ router.get('/processes', asyncHandler(async (_req, res) => {
 
 // POST /api/database/processes/:id/kill — admin only (can disrupt running workloads).
 router.post('/processes/:id/kill', requireRole('admin'), asyncHandler(async (req, res) => {
-  const id = parseInt(req.params.id, 10);
+  const id = parseInt((req.params as Record<string, string>).id, 10);
   if (!Number.isInteger(id) || id <= 0) {
     res.status(400).json({ error: 'Invalid process ID' });
     return;

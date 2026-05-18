@@ -14,7 +14,7 @@ const router = Router({ mergeParams: true });
 
 // List tenants for an app
 router.get('/', asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const allTenants = await listTenants();
   const appTenants = appId ? allTenants.filter(t => t.appId === appId) : allTenants;
   res.json(appTenants);
@@ -22,7 +22,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
 // Create a new tenant — editor+
 router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
-  const { appId } = req.params;
+  const { appId } = (req.params as Record<string, string>);
   const input: CreateTenantInput = {
     appId,
     tenantId: req.body.tenantId,
@@ -45,7 +45,7 @@ router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
 
 // Update tenant version — editor+
 router.patch('/:tenantId', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   const { imageTag } = req.body;
 
   if (!imageTag) {
@@ -58,7 +58,7 @@ router.patch('/:tenantId', validateTenantId, requireRole('editor'), asyncHandler
 
 // Delete a tenant. Requires admin role and X-Confirm-Id header matching tenantId.
 router.delete('/:tenantId', validateTenantId, requireRole('admin'), requireConfirmId('tenantId'), asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   const keepData = req.query.keepData === 'true';
 
   await deleteTenant(appId, tenantId, keepData);
@@ -67,21 +67,21 @@ router.delete('/:tenantId', validateTenantId, requireRole('admin'), requireConfi
 
 // Start tenant containers — editor+
 router.post('/:tenantId/start', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   await startTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
 
 // Stop tenant containers — editor+
 router.post('/:tenantId/stop', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   await stopTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
 
 // Restart tenant containers — editor+
 router.post('/:tenantId/restart', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   await restartTenant(appId, tenantId);
   res.json({ success: true, appId, tenantId });
 }));
@@ -90,7 +90,7 @@ router.post('/:tenantId/restart', validateTenantId, requireRole('editor'), async
 // that logs the bearer in as system-admin of the tenant app. Highest-privilege
 // operation in the system; never expose to non-admin roles.
 router.post('/:tenantId/access-token', validateTenantId, requireRole('admin'), asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
 
   const app = await getApp(appId);
   if (!app) {
@@ -158,13 +158,13 @@ router.post('/:tenantId/access-token', validateTenantId, requireRole('admin'), a
 
 // Per-tenant Traefik overrides: cert resolver, host aliases, middleware overrides, raw labels.
 router.get('/:tenantId/traefik', validateTenantId, asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   const t = await getTenantTraefik(appId, tenantId);
   res.json(t ?? null);
 }));
 
 router.put('/:tenantId/traefik', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
-  const { appId, tenantId } = req.params;
+  const { appId, tenantId } = (req.params as Record<string, string>);
   const t = await updateTenantTraefik(appId, tenantId, req.body);
   res.json(t ?? null);
 }));
