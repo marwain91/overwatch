@@ -1,5 +1,9 @@
 # Overwatch
 
+[![Release](https://github.com/marwain91/overwatch/actions/workflows/build.yml/badge.svg)](https://github.com/marwain91/overwatch/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/marwain91/overwatch?sort=semver)](https://github.com/marwain91/overwatch/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/marwain91/overwatch)](LICENSE)
+
 A universal, configuration-driven multi-tenant management tool for containerized applications.
 
 Overwatch provides a web-based admin panel to manage multi-tenant deployments, including tenant lifecycle management, container operations, backups, and version updates. It supports multiple apps per instance — configure your infrastructure once, then add apps and tenants through the UI.
