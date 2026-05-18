@@ -41,7 +41,7 @@
     "outputPath": "dist/bin"
   },
   "dependencies": {
-    "dockerode": "^4.0.2",
+    "dockerode": "^5.0.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "google-auth-library": "^10.6.2",
