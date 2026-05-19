@@ -19,7 +19,7 @@ import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
 import databaseRouter from './routes/database';
 import traefikRouter from './routes/traefik';
-import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions } from './services/envVars';
+import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions, repairBindMountedDataFiles } from './services/envVars';
 import { startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns } from './services/scheduler';
 import { flushAuditLog } from './middleware/audit';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
@@ -31,6 +31,7 @@ import { startRetention, stopRetention } from './services/retention';
 import { isLegacyFormat, runMigration } from './services/migration';
 import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitialised } from './services/schemaVersions';
 import { createSnapshot, pruneOldSnapshots } from './services/configSnapshots';
+import { resolveTrustProxySetting } from './utils/proxyTrust';
 import cron from 'node-cron';
 
 // Load environment variables
@@ -79,8 +80,8 @@ async function start() {
   const app = express();
   const PORT = process.env.PORT || 3002;
 
-  // Trust the first proxy hop (Traefik/nginx) for correct req.ip
-  app.set('trust proxy', 1);
+  // Trust only configured proxy hops for correct req.ip in rate limiting/audit.
+  app.set('trust proxy', resolveTrustProxySetting());
 
   // Middleware
   app.use(express.json({ limit: '1mb' }));
@@ -201,6 +202,16 @@ async function start() {
       await loginToAllRegistries(bootApps);
     } else {
       console.log('No apps configured yet. Registry login skipped.');
+    }
+  });
+
+  await runStartupStep('repair stray bind-mount directories', async () => {
+    const { repaired, stranded } = await repairBindMountedDataFiles();
+    if (repaired > 0) console.log(`[startup] Repaired ${repaired} stray bind-mount director(y/ies)`);
+    if (stranded.length > 0) {
+      for (const p of stranded) {
+        console.error(`[startup] WARNING: ${p} is a non-empty directory where a file is expected. Reads/writes will fail. Move its contents and remove the directory manually.`);
+      }
     }
   });
 

@@ -1,6 +1,6 @@
 {
   "name": "overwatch",
-  "version": "1.6.14",
+  "version": "1.6.15",
   "description": "Universal Multi-Tenant Management Tool",
   "license": "MIT",
   "author": "marwain91",
@@ -31,9 +31,6 @@
     "build:all": "tsc && cd ui && npm ci && npm run build",
     "build:cli": "npm run build && pkg dist/cli.js --targets node20-linux-x64,node20-linux-arm64 --output dist/bin/overwatch --compress GZip",
     "start": "node dist/index.js",
-    "setup": "tsx scripts/setup.ts",
-    "setup:check": "tsx scripts/setup.ts --check",
-    "setup:force": "tsx scripts/setup.ts --force",
     "test": "vitest run"
   },
   "pkg": {

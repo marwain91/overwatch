@@ -1,6 +1,17 @@
 # Overwatch - Multi-Tenant Management Tool
 
-# ── Stage 1: Build React UI ──
+# ── Stage 1: Build server from source ──
+FROM node:26-alpine AS server-build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY scripts/ ./scripts/
+COPY templates/ ./templates/
+COPY src/ ./src/
+RUN npm run build
+
+# ── Stage 2: Build React UI ──
 FROM node:26-alpine AS ui-build
 WORKDIR /ui
 COPY ui/package*.json ./
@@ -8,7 +19,7 @@ RUN npm ci
 COPY ui/ ./
 RUN npm run build
 
-# ── Stage 2: Runtime ──
+# ── Stage 3: Runtime ──
 FROM node:26-alpine
 
 ARG BUILD_TIME=dev
@@ -27,10 +38,10 @@ RUN apk add --no-cache wget curl restic docker-cli docker-cli-compose mysql-clie
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Copy built application
-COPY dist/ ./dist/
+COPY --from=server-build /app/dist ./dist
 
 # Copy React UI build
 COPY --from=ui-build /ui/dist ./ui/dist

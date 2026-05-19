@@ -128,6 +128,7 @@ export function buildOverwatchComposeYml(config: OverwatchConfig): string {
       OVERWATCH_UID: '${OVERWATCH_UID:-1001}',
       OVERWATCH_GID: '${OVERWATCH_GID:-1001}',
       PORT: 3002,
+      OVERWATCH_TRUST_PROXY: '${OVERWATCH_TRUST_PROXY:-loopback, linklocal, uniquelocal}',
       MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD}',
       GOOGLE_CLIENT_ID: '${GOOGLE_CLIENT_ID}',
       GOOGLE_CLIENT_SECRET: '${GOOGLE_CLIENT_SECRET}',

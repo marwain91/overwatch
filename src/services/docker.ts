@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { loadConfig, getAppsDir } from '../config';
 import { listApps } from './app';
+import type { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
 import { parseEnv } from '../utils/env';
 import { runDocker } from '../utils/runDocker';
@@ -17,6 +18,7 @@ export interface ContainerInfo {
   image: string;
   created: string;
   appId?: string;
+  tenantId?: string;
   service?: string;
 }
 
@@ -31,21 +33,78 @@ export interface TenantStatus {
   healthy: boolean;
 }
 
-/**
- * Build regex pattern for matching containers of a specific app+tenant.
- * Pattern: {appId}-{tenantId}-{service}(-N)?
- */
-function getTenantContainerPattern(appId: string, tenantId: string): RegExp {
-  const escapedApp = appId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const escapedId = tenantId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${escapedApp}-${escapedId}-[a-z0-9-]+(?:-\\d+)?$`);
+const LABEL_MANAGED = 'com.overwatch.managed';
+const LABEL_APP_ID = 'com.overwatch.app-id';
+const LABEL_TENANT_ID = 'com.overwatch.tenant-id';
+const LABEL_SERVICE = 'com.overwatch.service';
+
+type ContainerLabels = Record<string, string | undefined>;
+
+function normaliseLabels(labels: unknown): ContainerLabels {
+  if (!labels || typeof labels !== 'object') return {};
+  return labels as ContainerLabels;
+}
+
+function stripReplicaSuffix(containerName: string): string {
+  const parts = containerName.split('-');
+  if (parts.length > 3 && /^\d+$/.test(parts[parts.length - 1])) {
+    return parts.slice(0, -1).join('-');
+  }
+  return containerName;
+}
+
+function extractContainerInfoFromLabels(labels: ContainerLabels): { appId: string; tenantId: string; service: string } | null {
+  if (labels[LABEL_MANAGED] !== 'true') return null;
+  const appId = labels[LABEL_APP_ID];
+  const tenantId = labels[LABEL_TENANT_ID];
+  const service = labels[LABEL_SERVICE] || labels['com.docker.compose.service'];
+  if (!appId || !tenantId || !service) return null;
+  return { appId, tenantId, service };
+}
+
+function extractContainerInfoFromKnownApps(
+  containerName: string,
+  apps: Array<Pick<AppDefinition, 'id' | 'services'>>,
+): { appId: string; tenantId: string; service: string } | null {
+  const baseName = stripReplicaSuffix(containerName);
+  const sortedApps = [...apps].sort((a, b) => b.id.length - a.id.length);
+
+  for (const app of sortedApps) {
+    const prefix = `${app.id}-`;
+    if (!baseName.startsWith(prefix)) continue;
+
+    const rest = baseName.slice(prefix.length);
+    const serviceNames = app.services.map(s => s.name).sort((a, b) => b.length - a.length);
+    for (const service of serviceNames) {
+      const suffix = `-${service}`;
+      if (!rest.endsWith(suffix)) continue;
+
+      const tenantId = rest.slice(0, -suffix.length);
+      if (tenantId.length === 0) continue;
+      return { appId: app.id, tenantId, service };
+    }
+  }
+
+  return null;
 }
 
 /**
  * Extract appId, tenantId, and service from a container name.
  * Pattern: {appId}-{tenantId}-{service}(-N)?
  */
-export function extractContainerInfo(containerName: string): { appId: string; tenantId: string; service: string } | null {
+export function extractContainerInfo(
+  containerName: string,
+  labels: ContainerLabels = {},
+  knownApps?: Array<Pick<AppDefinition, 'id' | 'services'>>,
+): { appId: string; tenantId: string; service: string } | null {
+  const labelInfo = extractContainerInfoFromLabels(labels);
+  if (labelInfo) return labelInfo;
+
+  if (knownApps) {
+    const knownInfo = extractContainerInfoFromKnownApps(containerName, knownApps);
+    if (knownInfo) return knownInfo;
+  }
+
   const parts = containerName.split('-');
   if (parts.length < 3) return null;
 
@@ -78,14 +137,10 @@ export async function listContainers(): Promise<ContainerInfo[]> {
   const appIds = new Set(apps.map(a => a.id));
 
   return containers
-    .filter(c => c.Names.some(n => {
-      const name = n.replace(/^\//, '');
-      const info = extractContainerInfo(name);
-      return info !== null && appIds.has(info.appId);
-    }))
     .map(c => {
       const name = c.Names[0].replace(/^\//, '');
-      const info = extractContainerInfo(name);
+      const labels = normaliseLabels((c as any).Labels);
+      const info = extractContainerInfo(name, labels, apps);
       return {
         id: c.Id.substring(0, 12),
         name,
@@ -94,15 +149,16 @@ export async function listContainers(): Promise<ContainerInfo[]> {
         image: c.Image,
         created: new Date(c.Created * 1000).toISOString(),
         appId: info?.appId,
+        tenantId: info?.tenantId,
         service: info?.service,
       };
-    });
+    })
+    .filter(c => c.appId !== undefined && appIds.has(c.appId));
 }
 
 export async function getTenantContainers(appId: string, tenantId: string): Promise<ContainerInfo[]> {
   const containers = await listContainers();
-  const pattern = getTenantContainerPattern(appId, tenantId);
-  return containers.filter(c => pattern.test(c.name));
+  return containers.filter(c => c.appId === appId && c.tenantId === tenantId);
 }
 
 export async function getContainerLogs(containerId: string, tail: number = 100): Promise<string> {
@@ -160,15 +216,14 @@ export async function listTenants(): Promise<TenantStatus[]> {
 
           // Exclude init containers from counts
           const nonInitContainers = containers.filter(c => {
-            const info = extractContainerInfo(c.name);
-            return info ? !initServices.includes(info.service) : true;
+            return c.service ? !initServices.includes(c.service) : true;
           });
 
           const running = nonInitContainers.filter(c => c.state === 'running');
 
           // Check if all required services are running
           const healthy = requiredServices.every(serviceName =>
-            running.some(c => c.name.includes(`-${serviceName}`))
+            running.some(c => c.service === serviceName)
           );
 
           tenants.push({
@@ -253,4 +308,3 @@ export async function restartTenant(appId: string, tenantId: string): Promise<vo
   await ensureExternalVolumes(composePath);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: 300_000 });
 }
-

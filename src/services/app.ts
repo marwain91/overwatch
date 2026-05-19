@@ -221,6 +221,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
     }
 
     await writeStatic(parsed.data);
+    clearAdapterCache(parsed.data.id);
     await upsertRuntime(parsed.data.id, prev => ({
       createdAt: prev?.createdAt ?? parsed.data.createdAt,
       updatedAt: now,

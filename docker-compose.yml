@@ -18,9 +18,13 @@ services:
           memory: 512M
           cpus: '1.0'
     ports:
-      - "3002:3002"
+      # Local-only direct access. Production should route through Traefik.
+      - "127.0.0.1:3002:3002"
     environment:
       PORT: 3002
+      # Trust one upstream hop (Traefik). On multi-tenant Docker networks
+      # set this to a specific proxy IP/subnet to prevent X-Forwarded-For spoofing.
+      OVERWATCH_TRUST_PROXY: "${OVERWATCH_TRUST_PROXY:-1}"
       JWT_SECRET: ${JWT_SECRET}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       # Database root credentials (for tenant database management)
@@ -44,18 +48,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Mount configuration file
       - ./overwatch.yaml:/app/overwatch.yaml:ro
-      # Mount admin users file (persisted)
-      - ./data/admin-users.json:/app/data/admin-users.json
-      # Mount env vars data files (persisted)
-      - ./data/env-vars.json:/app/data/env-vars.json
-      - ./data/tenant-env-overrides.json:/app/data/tenant-env-overrides.json
-      # Mount audit log (persisted)
-      - ./data/audit.log:/app/data/audit.log
-      # Mount monitoring data (persisted)
-      - ./data/alert-history.jsonl:/app/data/alert-history.jsonl
-      - ./data/notification-channels.json:/app/data/notification-channels.json
-      # Mount tenants directory (path inside container matches default in overwatch.yaml)
-      - ./tenants:/app/tenants
+      # Mount runtime state as directories so Docker doesn't auto-create
+      # missing file bind targets as directories.
+      - ./data:/app/data
+      # Path matches networking.apps_path in the sample overwatch.yaml.
+      - ./apps:/app/apps
     networks:
       - default
       # Connect to your project's network for database/container access

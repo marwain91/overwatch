@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { loadConfig } from '../config';
 import { VERSION } from '../version';
-import { listContainers, getContainerLogs, restartContainer, listTenants, extractContainerInfo } from '../services/docker';
+import { listContainers, getContainerLogs, restartContainer, listTenants } from '../services/docker';
 import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
 import { getBackupInfoCached, listSnapshotsCached } from '../services/backupCache';
@@ -10,6 +10,16 @@ import { isValidContainerId } from '../utils/validators';
 import { requireRole } from '../middleware/requireRole';
 
 const router = Router();
+
+function containerIdMatches(requested: string, managedId: string): boolean {
+  return requested === managedId || requested.startsWith(managedId) || managedId.startsWith(requested);
+}
+
+async function findManagedContainerId(containerId: string): Promise<string | null> {
+  const containers = await listContainers();
+  const managed = containers.find(c => containerIdMatches(containerId, c.id));
+  return managed?.id ?? null;
+}
 
 // Get all containers managed by Overwatch
 router.get('/containers', asyncHandler(async (req, res) => {
@@ -25,7 +35,11 @@ router.get('/containers/:containerId/logs', asyncHandler(async (req, res) => {
   }
   const tailParam = parseInt(req.query.tail as string, 10);
   const tail = Number.isInteger(tailParam) ? Math.max(1, Math.min(tailParam, 10000)) : 100;
-  const logs = await getContainerLogs(containerId, tail);
+  const managedId = await findManagedContainerId(containerId);
+  if (!managedId) {
+    return res.status(404).json({ error: 'Container not found' });
+  }
+  const logs = await getContainerLogs(managedId, tail);
   res.json({ logs });
 }));
 
@@ -35,7 +49,11 @@ router.post('/containers/:containerId/restart', requireRole('admin'), asyncHandl
   if (!isValidContainerId(containerId)) {
     return res.status(400).json({ error: 'Invalid container ID format' });
   }
-  await restartContainer(containerId);
+  const managedId = await findManagedContainerId(containerId);
+  if (!managedId) {
+    return res.status(404).json({ error: 'Container not found' });
+  }
+  await restartContainer(managedId);
   res.json({ success: true });
 }));
 
@@ -58,8 +76,7 @@ router.get('/health', asyncHandler(async (req, res) => {
   }
 
   const nonInitContainers = containers.filter(c => {
-    const info = extractContainerInfo(c.name);
-    return !info || !initServices.has(info.service);
+    return !c.service || !initServices.has(c.service);
   });
   const runningContainers = nonInitContainers.filter(c => c.state === 'running');
 

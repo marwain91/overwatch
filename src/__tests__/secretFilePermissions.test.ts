@@ -72,6 +72,7 @@ describe('tightenSecretFilePermissions migration', () => {
     await fs.writeFile(path.join(tenantDir, '.env'), 'DB_PASSWORD=a', { mode: 0o644 });
     await fs.writeFile(path.join(tenantDir, 'shared.env'), 'X=1', { mode: 0o644 });
     await fs.writeFile(path.join(dataDir, 'env-vars.json'), '{}', { mode: 0o644 });
+    await fs.writeFile(path.join(dataDir, 'notification-channels.json'), '[]', { mode: 0o644 });
     // Already-tight file should not count
     await fs.writeFile(path.join(dataDir, 'tenant-env-overrides.json'), '{}', { mode: 0o600 });
 
@@ -86,10 +87,11 @@ describe('tightenSecretFilePermissions migration', () => {
     const { tightenSecretFilePermissions } = await import('../services/envVars');
     const count = await tightenSecretFilePermissions();
 
-    expect(count).toBe(3);
+    expect(count).toBe(4);
     expect((await fs.stat(path.join(tenantDir, '.env'))).mode & 0o777).toBe(0o600);
     expect((await fs.stat(path.join(tenantDir, 'shared.env'))).mode & 0o777).toBe(0o600);
     expect((await fs.stat(path.join(dataDir, 'env-vars.json'))).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(path.join(dataDir, 'notification-channels.json'))).mode & 0o777).toBe(0o600);
     expect((await fs.stat(path.join(dataDir, 'tenant-env-overrides.json'))).mode & 0o777).toBe(0o600);
   });
 });
