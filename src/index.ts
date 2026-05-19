@@ -133,8 +133,9 @@ async function start() {
   app.use('/api/database', authMiddleware, apiLimiter, auditLog, databaseRouter);
   app.use('/api/traefik', authMiddleware, apiLimiter, destructiveLimiter, auditLog, traefikRouter);
 
-  // Serve frontend for all other routes (SPA fallback)
-  app.get('*', (_req, res) => {
+  // Serve frontend for all other routes (SPA fallback).
+  // Express 5 / path-to-regexp 8 require a named wildcard.
+  app.get('/*splat', (_req, res) => {
     const indexPath = path.join(staticPath, 'index.html');
     if (fs.existsSync(indexPath)) {
       res.sendFile(indexPath);
