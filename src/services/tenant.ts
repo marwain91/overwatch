@@ -121,19 +121,23 @@ function toStaticAppDefinition(app: AppDefinition): AppDefinitionStatic {
 }
 
 export async function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
-  const { appId, tenantId, domain, imageTag } = input;
+  const { domain, imageTag } = input;
   const config = loadConfig();
 
-  // Validate IDs locally so path.join below operates on known-safe inputs.
-  // Route middleware already enforces this; the inline regex check is defense
-  // in depth for CLI callers and lets static analysis (CodeQL) see the
-  // sanitizer pattern without crossing a module boundary.
-  if (!SLUG_RE.test(appId)) {
+  // Extract appId/tenantId via regex match so the values used below are the
+  // captured strings, not the raw inputs. Route middleware already enforces
+  // the slug format; this duplicate check is defense in depth for CLI callers
+  // and breaks taint flow into path.join for static analysis.
+  const appIdMatch = input.appId.match(SLUG_RE);
+  if (!appIdMatch) {
     throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
   }
-  if (!SLUG_RE.test(tenantId)) {
+  const appId = appIdMatch[0];
+  const tenantIdMatch = input.tenantId.match(SLUG_RE);
+  if (!tenantIdMatch) {
     throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
+  const tenantId = tenantIdMatch[0];
   const domainValidation = validateTenantDomain(domain);
   if (!domainValidation.valid) {
     throw new Error(domainValidation.error);
@@ -315,16 +319,20 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   await fs.rm(tenantPath, { recursive: true, force: true });
 }
 
-export async function updateTenant(appId: string, tenantId: string, newTag: string): Promise<void> {
-  // Validate IDs locally so subsequent path.join calls operate on known-safe
-  // inputs. Route middleware already enforces; the inline regex check makes
-  // sanitization visible to static analysis and protects CLI callers.
-  if (!SLUG_RE.test(appId)) {
+export async function updateTenant(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
+  // Extract IDs via regex match so subsequent path.join calls operate on the
+  // captured strings, not the raw inputs. Route middleware already enforces;
+  // this breaks taint flow visibly for static analysis and protects CLI callers.
+  const appIdMatch = rawAppId.match(SLUG_RE);
+  if (!appIdMatch) {
     throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
   }
-  if (!SLUG_RE.test(tenantId)) {
+  const appId = appIdMatch[0];
+  const tenantIdMatch = rawTenantId.match(SLUG_RE);
+  if (!tenantIdMatch) {
     throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
+  const tenantId = tenantIdMatch[0];
   const tagValidation = validateImageTag(newTag);
   if (!tagValidation.valid) {
     throw new Error(tagValidation.error);
