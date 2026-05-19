@@ -17,7 +17,7 @@ import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '.
 import { eventBus } from './eventBus';
 import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
-import { isValidSlug } from '../utils/validators';
+import { SLUG_RE, isValidSlug } from '../utils/validators';
 import { parseEnv } from '../utils/env';
 
 const execFileAsync = promisify(execFile);
@@ -125,12 +125,13 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   const config = loadConfig();
 
   // Validate IDs locally so path.join below operates on known-safe inputs.
-  // Route middleware already enforces this; the duplicate check is defense in
-  // depth for CLI callers and makes the sanitization visible to static analysis.
-  if (!isValidSlug(appId)) {
+  // Route middleware already enforces this; the inline regex check is defense
+  // in depth for CLI callers and lets static analysis (CodeQL) see the
+  // sanitizer pattern without crossing a module boundary.
+  if (!SLUG_RE.test(appId)) {
     throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
   }
-  if (!validateTenantId(tenantId)) {
+  if (!SLUG_RE.test(tenantId)) {
     throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
   const domainValidation = validateTenantDomain(domain);
@@ -316,11 +317,12 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
 
 export async function updateTenant(appId: string, tenantId: string, newTag: string): Promise<void> {
   // Validate IDs locally so subsequent path.join calls operate on known-safe
-  // inputs (defense in depth for CLI callers; route middleware already enforces).
-  if (!isValidSlug(appId)) {
+  // inputs. Route middleware already enforces; the inline regex check makes
+  // sanitization visible to static analysis and protects CLI callers.
+  if (!SLUG_RE.test(appId)) {
     throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
   }
-  if (!validateTenantId(tenantId)) {
+  if (!SLUG_RE.test(tenantId)) {
     throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
   const tagValidation = validateImageTag(newTag);
