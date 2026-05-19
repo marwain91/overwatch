@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { useAuthStore } from '../stores/authStore';
 import { useThemeStore } from '../stores/themeStore';
 import { useQuery } from '@tanstack/react-query';
@@ -32,6 +33,7 @@ export function LoginPage() {
         navigate('/', { replace: true });
       } catch (err) {
         console.error('Login failed:', err);
+        toast.error(err instanceof Error ? err.message : 'Login failed');
       }
     },
     [login, navigate],
