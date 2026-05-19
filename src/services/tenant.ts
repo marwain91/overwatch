@@ -124,7 +124,12 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   const { appId, tenantId, domain, imageTag } = input;
   const config = loadConfig();
 
-  // Validate tenant ID
+  // Validate IDs locally so path.join below operates on known-safe inputs.
+  // Route middleware already enforces this; the duplicate check is defense in
+  // depth for CLI callers and makes the sanitization visible to static analysis.
+  if (!isValidSlug(appId)) {
+    throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
+  }
   if (!validateTenantId(tenantId)) {
     throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
@@ -310,6 +315,14 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
 }
 
 export async function updateTenant(appId: string, tenantId: string, newTag: string): Promise<void> {
+  // Validate IDs locally so subsequent path.join calls operate on known-safe
+  // inputs (defense in depth for CLI callers; route middleware already enforces).
+  if (!isValidSlug(appId)) {
+    throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
+  }
+  if (!validateTenantId(tenantId)) {
+    throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
+  }
   const tagValidation = validateImageTag(newTag);
   if (!tagValidation.valid) {
     throw new Error(tagValidation.error);
