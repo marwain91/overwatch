@@ -17,6 +17,13 @@ router.get('/', asyncHandler(async (req, res) => {
   res.json(apps);
 }));
 
+// List trashed (soft-deleted) apps.
+// Must be placed before the :appId sub-routes so it doesn't get shadowed.
+router.get('/.trashed', asyncHandler(async (_req, res) => {
+  const trashed = await listTrashedApps();
+  res.json(trashed);
+}));
+
 // Create a new app. Admin-only because the payload includes registry credentials
 // and optional admin_access / backup configs.
 router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
@@ -44,13 +51,6 @@ router.get('/:appId', validateAppId, asyncHandler(async (req, res) => {
 router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
   const app = await updateApp({ ...req.body, id: (req.params as Record<string, string>).appId });
   res.json(app);
-}));
-
-// List trashed (soft-deleted) apps.
-// Note: placed before the :appId sub-routes so it doesn't get shadowed.
-router.get('/.trashed', asyncHandler(async (_req, res) => {
-  const trashed = await listTrashedApps();
-  res.json(trashed);
 }));
 
 // Restore a soft-deleted app.

@@ -13,6 +13,10 @@ function yamlEscape(value: string): string {
     .replace(/\r/g, '\\r');
 }
 
+function labelLine(key: string, value: string): string {
+  return `      - "${yamlEscape(`${key}=${value}`)}"`;
+}
+
 interface GenerateOptions {
   app: AppDefinition;
   tenantId: string;
@@ -170,6 +174,15 @@ export function generateComposeFile(options: GenerateOptions): string {
       }
     }
 
+    // Ownership labels are used by Overwatch for safe Docker discovery and
+    // authorization. Keep them on every service, including non-routable workers.
+    const labelLines = [
+      labelLine('com.overwatch.managed', 'true'),
+      labelLine('com.overwatch.app-id', app.id),
+      labelLine('com.overwatch.tenant-id', tenantId),
+      labelLine('com.overwatch.service', service.name),
+    ];
+
     // Traefik labels for routable services (built via traefikLabels.ts)
     const traefikLabelLines = buildTraefikLabels({
       app,
@@ -180,10 +193,10 @@ export function generateComposeFile(options: GenerateOptions): string {
       traefik: config.traefik,
       tenantOverrides: tenantTraefik,
     });
-    if (traefikLabelLines.length > 0) {
-      lines.push('    labels:');
-      lines.push(...traefikLabelLines);
-    }
+    labelLines.push(...traefikLabelLines);
+
+    lines.push('    labels:');
+    lines.push(...labelLines);
   }
 
   // Networks section

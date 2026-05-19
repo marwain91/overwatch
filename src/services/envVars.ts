@@ -486,7 +486,8 @@ export async function backfillComposeProjectNames(): Promise<number> {
 /**
  * One-time cleanup for deployments created before perm-hardening.
  * Walks every known secret file and chmod 0600 if permissions are looser.
- * Covers apps/<appId>/tenants/<tenantId>/{shared.env,.env} and data/{env-vars.json,tenant-env-overrides.json}.
+ * Covers apps/<appId>/tenants/<tenantId>/{shared.env,.env} and
+ * data/{env-vars.json,tenant-env-overrides.json,notification-channels.json}.
  */
 export async function tightenSecretFilePermissions(): Promise<number> {
   const appsDir = getAppsDir();
@@ -507,6 +508,7 @@ export async function tightenSecretFilePermissions(): Promise<number> {
 
   await tighten(path.join(dataDir, 'env-vars.json'));
   await tighten(path.join(dataDir, 'tenant-env-overrides.json'));
+  await tighten(path.join(dataDir, 'notification-channels.json'));
 
   try {
     const appDirs = await fs.readdir(appsDir, { withFileTypes: true });
@@ -530,6 +532,54 @@ export async function tightenSecretFilePermissions(): Promise<number> {
   }
 
   return count;
+}
+
+/**
+ * One-time repair for hosts that ran older docker-compose.yml versions where
+ * each data file was a separate bind mount. If the file didn't yet exist on
+ * the host, Docker created the bind target as an empty directory — which then
+ * looks like a directory to the container and breaks every JSON/log read.
+ *
+ * For each known file path under data/, if it exists as an EMPTY directory,
+ * remove it so the app recreates it as a file on first write. A non-empty
+ * directory is left alone with a loud warning — operator must intervene
+ * rather than risk silent data loss.
+ */
+export async function repairBindMountedDataFiles(dataDirOverride?: string): Promise<{ repaired: number; stranded: string[] }> {
+  const dataDir = dataDirOverride ?? getDataDir();
+  // Files that used to be individual bind targets in docker-compose.yml.
+  const KNOWN_FILES = [
+    'admin-users.json',
+    'env-vars.json',
+    'tenant-env-overrides.json',
+    'audit.log',
+    'alert-history.jsonl',
+    'notification-channels.json',
+  ];
+  let repaired = 0;
+  const stranded: string[] = [];
+
+  for (const name of KNOWN_FILES) {
+    const p = path.join(dataDir, name);
+    let stat;
+    try {
+      stat = await fs.stat(p);
+    } catch (err: any) {
+      if (err.code === 'ENOENT') continue;
+      throw err;
+    }
+    if (!stat.isDirectory()) continue;
+    const entries = await fs.readdir(p);
+    if (entries.length === 0) {
+      await fs.rmdir(p);
+      repaired++;
+      console.warn(`[startup] Removed stray empty directory at ${p} (was created by an older docker-compose bind-mount). App will recreate it as a file.`);
+    } else {
+      stranded.push(p);
+    }
+  }
+
+  return { repaired, stranded };
 }
 
 /**

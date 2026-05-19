@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import { listTenants, startTenant, stopTenant, restartTenant, getTenantInfo } from '../services/docker';
-import { createTenant, deleteTenant, updateTenant, CreateTenantInput } from '../services/tenant';
+import { createTenant, deleteTenant, updateTenant, CreateTenantInput, validateImageTag, validateTenantDomain } from '../services/tenant';
 import { getApp } from '../services/app';
 import { asyncHandler } from '../utils/asyncHandler';
 import { isValidSlug } from '../utils/validators';
@@ -38,6 +38,16 @@ router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
   if (!isValidSlug(input.tenantId)) {
     return res.status(400).json({ error: 'Invalid tenant ID format' });
   }
+  const domainValidation = validateTenantDomain(input.domain);
+  if (!domainValidation.valid) {
+    return res.status(400).json({ error: domainValidation.error });
+  }
+  if (input.imageTag !== undefined && input.imageTag !== '') {
+    const tagValidation = validateImageTag(input.imageTag);
+    if (!tagValidation.valid) {
+      return res.status(400).json({ error: tagValidation.error });
+    }
+  }
 
   const tenant = await createTenant(input);
   res.status(201).json(tenant);
@@ -48,8 +58,9 @@ router.patch('/:tenantId', validateTenantId, requireRole('editor'), asyncHandler
   const { appId, tenantId } = (req.params as Record<string, string>);
   const { imageTag } = req.body;
 
-  if (!imageTag) {
-    return res.status(400).json({ error: 'imageTag is required' });
+  const tagValidation = validateImageTag(imageTag);
+  if (!tagValidation.valid) {
+    return res.status(400).json({ error: tagValidation.error });
   }
 
   await updateTenant(appId, tenantId, imageTag);
