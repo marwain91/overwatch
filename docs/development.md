@@ -14,7 +14,7 @@ docker run -p 3010:3002 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v $(pwd)/overwatch.yaml:/app/overwatch.yaml:ro \
   -v $(pwd)/data:/app/data \
-  -e JWT_SECRET=dev-secret \
+  -e JWT_SECRET=dev-secret-at-least-32-characters \
   -e GOOGLE_CLIENT_ID=your-client-id \
   --name overwatch-dev \
   overwatch
@@ -28,14 +28,14 @@ The UI is a React app built with Vite. For development with hot module replaceme
 cd ui
 
 # Install dependencies in Docker
-docker run --rm -v "$(pwd)":/app -w /app node:22-alpine npm install
+docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:26-alpine npm ci
 
 # Start Vite dev server with HMR
-docker run --rm -p 5173:5173 \
+docker run --rm -u "$(id -u):$(id -g)" -p 5173:5173 \
   -v "$(pwd)":/app -w /app \
   -e API_HOST=host.docker.internal \
   -e API_PORT=3010 \
-  node:22-alpine npx vite --host 0.0.0.0
+  node:26-alpine npm run dev -- --host 0.0.0.0
 ```
 
 The Vite dev server proxies `/api` and `/ws` requests to the backend via `API_HOST`/`API_PORT` environment variables (defaults to `localhost:3010`).
@@ -59,7 +59,7 @@ docker run -p 3002:3002 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v $(pwd)/overwatch.yaml:/app/overwatch.yaml:ro \
   -v $(pwd)/data:/app/data \
-  -e JWT_SECRET=dev-secret \
+  -e JWT_SECRET=dev-secret-at-least-32-characters \
   -e GOOGLE_CLIENT_ID=your-client-id \
   overwatch
 ```
@@ -69,7 +69,7 @@ docker run -p 3002:3002 \
 The CLI is built with `@yao-pkg/pkg` targeting Linux x64 and arm64:
 
 ```bash
-docker run --rm -v "$(pwd)":/app -w /app node:22-alpine sh -c "npm install && npm run build && npx @yao-pkg/pkg . --targets node20-linux-x64,node20-linux-arm64 --output dist/overwatch"
+docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:26-alpine sh -c "npm ci && npm run build && npx @yao-pkg/pkg dist/cli.js --targets node20-linux-x64,node20-linux-arm64 --output dist/bin/overwatch --compress GZip"
 ```
 
 ## Project Layout

@@ -4,9 +4,9 @@
 
 - **Google OAuth**: Only users with Google accounts can attempt login
 - **Email Allowlist**: Only emails in the admin users list can access the panel
-- **JWT Sessions**: 7-day expiring tokens for session management
+- **JWT Sessions**: 24-hour expiring tokens for session management
 - **Self-removal protection**: Cannot remove yourself or the last admin
-- **Rate Limiting**: API rate limiting on authentication endpoints
+- **Rate Limiting**: API rate limiting on authentication and admin endpoints
 
 ## Secrets Management
 

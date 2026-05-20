@@ -7,12 +7,12 @@ Thanks for your interest! This guide covers how to get a working dev environment
 ```bash
 git clone https://github.com/marwain91/overwatch.git
 cd overwatch
-npm install
-npm test
-npm run build
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:26-alpine npm ci
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:26-alpine npm test
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:26-alpine npm run build
 ```
 
-Node.js 22 is required. All commands run on the host or in Docker — there's no special build container needed for development.
+All project commands should run in Docker. The examples use `node:26-alpine`, matching the production Dockerfile. No host Node.js installation is required.
 
 ## Project layout
 
@@ -27,16 +27,18 @@ Node.js 22 is required. All commands run on the host or in Docker — there's no
 ## Development workflow
 
 1. Create a branch off `main` (`fix/...`, `feat/...`, `docs/...`).
-2. Make changes and add tests. Run `npm test` until green.
-3. Run `npm run build` to verify the TypeScript build still passes.
+2. Make changes and add tests. Run `npm test` in the Docker command above until green.
+3. Run `npm run build` in Docker to verify the TypeScript build still passes.
 4. Open a pull request against `main` with a clear description.
 
 For UI work:
 
 ```bash
 cd ui
-npm install
-npm run dev
+docker run --rm -u "$(id -u):$(id -g)" -p 5173:5173 \
+  -v "$PWD":/workspace -w /workspace node:26-alpine npm ci
+docker run --rm -u "$(id -u):$(id -g)" -p 5173:5173 \
+  -v "$PWD":/workspace -w /workspace node:26-alpine npm run dev -- --host 0.0.0.0
 ```
 
 ## Commit and PR conventions

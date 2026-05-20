@@ -30,7 +30,7 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 
 **Databases:** MySQL / MariaDB, PostgreSQL
 
-**Container Registries:** GitHub Container Registry (GHCR), [GitLab](docs/registry-gitlab.md) (SaaS + self-hosted), Docker Hub, Amazon ECR, Custom registries. Org repos can authenticate via a [GitHub App](docs/registry-github-app.md) for short-lived, fine-grained tokens — recommended over personal access tokens.
+**Container Registries:** GitHub Container Registry (GHCR), [GitLab](docs/registry-gitlab.md) (SaaS + self-hosted), Docker Hub, Amazon ECR, Custom registries. For private/internal GHCR packages, use a service-account PAT with `read:packages` (and `repo` when tag listing must inspect a private source repository).
 
 **Backup Providers:** S3-compatible storage (AWS S3, Cloudflare R2, MinIO, etc.)
 
@@ -133,6 +133,7 @@ overwatch.yaml (infrastructure)     GUI / API (runtime)
 | [Updating](docs/updating.md) | Updating the Docker image and CLI binary |
 | [Architecture](docs/architecture.md) | System architecture and project structure |
 | [Security](docs/security.md) | Access control, secrets management, Docker socket security |
+| [Traefik](docs/traefik.md) | Reverse proxy, cert resolvers, middlewares, upstream TLS termination |
 | [Development](docs/development.md) | Local development setup, building Docker images |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions |
 

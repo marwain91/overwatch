@@ -68,7 +68,9 @@ The migration is idempotent; it exits without doing anything if `data/apps.d/` i
 
 ### Why the manual step?
 
-The `OVERWATCH_AUTO_MIGRATE=1` env var **only** gates the refuse-to-boot behavior when schema migrations are pending. It does **not** execute migrations. The explicit CLI call is required.
+`overwatch migrate up` is the preferred upgrade path because it runs while Overwatch is stopped and leaves an explicit operator action in deployment history.
+
+`OVERWATCH_AUTO_MIGRATE=1` is an emergency boot-time opt-in for environments where a separate CLI step is inconvenient. On legacy pre-multi-app configs, startup runs the legacy migration before the server starts. For schema-version migrations, use `overwatch migrate up`; the startup gate is intentionally conservative and should not replace the explicit migration step in normal operations.
 
 ### After migrating
 

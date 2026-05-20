@@ -63,7 +63,7 @@ Traefik configuration lives under four scopes that all share one Zod schema:
 - **Per-service** (in app definition `services[*].routing`) — middleware references, raw label escape hatch.
 - **Per-tenant** (`apps/<id>/tenants/<tid>/traefik.yaml`) — cert resolver override, host aliases, middleware overrides per service, raw labels per service.
 
-All four scopes are editable via Web UI, REST API, and CLI. The legacy `networking.cert_resolvers` field is shimmed into `traefik.cert_resolvers` at load time for backwards compatibility; run `overwatch config traefik migrate` to upgrade. See `docs/configuration.md` for the full schema.
+Global Traefik config is editable via Web UI, REST API, and `overwatch config traefik`. App and service scopes are edited through app definitions (Web UI/API or `overwatch apps apply <file>`), and tenant overrides are edited via Web UI/API. The legacy `networking.cert_resolvers` field is shimmed into `traefik.cert_resolvers` at load time for backwards compatibility; run `overwatch config traefik migrate` to upgrade. See `docs/configuration.md` for the full schema.
 
 ## Data Flow
 

@@ -267,7 +267,7 @@ Apps are created and managed through the web UI, the HTTP API (`POST /api/apps`)
   },
   "admin_access": {
     "enabled": true,
-    "url_template": "https://${domain}/admin-login?token=${token}",
+    "url_template": "https://${domain}/admin-login#token=${token}",
     "secret_env": "AUTH_SERVICE_SECRET"
   }
 }
