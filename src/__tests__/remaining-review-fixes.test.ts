@@ -269,6 +269,112 @@ describe('tenant lifecycle rollback', () => {
     await expect(fs.readFile(composePath, 'utf-8')).resolves.toBe(originalCompose);
     await expect(fs.readFile(appDefPath, 'utf-8')).resolves.toBe(originalAppDef);
   });
+
+  it('uses the requested app registry when a renamed tenant snapshot has a stale id', async () => {
+    const appsDir = path.join(tmpRoot, 'apps');
+    const tenantPath = path.join(appsDir, 'product', 'tenants', 'daktela');
+    await fs.mkdir(tenantPath, { recursive: true });
+    const envPath = path.join(tenantPath, '.env');
+    const sharedEnvPath = path.join(tenantPath, 'shared.env');
+    const composePath = path.join(tenantPath, 'docker-compose.yml');
+
+    await fs.writeFile(envPath, 'APP_ID=hyperproduct\nTENANT_ID=daktela\nTENANT_DOMAIN=product.daktela.com\nIMAGE_TAG=1.2.25\n', { mode: 0o600 });
+    await fs.writeFile(sharedEnvPath, 'ORIGINAL_SHARED=1\n', { mode: 0o600 });
+    await fs.writeFile(composePath, 'services:\n  backend:\n    image: old\n');
+
+    const globalProduct = {
+      ...baseApp('product'),
+      name: 'Product',
+      domain_template: '*.daktela.com',
+      registry: { type: 'ghcr', url: 'ghcr.io', repository: 'jerryminiapps/product', auth: { type: 'token' } },
+      services: [
+        { name: 'backend', image_suffix: 'backend', required: true, ports: { internal: 3000 } },
+        { name: 'frontend', image_suffix: 'frontend', required: true, ports: { internal: 80 } },
+      ],
+    };
+    const staleSnapshot = {
+      ...globalProduct,
+      id: 'hyperproduct',
+      name: 'HyperProduct',
+      domain_template: '*.hyperproduct.app',
+      registry: { type: 'ghcr', url: 'ghcr.io', repository: 'theopenapps/hyperproduct', auth: { type: 'token' } },
+    };
+
+    const { createdAt: _manifestCreatedAt, updatedAt: _manifestUpdatedAt, ...staleManifest } = staleSnapshot;
+    void _manifestCreatedAt; void _manifestUpdatedAt;
+    const imageManifest = {
+      ...staleManifest,
+      registry: { ...staleManifest.registry, repository: 'jerryminiapps/product' },
+    };
+    const readManifestFromAppImage = vi.fn(async () => imageManifest);
+    const applyApp = vi.fn(async (def: any) => ({
+      result: 'updated',
+      app: { ...def, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' },
+      changedKeys: ['id'],
+    }));
+    const writeTenantAppDef = vi.fn(async () => undefined);
+    vi.doMock('../config', () => ({
+      loadConfig: () => baseConfig(),
+      getAppsDir: () => appsDir,
+      resolveAppDbPrefix: () => 'test',
+    }));
+    vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
+    vi.doMock('../services/app', () => ({
+      getApp: vi.fn(async (id: string) => id === 'product' ? globalProduct : null),
+      applyApp,
+    }));
+    vi.doMock('../services/envVars', () => ({
+      generateSharedEnvFile: vi.fn(async () => {
+        await fs.writeFile(sharedEnvPath, 'NEW_SHARED=1\n', { mode: 0o600 });
+      }),
+      deleteTenantAllOverrides: vi.fn(),
+    }));
+    vi.doMock('../services/manifestExtractor', () => ({
+      readManifestFromAppImage,
+      resolveManifestImageRef: vi.fn(() => 'ghcr.io/jerryminiapps/product/backend:1.2.26'),
+    }));
+    vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
+    vi.doMock('../services/tenantAppDef', () => ({
+      readTenantAppDef: vi.fn(async () => staleSnapshot),
+      writeTenantAppDef,
+    }));
+    vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
+    vi.doMock('child_process', () => ({
+      execFile: vi.fn((_cmd: string, _args: string[], cb: (err: any, stdout: string, stderr: string) => void) => {
+        cb(null, '', '');
+      }),
+    }));
+
+    const { updateTenant } = await import('../services/tenant');
+    await updateTenant('product', 'daktela', '1.2.26');
+
+    expect(readManifestFromAppImage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'product',
+        registry: expect.objectContaining({ repository: 'jerryminiapps/product' }),
+      }),
+      '1.2.26',
+    );
+    expect(writeTenantAppDef).toHaveBeenCalledWith(
+      'product',
+      'daktela',
+      expect.objectContaining({
+        id: 'product',
+        registry: expect.objectContaining({ repository: 'jerryminiapps/product' }),
+      }),
+    );
+    expect(applyApp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'product',
+        registry: expect.objectContaining({ repository: 'jerryminiapps/product' }),
+      }),
+      expect.stringContaining('manifest:'),
+    );
+    const compose = await fs.readFile(composePath, 'utf-8');
+    expect(compose).toContain('image: ghcr.io/jerryminiapps/product/backend:${IMAGE_TAG:-latest}');
+    expect(compose).toContain('container_name: product-daktela-backend');
+    expect(compose).not.toContain('theopenapps/hyperproduct');
+  });
 });
 
 describe('deployment and image build hardening', () => {

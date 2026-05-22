@@ -109,9 +109,21 @@ export function overlayInfrastructure(snapshot: AppDefinition, global: AppDefini
   };
 }
 
-async function overlayInfrastructureFromGlobal(snapshot: AppDefinition): Promise<AppDefinition> {
-  const global = await getApp(snapshot.id);
-  return overlayInfrastructure(snapshot, global);
+function overlayRuntimeIdentityAndInfrastructure<T extends AppDefinition | AppDefinitionStatic>(snapshot: T, global: AppDefinition | null): T {
+  if (!global) return snapshot;
+  return {
+    ...snapshot,
+    registry: global.registry,
+    default_image_tag: global.default_image_tag,
+    id: global.id,
+    name: global.name,
+    domain_template: global.domain_template,
+  } as T;
+}
+
+async function overlayInfrastructureFromGlobal(snapshot: AppDefinition, appId: string = snapshot.id): Promise<AppDefinition> {
+  const global = await getApp(appId);
+  return overlayRuntimeIdentityAndInfrastructure(snapshot, global);
 }
 
 function toStaticAppDefinition(app: AppDefinition): AppDefinitionStatic {
@@ -377,7 +389,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // reflect the current global config. Without this, an admin's "switch
   // app to a new repo" edit silently fails to propagate to existing
   // tenants until each is manually reseeded.
-  app = await overlayInfrastructureFromGlobal(app);
+  app = await overlayInfrastructureFromGlobal(app, appId);
 
   // Read current .env
   const originalEnvContent = await fs.readFile(envPath, 'utf-8');
@@ -435,8 +447,10 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
         const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
         throw new Error(`Image manifest failed validation: ${errors}`);
       }
-      await writeTenantAppDef(appId, tenantId, parsed.data);
-      const result = await applyApp(parsed.data, `manifest:${resolveManifestImageRef(app, newTag)}`);
+      const globalForManifest = await getApp(appId);
+      const normalizedManifest = overlayRuntimeIdentityAndInfrastructure(parsed.data, globalForManifest);
+      await writeTenantAppDef(appId, tenantId, normalizedManifest);
+      const result = await applyApp(normalizedManifest, `manifest:${resolveManifestImageRef(app, newTag)}`);
       manifestApplied = true;
       if (result.result === 'updated') {
         console.log(`[manifest] Updated app '${appId}' from image ${newTag} for tenant '${tenantId}' (changed: ${result.changedKeys.join(', ')})`);
@@ -453,7 +467,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
       // for older images may carry a stale repo. The global definition is
       // the source of truth for "where do we pull from"; manifest content
       // for that field is ignored.
-      if (reloaded) app = await overlayInfrastructureFromGlobal(reloaded);
+      if (reloaded) app = await overlayInfrastructureFromGlobal(reloaded, appId);
     } else {
       emit('manifest', 'skipped', 'image carries no /overwatch/app.json — keeping existing definition');
     }
