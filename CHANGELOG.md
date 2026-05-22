@@ -5,6 +5,11 @@ All notable changes to Overwatch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.17] — 2026-05-22
+
+### Fixed
+- **CLI help side effects.** `overwatch update --help`, `overwatch self-update --help`, and simple lifecycle command help now print usage and exit before Docker, deploy-directory discovery, or GitHub release checks run.
+
 ## [1.6.16] — 2026-05-22
 
 ### Fixed
@@ -71,6 +76,7 @@ Regression introduced in 1.6.10.
 ### Compatibility
 Existing deploys with `cert_resolvers` (every production deploy today) produce byte-identical generator output to 1.6.9. New behavior only activates when an operator opts into `tls_termination: upstream`. Verified by `src/__tests__/regression-v1.6.10.test.ts`.
 
+[1.6.17]: https://github.com/marwain91/overwatch/compare/v1.6.16...v1.6.17
 [1.6.16]: https://github.com/marwain91/overwatch/compare/v1.6.15...v1.6.16
 [1.6.15]: https://github.com/marwain91/overwatch/compare/v1.6.14...v1.6.15
 [1.6.14]: https://github.com/marwain91/overwatch/compare/v1.6.13...v1.6.14

@@ -14,14 +14,67 @@ import { VERSION } from './version';
 const command = process.argv[2];
 const args = process.argv.slice(3);
 
+const BOLD = '\x1b[1m';
+const NC = '\x1b[0m';
+
 const run = (fn: (args: string[]) => Promise<void>) =>
   fn(args).catch((err: Error) => {
     console.error(`\n\x1b[31mError:\x1b[0m ${err.message}\n`);
     process.exit(1);
   });
 
+function wantsHelp(values: string[]): boolean {
+  return values.includes('--help') || values.includes('-h');
+}
+
+function showMainHelp(): void {
+  console.log('');
+  console.log(`  ${BOLD}Overwatch CLI${NC} v${VERSION}`);
+  console.log('');
+  console.log('  Usage: overwatch <command>');
+  console.log('');
+  console.log('  Commands:');
+  console.log('    init                    Set up a new Overwatch deployment interactively');
+  console.log('    start                   Start infrastructure + Overwatch');
+  console.log('    stop                    Stop Overwatch + infrastructure');
+  console.log('    restart                 Restart all services');
+  console.log('    recreate                Force-recreate Overwatch containers');
+  console.log('    status                  Show service status');
+  console.log('    admins                  List, add, or remove admin users');
+  console.log('    apps <sub>              Manage app definitions (apply from file)');
+  console.log('    infra deploy            Render + deploy shared infra (Traefik, MariaDB)');
+  console.log('    migrate status|up       Inspect / run pending data migrations');
+  console.log('    snapshot <sub>          Create / list / restore / prune config snapshots');
+  console.log('    config                  View, edit, validate, and explore configuration');
+  console.log('    update [--check]        Pull latest image and restart (--self-update to also update CLI)');
+  console.log('                            --list-tags to browse available tags, --tag <tag> to pin');
+  console.log('    self-update [--check]   Update the CLI binary itself');
+  console.log('');
+  console.log('  Environment:');
+  console.log('    OVERWATCH_CONFIG        Path to overwatch.yaml (auto-detected if not set)');
+  console.log('    DEPLOY_DIR              Path to deploy root (auto-detected if not set)');
+  console.log('');
+}
+
+function showSimpleHelp(name: string, description: string): void {
+  console.log('');
+  console.log(`  ${BOLD}overwatch ${name}${NC}`);
+  console.log('');
+  console.log(`  ${description}`);
+  console.log('');
+  console.log(`  Usage: overwatch ${name}`);
+  console.log('');
+}
+
+function maybeShowSimpleHelp(name: string, description: string): boolean {
+  if (!wantsHelp(args)) return false;
+  showSimpleHelp(name, description);
+  return true;
+}
+
 switch (command) {
   case 'init':
+    if (maybeShowSimpleHelp('init', 'Set up a new Overwatch deployment interactively.')) break;
     run(() => runInit());
     break;
 
@@ -38,22 +91,27 @@ switch (command) {
     break;
 
   case 'start':
+    if (maybeShowSimpleHelp('start', 'Start infrastructure and Overwatch services.')) break;
     run(() => runStart());
     break;
 
   case 'stop':
+    if (maybeShowSimpleHelp('stop', 'Stop Overwatch and infrastructure services.')) break;
     run(() => runStop());
     break;
 
   case 'restart':
+    if (maybeShowSimpleHelp('restart', 'Restart infrastructure and Overwatch services.')) break;
     run(() => runRestart());
     break;
 
   case 'recreate':
+    if (maybeShowSimpleHelp('recreate', 'Force-recreate Overwatch containers.')) break;
     run(() => runRecreate());
     break;
 
   case 'status':
+    if (maybeShowSimpleHelp('status', 'Show service status.')) break;
     run(() => runStatus());
     break;
 
@@ -85,32 +143,7 @@ switch (command) {
   case undefined:
   case '--help':
   case '-h':
-    console.log('');
-    console.log(`  \x1b[1mOverwatch CLI\x1b[0m v${VERSION}`);
-    console.log('');
-    console.log('  Usage: overwatch <command>');
-    console.log('');
-    console.log('  Commands:');
-    console.log('    init                    Set up a new Overwatch deployment interactively');
-    console.log('    start                   Start infrastructure + Overwatch');
-    console.log('    stop                    Stop Overwatch + infrastructure');
-    console.log('    restart                 Restart all services');
-    console.log('    recreate                Force-recreate Overwatch containers');
-    console.log('    status                  Show service status');
-    console.log('    admins                  List, add, or remove admin users');
-    console.log('    apps <sub>              Manage app definitions (apply from file)');
-    console.log('    infra deploy            Render + deploy shared infra (Traefik, MariaDB)');
-    console.log('    migrate status|up       Inspect / run pending data migrations');
-    console.log('    snapshot <sub>          Create / list / restore / prune config snapshots');
-    console.log('    config                  View, edit, validate, and explore configuration');
-    console.log('    update [--check]        Pull latest image and restart (--self-update to also update CLI)');
-    console.log('                            --list-tags to browse available tags, --tag <tag> to pin');
-    console.log('    self-update [--check]   Update the CLI binary itself');
-    console.log('');
-    console.log('  Environment:');
-    console.log('    OVERWATCH_CONFIG        Path to overwatch.yaml (auto-detected if not set)');
-    console.log('    DEPLOY_DIR              Path to deploy root (auto-detected if not set)');
-    console.log('');
+    showMainHelp();
     break;
 
   default:

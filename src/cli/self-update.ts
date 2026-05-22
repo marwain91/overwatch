@@ -198,7 +198,30 @@ function downloadFile(url: string, dest: string, totalSize: number): Promise<voi
   });
 }
 
+function wantsHelp(args: string[]): boolean {
+  return args.includes('--help') || args.includes('-h');
+}
+
+function showSelfUpdateHelp(): void {
+  console.log('');
+  console.log(`  ${BOLD}overwatch self-update${NC}`);
+  console.log('');
+  console.log('  Update the Overwatch CLI binary from the latest GitHub release.');
+  console.log('');
+  console.log('  Usage: overwatch self-update [options]');
+  console.log('');
+  console.log('  Options:');
+  console.log('    --check                 Check for an available CLI update without installing it');
+  console.log('    -h, --help              Show this help');
+  console.log('');
+}
+
 export async function runSelfUpdate(args: string[]): Promise<void> {
+  if (wantsHelp(args)) {
+    showSelfUpdateHelp();
+    return;
+  }
+
   const checkOnly = args.includes('--check');
   const platform = os.platform();
 

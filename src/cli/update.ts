@@ -59,7 +59,33 @@ function readFlagValue(args: string[], flag: string): string | undefined {
   return value;
 }
 
+function wantsHelp(args: string[]): boolean {
+  return args.includes('--help') || args.includes('-h');
+}
+
+function showUpdateHelp(): void {
+  console.log('');
+  console.log('  \x1b[1moverwatch update\x1b[0m');
+  console.log('');
+  console.log('  Pull the Overwatch image and restart the Overwatch service.');
+  console.log('');
+  console.log('  Usage: overwatch update [options]');
+  console.log('');
+  console.log('  Options:');
+  console.log('    --check                 Check remote digest without applying an update');
+  console.log('    --list-tags             List available image tags');
+  console.log('    --tag <tag>             Pull and deploy a specific image tag');
+  console.log('    --self-update           Update the CLI binary before updating the container');
+  console.log('    -h, --help              Show this help');
+  console.log('');
+}
+
 export async function runUpdate(args: string[]): Promise<void> {
+  if (wantsHelp(args)) {
+    showUpdateHelp();
+    return;
+  }
+
   const checkOnly = args.includes('--check');
   const listTagsOnly = args.includes('--list-tags');
   const tagArg = readFlagValue(args, '--tag');
