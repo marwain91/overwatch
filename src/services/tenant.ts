@@ -394,6 +394,13 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // Read current .env
   const originalEnvContent = await fs.readFile(envPath, 'utf-8');
   const originalComposeContent = await fs.readFile(composePath, 'utf-8');
+
+  // Resolve the image refs the tenant is currently running so we can clean
+  // them up after a successful update. Done before any mutation so env
+  // interpolation resolves against the *running* state. Best-effort: if
+  // `compose config` fails we just skip cleanup later.
+  const oldImages = await listComposeImages(tenantPath, composePath).catch(() => [] as string[]);
+
   let originalSharedEnvContent: string | null = null;
   try {
     originalSharedEnvContent = await fs.readFile(sharedEnvPath, 'utf-8');
@@ -528,6 +535,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   try {
     await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans']);
     emit('restart', 'completed');
+    await pruneReplacedImages(oldImages, tenantPath, composePath, appId, tenantId);
     emit('done', 'completed');
   } catch (error: any) {
     const detail = extractComposeErrorMessage(error);
@@ -538,6 +546,47 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     emit('restart', 'failed', detail);
     emit('failed', 'failed', detail);
     throw new Error(detail);
+  }
+}
+
+/**
+ * Resolve the fully-rendered image refs in a tenant's compose file, with all
+ * env interpolation applied. Uses `docker compose config --images` rather
+ * than parsing YAML by hand so future compose features (variable defaults,
+ * extends, includes) keep working.
+ */
+async function listComposeImages(tenantPath: string, composePath: string): Promise<string[]> {
+  const { stdout } = await execFileAsync(
+    'docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'config', '--images'],
+  );
+  return stdout.split('\n').map(line => line.trim()).filter(Boolean);
+}
+
+/**
+ * After a successful tenant update, drop the previous image tags that the
+ * regenerated compose no longer references. `docker rmi` fails harmlessly
+ * when another container still references the image, so this is safe across
+ * tenants that share a repo on different tags. Best-effort: never throws.
+ */
+async function pruneReplacedImages(
+  oldImages: string[],
+  tenantPath: string,
+  composePath: string,
+  appId: string,
+  tenantId: string,
+): Promise<void> {
+  if (oldImages.length === 0) return;
+  try {
+    const newImages = new Set(await listComposeImages(tenantPath, composePath));
+    for (const img of oldImages) {
+      if (newImages.has(img)) continue;
+      await execFileAsync('docker', ['rmi', img]).catch((err: any) => {
+        const detail = (err?.stderr ?? '').toString().trim() || err?.message || String(err);
+        console.log(`[tenant:update] skip rmi ${img} for ${appId}/${tenantId}: ${detail}`);
+      });
+    }
+  } catch (err: any) {
+    console.warn(`[tenant:update] image cleanup skipped for ${appId}/${tenantId}: ${err?.message || err}`);
   }
 }
 

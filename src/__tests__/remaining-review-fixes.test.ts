@@ -4,6 +4,26 @@ import * as http from 'http';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import * as util from 'util';
+
+/**
+ * Wrap a vi.fn execFile mock so `promisify(execFile)` resolves with
+ * `{stdout, stderr}` (matching the real Node `child_process.execFile`),
+ * not just the second callback argument.
+ */
+function withPromisify(
+  mock: (cmd: string, args: string[], cb: (err: any, stdout: string, stderr: string) => void) => void,
+): typeof mock & { [k: symbol]: any } {
+  const fn = vi.fn(mock) as any;
+  fn[util.promisify.custom] = (cmd: string, args: string[]) =>
+    new Promise((resolve, reject) => {
+      fn(cmd, args, (err: any, stdout: string, stderr: string) => {
+        if (err) reject(err);
+        else resolve({ stdout, stderr });
+      });
+    });
+  return fn;
+}
 
 let tmpRoot: string;
 
@@ -374,6 +394,140 @@ describe('tenant lifecycle rollback', () => {
     expect(compose).toContain('image: ghcr.io/jerryminiapps/product/backend:${IMAGE_TAG:-latest}');
     expect(compose).toContain('container_name: product-daktela-backend');
     expect(compose).not.toContain('theopenapps/hyperproduct');
+  });
+});
+
+describe('tenant update image cleanup', () => {
+  it('removes image tags the regenerated compose no longer references', async () => {
+    const appsDir = path.join(tmpRoot, 'apps');
+    const tenantPath = path.join(appsDir, 'customer-portal', 'tenants', 'tenant-one');
+    await fs.mkdir(tenantPath, { recursive: true });
+    const envPath = path.join(tenantPath, '.env');
+    const sharedEnvPath = path.join(tenantPath, 'shared.env');
+    const composePath = path.join(tenantPath, 'docker-compose.yml');
+
+    await fs.writeFile(
+      envPath,
+      'APP_ID=customer-portal\nTENANT_ID=tenant-one\nTENANT_DOMAIN=tenant-one.example.test\nIMAGE_TAG=1.0.0\n',
+      { mode: 0o600 },
+    );
+    await fs.writeFile(sharedEnvPath, 'SHARED=1\n', { mode: 0o600 });
+    await fs.writeFile(composePath, 'services:\n  web-api:\n    image: ghcr.io/acme/customer-portal/web-api:1.0.0\n');
+
+    vi.doMock('../config', () => ({
+      loadConfig: () => baseConfig(),
+      getAppsDir: () => appsDir,
+      resolveAppDbPrefix: () => 'test',
+    }));
+    vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
+    vi.doMock('../services/app', () => ({
+      getApp: vi.fn(async () => baseApp('customer-portal')),
+      applyApp: vi.fn(async (def: any) => ({ result: 'noop', app: def, changedKeys: [] })),
+    }));
+    vi.doMock('../services/envVars', () => ({
+      generateSharedEnvFile: vi.fn(async () => {
+        await fs.writeFile(sharedEnvPath, 'SHARED=2\n', { mode: 0o600 });
+      }),
+      deleteTenantAllOverrides: vi.fn(),
+    }));
+    vi.doMock('../services/manifestExtractor', () => ({
+      readManifestFromAppImage: vi.fn(async () => null),
+      resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/customer-portal/web-api:1.1.0'),
+    }));
+    vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
+    vi.doMock('../services/tenantAppDef', () => ({
+      readTenantAppDef: vi.fn(async () => baseApp('customer-portal')),
+      writeTenantAppDef: vi.fn(async () => undefined),
+    }));
+    vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
+
+    // `config --images` is called twice: once before mutations (returns old
+    // image), once after restart (returns new image). Other compose commands
+    // (pull, up) and `rmi` succeed.
+    let configCalls = 0;
+    const rmiCalls: string[] = [];
+    vi.doMock('child_process', () => ({
+      execFile: withPromisify((_cmd, args, cb) => {
+        if (args.includes('config') && args.includes('--images')) {
+          const out = configCalls++ === 0
+            ? 'ghcr.io/acme/customer-portal/web-api:1.0.0\n'
+            : 'ghcr.io/acme/customer-portal/web-api:1.1.0\n';
+          cb(null, out, '');
+          return;
+        }
+        if (args[0] === 'rmi') {
+          rmiCalls.push(args[1]);
+          cb(null, '', '');
+          return;
+        }
+        cb(null, '', '');
+      }),
+    }));
+
+    const { updateTenant } = await import('../services/tenant');
+    await updateTenant('customer-portal', 'tenant-one', '1.1.0');
+
+    expect(configCalls).toBe(2);
+    expect(rmiCalls).toEqual(['ghcr.io/acme/customer-portal/web-api:1.0.0']);
+  });
+
+  it('skips cleanup when the compose file still references the same image ref', async () => {
+    const appsDir = path.join(tmpRoot, 'apps');
+    const tenantPath = path.join(appsDir, 'customer-portal', 'tenants', 'tenant-one');
+    await fs.mkdir(tenantPath, { recursive: true });
+    const envPath = path.join(tenantPath, '.env');
+    const sharedEnvPath = path.join(tenantPath, 'shared.env');
+    const composePath = path.join(tenantPath, 'docker-compose.yml');
+
+    await fs.writeFile(envPath, 'APP_ID=customer-portal\nTENANT_ID=tenant-one\nTENANT_DOMAIN=t.example.test\nIMAGE_TAG=latest\n', { mode: 0o600 });
+    await fs.writeFile(sharedEnvPath, 'SHARED=1\n', { mode: 0o600 });
+    await fs.writeFile(composePath, 'services:\n  web-api:\n    image: ghcr.io/acme/customer-portal/web-api:latest\n');
+
+    vi.doMock('../config', () => ({
+      loadConfig: () => baseConfig(),
+      getAppsDir: () => appsDir,
+      resolveAppDbPrefix: () => 'test',
+    }));
+    vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
+    vi.doMock('../services/app', () => ({
+      getApp: vi.fn(async () => baseApp('customer-portal')),
+      applyApp: vi.fn(async (def: any) => ({ result: 'noop', app: def, changedKeys: [] })),
+    }));
+    vi.doMock('../services/envVars', () => ({
+      generateSharedEnvFile: vi.fn(async () => undefined),
+      deleteTenantAllOverrides: vi.fn(),
+    }));
+    vi.doMock('../services/manifestExtractor', () => ({
+      readManifestFromAppImage: vi.fn(async () => null),
+      resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/customer-portal/web-api:latest'),
+    }));
+    vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
+    vi.doMock('../services/tenantAppDef', () => ({
+      readTenantAppDef: vi.fn(async () => baseApp('customer-portal')),
+      writeTenantAppDef: vi.fn(async () => undefined),
+    }));
+    vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
+
+    const rmiCalls: string[] = [];
+    vi.doMock('child_process', () => ({
+      execFile: withPromisify((_cmd, args, cb) => {
+        if (args.includes('config') && args.includes('--images')) {
+          cb(null, 'ghcr.io/acme/customer-portal/web-api:latest\n', '');
+          return;
+        }
+        if (args[0] === 'rmi') {
+          rmiCalls.push(args[1]);
+          cb(null, '', '');
+          return;
+        }
+        cb(null, '', '');
+      }),
+    }));
+
+    const { updateTenant } = await import('../services/tenant');
+    await updateTenant('customer-portal', 'tenant-one', 'latest');
+
+    expect(rmiCalls).toEqual([]);
   });
 });
 

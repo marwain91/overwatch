@@ -5,6 +5,11 @@ All notable changes to Overwatch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.18] — 2026-05-29
+
+### Fixed
+- **Tenant image cleanup.** After a successful `updateTenant`, the previous image tags that the regenerated compose no longer references are removed via `docker rmi`. Avoids unbounded disk growth from accumulated old tags. Safe across tenants: `rmi` fails harmlessly when another container still references the image, and `--images` is resolved by `docker compose config` so env interpolation is honored.
+
 ## [1.6.17] — 2026-05-22
 
 ### Fixed
