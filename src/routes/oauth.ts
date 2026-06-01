@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { randomBytes } from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
@@ -40,7 +40,7 @@ function loginPage(requestToken: string, googleClientId: string): string {
 </form>
 <div id="g_id_onload" data-client_id="${htmlEscape(googleClientId)}" data-callback="onCred"></div>
 <div class="g_id_signin" data-type="standard"></div>
-<script>function onCred(r){document.getElementById('credential').value=r.credential;document.getElementById('f').submit();}</script>
+<script src="/oauth/gsi-callback.js"></script>
 </body></html>`;
 }
 
@@ -54,6 +54,13 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
 
   router.get('/.well-known/oauth-protected-resource', (_req: Request, res: Response) => {
     res.json(protectedResourceMetadata(issuer));
+  });
+
+  // CSP-safe external GSI callback script (site-wide CSP forbids inline scripts).
+  router.get('/oauth/gsi-callback.js', (_req: Request, res: Response) => {
+    res.type('application/javascript').send(
+      "function onCred(r){document.getElementById('credential').value=r.credential;document.getElementById('f').submit();}"
+    );
   });
 
   // RFC 7591 Dynamic Client Registration (public clients only).
@@ -90,6 +97,7 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
 
   // GET /oauth/authorize — validate params, render login page with a signed request token.
   router.get('/oauth/authorize', asyncHandler(async (req: Request, res: Response) => {
+    if (!googleClientId) return res.status(500).json({ error: 'server_misconfiguration', error_description: 'Google OAuth not configured' });
     const { response_type, client_id, redirect_uri, code_challenge, code_challenge_method, state, resource } = req.query as Record<string, string>;
     if (response_type !== 'code') return res.status(400).json({ error: 'unsupported_response_type' });
     if (code_challenge_method !== 'S256' || !code_challenge) return res.status(400).json({ error: 'invalid_request', error_description: 'PKCE S256 required' });
@@ -98,24 +106,30 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     if (!client.redirect_uris.includes(redirect_uri)) return res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri not registered' });
 
     const params: AuthorizeParams = { client_id, redirect_uri, code_challenge, state, resource };
-    const requestToken = jwt.sign(params, process.env.JWT_SECRET!, { algorithm: 'HS256', expiresIn: '10m', audience: REQUEST_TOKEN_AUD });
+    const requestToken = jwt.sign(params, process.env.JWT_SECRET!, { algorithm: 'HS256', expiresIn: '10m', audience: REQUEST_TOKEN_AUD, issuer: issuer });
     res.type('html').send(loginPage(requestToken, googleClientId));
   }));
 
   // POST /oauth/authorize/callback — verify Google credential, check admin, mint code.
-  router.post('/oauth/authorize/callback', asyncHandler(async (req: Request, res: Response) => {
+  router.post('/oauth/authorize/callback', express.urlencoded({ extended: false }), asyncHandler(async (req: Request, res: Response) => {
+    if (!googleClientId) return res.status(500).json({ error: 'server_misconfiguration', error_description: 'Google OAuth not configured' });
     const { request_token, credential } = req.body || {};
     if (!request_token || !credential) return res.status(400).json({ error: 'invalid_request' });
 
     let params: AuthorizeParams;
     try {
-      params = jwt.verify(request_token, process.env.JWT_SECRET!, { algorithms: ['HS256'], audience: REQUEST_TOKEN_AUD }) as AuthorizeParams;
+      params = jwt.verify(request_token, process.env.JWT_SECRET!, { algorithms: ['HS256'], audience: REQUEST_TOKEN_AUD, issuer: issuer }) as AuthorizeParams;
     } catch {
       return res.status(400).json({ error: 'invalid_request', error_description: 'expired or invalid request' });
     }
 
-    const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: googleClientId });
-    const payload = ticket.getPayload();
+    let payload: import('google-auth-library').TokenPayload | undefined;
+    try {
+      const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: googleClientId });
+      payload = ticket.getPayload();
+    } catch {
+      return res.status(401).json({ error: 'access_denied', error_description: 'invalid credential' });
+    }
     if (!payload?.email || !payload.email_verified) return res.status(401).json({ error: 'access_denied', error_description: 'email not verified' });
     const email = payload.email.toLowerCase();
     if (!(await isAdminEmail(email))) {

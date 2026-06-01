@@ -96,4 +96,26 @@ describe('oauth /authorize', () => {
       .send({ request_token: reqToken, credential: 'google-jwt' });
     expect(res.status).toBe(403);
   });
+
+  it('callback rejects an invalid Google credential with 401', async () => {
+    const client = await registerClient({ client_name: 'c', redirect_uris: ['https://client/cb'] });
+    const page = await request(appWith()).get('/oauth/authorize').query({
+      response_type: 'code', client_id: client.client_id, redirect_uri: 'https://client/cb',
+      code_challenge: 'abc', code_challenge_method: 'S256', state: 's1',
+    });
+    const reqToken = /name="request_token" value="([^"]+)"/.exec(page.text)![1];
+    verifyIdToken.mockRejectedValueOnce(new Error('Token used too late'));
+    const res = await request(appWith()).post('/oauth/authorize/callback').type('form')
+      .send({ request_token: reqToken, credential: 'bad' });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('access_denied');
+    expect(JSON.stringify(res.body)).not.toContain('Token used too late'); // no detail leak
+  });
+
+  it('serves the external GSI callback script (CSP-safe)', async () => {
+    const res = await request(appWith()).get('/oauth/gsi-callback.js');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/javascript/);
+    expect(res.text).toContain('onCred');
+  });
 });
