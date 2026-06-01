@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { TraefikGlobalSchema } from '../models/traefik';
+import { McpConfigSchema } from './mcp';
 
 // Database configuration schema
 export const DatabaseConfigSchema = z.object({
@@ -77,6 +78,7 @@ export const OverwatchConfigSchema = z.object({
   monitoring: MonitoringConfigSchema.optional().describe('Container monitoring configuration'),
   alert_rules: z.array(AlertRuleSchema).optional().describe('Alert rules for monitoring'),
   retention: RetentionConfigSchema.optional().describe('Log retention configuration'),
+  mcp: McpConfigSchema.optional().describe('Remote MCP server + OAuth2 configuration'),
   data_dir: z.string().optional().describe('Path to the Overwatch data directory'),
 });
 

@@ -19,6 +19,7 @@ import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
 import databaseRouter from './routes/database';
 import traefikRouter from './routes/traefik';
+import { mountMcp } from './mcp/server';
 import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions, repairBindMountedDataFiles } from './services/envVars';
 import { startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns } from './services/scheduler';
 import { flushAuditLog } from './middleware/audit';
@@ -133,6 +134,21 @@ async function start() {
   app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
   app.use('/api/database', authMiddleware, apiLimiter, auditLog, databaseRouter);
   app.use('/api/traefik', authMiddleware, apiLimiter, destructiveLimiter, auditLog, traefikRouter);
+
+  // MCP server + OAuth endpoints — opt-in. Mounted before the SPA fallback so
+  // /mcp and /oauth/* are matched as API routes, not served the React index.
+  if (config.mcp?.enabled) {
+    if (!config.mcp.public_url) {
+      console.error('[startup] FATAL: mcp.enabled but mcp.public_url is empty');
+      process.exit(1);
+    }
+    mountMcp(app, {
+      issuer: config.mcp.public_url,
+      accessTokenTtl: config.mcp.access_token_ttl,
+      refreshTokenTtl: config.mcp.refresh_token_ttl,
+    });
+    console.log(`[startup] MCP server mounted at ${config.mcp.public_url}/mcp`);
+  }
 
   // Serve frontend for all other routes (SPA fallback).
   // Express 5 / path-to-regexp 8 require a named wildcard.

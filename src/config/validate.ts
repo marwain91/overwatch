@@ -28,6 +28,11 @@ export function validateEnvironment(config: OverwatchConfig): ValidationError[] 
 
   // Registry and backup validation now happens per-app at runtime
 
+  // --- MCP ---
+  if (config.mcp?.enabled && !config.mcp.public_url) {
+    errors.push({ category: 'mcp', message: 'mcp.public_url is required when mcp.enabled is true (used as OAuth issuer + token audience)' });
+  }
+
   return errors;
 }
 
