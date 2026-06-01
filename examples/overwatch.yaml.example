@@ -103,3 +103,13 @@ networking:
 
 # Data directory for persistent files (admin-users.json, env-vars.json, audit.log)
 # data_dir: "/app/data"
+
+# MCP Server (optional, disabled by default)
+# Exposes a remote Model Context Protocol server so AI clients (Claude, etc.)
+# can manage tenants over the network. Reuses JWT_SECRET and GOOGLE_CLIENT_ID —
+# no new environment variables are required.
+# mcp:
+#   enabled: false
+#   public_url: https://overwatch.example.com   # externally reachable base URL (OAuth issuer + token audience)
+#   access_token_ttl: 1h                         # access token lifetime (default: 1h)
+#   refresh_token_ttl: 30d                       # refresh token lifetime (default: 30d)
