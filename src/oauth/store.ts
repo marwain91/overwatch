@@ -1,9 +1,8 @@
-import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { getDataDir } from '../config';
 import { withFileLock } from '../services/fileLock';
-import { writeJsonAtomic } from '../utils/atomicJson';
+import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 import { RegisteredClient, AuthCode, RefreshTokenRecord } from './types';
 
 interface OAuthFile {
@@ -17,12 +16,11 @@ function storeFile(): string {
 
 async function readFileState(): Promise<OAuthFile> {
   try {
-    const raw = await fs.readFile(storeFile(), 'utf-8');
-    const parsed = JSON.parse(raw) as Partial<OAuthFile>;
+    const parsed = await readJsonStrict<Partial<OAuthFile>>(storeFile());
     return { clients: parsed.clients ?? [], refreshTokens: parsed.refreshTokens ?? [] };
   } catch (err: any) {
     if (err.code === 'ENOENT') return { clients: [], refreshTokens: [] };
-    throw new Error(`mcp-oauth.json is not valid JSON (${err.message}). Refusing to auto-reset.`);
+    throw err; // readJsonStrict already formats the JSON-parse error message
   }
 }
 
@@ -86,9 +84,10 @@ export async function consumeRefreshToken(token: string): Promise<Omit<RefreshTo
     const hash = sha256(token);
     const idx = state.refreshTokens.findIndex(t => t.token_hash === hash);
     if (idx === -1) return undefined;
+    // Splice + persist unconditionally so an expired token can't be replayed.
     const [rec] = state.refreshTokens.splice(idx, 1);
     await writeFileState(state);
-    if (rec.expires_at < Date.now()) return undefined;
+    if (rec.expires_at < Date.now()) return undefined; // consumed but expired
     const { token_hash, ...rest } = rec;
     return rest;
   });
