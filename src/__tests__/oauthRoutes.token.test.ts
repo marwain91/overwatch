@@ -17,8 +17,9 @@ vi.mock('../services/users', async (orig) => {
 });
 
 import { createOAuthRouter } from '../routes/oauth';
-import { putAuthCode } from '../oauth/store';
+import { putAuthCode, saveRefreshToken } from '../oauth/store';
 import { verifyAccessToken } from '../oauth/tokens';
+import { isAdminEmail } from '../services/users';
 
 const ISSUER = 'https://ow.example.com';
 function appWith() {
@@ -105,5 +106,55 @@ describe('oauth /token', () => {
     const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: 'does-not-exist' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_grant');
+  });
+
+  // Revocation safety: admin removed AFTER the code was issued must be denied at
+  // the token endpoint (the handler re-checks isAdminEmail at exchange time).
+  it('denies the authorization_code grant when the user is no longer an admin', async () => {
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    putAuthCode({ code: 'CODE_REVOKED', client_id: 'c1', redirect_uri: 'https://client/cb', code_challenge: challenge, email: 'gone@b.c', role: 'editor', expires_at: Date.now() + 60_000 });
+    (isAdminEmail as any).mockResolvedValueOnce(false);
+    const res = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_REVOKED', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: verifier,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
+
+  it('denies the refresh_token grant when the user is no longer an admin', async () => {
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    putAuthCode({ code: 'CODE_RT', client_id: 'c1', redirect_uri: 'https://client/cb', code_challenge: challenge, email: 'a@b.c', role: 'editor', expires_at: Date.now() + 60_000 });
+    const first = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_RT', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: verifier,
+    });
+    const rt = first.body.refresh_token;
+    (isAdminEmail as any).mockResolvedValueOnce(false);
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: rt });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
+
+  it('rejects an expired refresh token at the token endpoint', async () => {
+    await saveRefreshToken('EXPIRED_RT', { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() - 1 });
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: 'EXPIRED_RT' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
+
+  it('revokes a refresh token via /oauth/revoke (subsequent use rejected)', async () => {
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    putAuthCode({ code: 'CODE_REV', client_id: 'c1', redirect_uri: 'https://client/cb', code_challenge: challenge, email: 'a@b.c', role: 'editor', expires_at: Date.now() + 60_000 });
+    const first = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_REV', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: verifier,
+    });
+    const rt = first.body.refresh_token;
+    const revoke = await request(appWith()).post('/oauth/revoke').type('form').send({ token: rt });
+    expect(revoke.status).toBe(200); // RFC 7009: always 200
+    const reuse = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: rt });
+    expect(reuse.status).toBe(400);
+    expect(reuse.body.error).toBe('invalid_grant');
   });
 });

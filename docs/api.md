@@ -230,6 +230,44 @@ Global Traefik endpoints manage `overwatch.yaml.traefik`.
 | `PUT` | `/api/traefik/overwatch` | `admin` | Update Overwatch admin router config |
 | `POST` | `/api/traefik/reload` | `admin` | Restart/reload Traefik so static config changes apply |
 
+## OAuth 2.1 (MCP Server)
+
+OAuth endpoints and metadata are only available when `mcp.enabled: true` in `overwatch.yaml`. Implements OAuth 2.1 with PKCE (S256 only). Access tokens are scoped to the `/mcp` audience (distinct from web-UI session tokens). Auth codes are single-use, 60 seconds-lived, and held in memory. Rate-limited at 20 req/min.
+
+| Method | Endpoint | Role | Description |
+|--------|----------|------|-------------|
+| `GET` | `/.well-known/oauth-authorization-server` | `public` | OAuth authorization server metadata (RFC 8414) |
+| `GET` | `/.well-known/oauth-protected-resource` | `public` | OAuth protected resource metadata (RFC 8414) |
+| `POST` | `/oauth/register` | `public` | Dynamic client registration (RFC 7591); returns `client_id`, `client_name`, `redirect_uris`, `token_endpoint_auth_method`, `grant_types`, `response_types` |
+| `GET` | `/oauth/authorize` | `public` | Authorization endpoint; renders login page; requires PKCE S256 `code_challenge` + `code_challenge_method`, registered `client_id` and `redirect_uri` |
+| `POST` | `/oauth/authorize/callback` | `public` | Callback after Google sign-in; mints single-use authorization code (60s, in-memory); requires valid Google ID token and admin email verified in `admin-users.json` |
+| `POST` | `/oauth/token` | `public` | Token exchange; supports `grant_type: authorization_code` (with PKCE `code_verifier`) and `grant_type: refresh_token`; returns Bearer token with 3600s expiry |
+| `POST` | `/oauth/revoke` | `public` | Revoke a refresh token; always returns 200 per RFC 7009 |
+| `GET` | `/oauth/gsi-callback.js` | `public` | CSP-safe Google Identity Services callback script |
+
+## MCP Server
+
+The Model Context Protocol server at `/mcp` enables AI clients (Claude, etc.) to manage tenants. Available only when `mcp.enabled: true`. Requires Bearer token authentication (OAuth access token scoped to `/mcp` audience). Rate-limited at 60 req/min.
+
+| Method | Endpoint | Role | Description |
+|--------|----------|------|-------------|
+| `POST` | `/mcp` | `viewer` or higher | Stateless HTTP transport for MCP tool calls; request body is JSON-RPC 2.0; response streams via HTTP |
+| `GET` | `/mcp` | — | Returns 405 Method Not Allowed (stateless mode has no standalone SSE stream) |
+
+**MCP Tools:**
+
+| Tool | Min Role | Description |
+|------|----------|-------------|
+| `list_apps` | `viewer` | List managed apps |
+| `list_tenants` | `viewer` | List tenants (optionally for one app) |
+| `get_tenant` | `viewer` | Get a tenant's current image tag and details |
+| `update_tenant` | `editor` | Update a tenant to a new image tag (streams progress notifications) |
+| `start_tenant` | `editor` | Start a tenant's containers |
+| `stop_tenant` | `editor` | Stop a tenant's containers |
+| `restart_tenant` | `editor` | Restart a tenant's containers |
+
+Role authorization is checked per-request against the current `admin-users.json`; removing an admin revokes MCP access immediately.
+
 ## Health Check
 
 | Method | Endpoint | Role | Description |

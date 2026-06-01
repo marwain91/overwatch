@@ -178,6 +178,28 @@ retention:
 
 Log files are pruned on startup and hourly.
 
+### MCP Server Configuration
+
+Enable a remote [Model Context Protocol](https://modelcontextprotocol.io) server for AI clients (Claude, etc.) to manage tenants over the network.
+
+```yaml
+mcp:
+  enabled: boolean                # Enable the remote MCP server (default: false)
+  public_url: string              # Externally reachable base URL (required if enabled), e.g. https://overwatch.example.com
+  access_token_ttl: string        # Access token lifetime in jsonwebtoken expiresIn syntax (default: "1h")
+  refresh_token_ttl: string       # Refresh token lifetime in jsonwebtoken expiresIn syntax (default: "30d")
+```
+
+**Notes:**
+
+- The MCP feature is disabled by default. Set `enabled: true` to activate `/mcp` and `/oauth/*` endpoints.
+- `public_url` is required when enabled — it serves as the OAuth 2.1 issuer and the access-token audience.
+- No new environment variables are required. The OAuth server reuses `JWT_SECRET` and `GOOGLE_CLIENT_ID` from your existing `.env` setup.
+- Tools are role-gated by admin-users RBAC: read operations (`list_apps`, `list_tenants`, `get_tenant`) require the `viewer` role; update and lifecycle operations (`update_tenant`, `start_tenant`, `stop_tenant`, `restart_tenant`) require the `editor` role.
+- Both OAuth and `/mcp` endpoints are rate-limited (20 req/min for OAuth, 60 req/min for MCP).
+
+See [docs/mcp.md](mcp.md) for client connection details and security notes.
+
 ### Full Example
 
 ```yaml
@@ -208,6 +230,13 @@ monitoring:
 retention:
   max_alert_entries: 10000
   max_audit_entries: 10000
+
+# MCP server (optional, disabled by default):
+# mcp:
+#   enabled: false
+#   public_url: "https://overwatch.example.com"
+#   access_token_ttl: "1h"
+#   refresh_token_ttl: "30d"
 ```
 
 ---

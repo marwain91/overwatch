@@ -27,4 +27,13 @@ describe('read tools', () => {
     const r = await getTenantHandler({ appId: 'app1', tenantId: 'nope' }, viewer);
     expect(r.isError).toBe(true);
   });
+
+  it('does not leak internal error detail (e.g. file paths) on an unexpected failure', async () => {
+    const app = await import('../services/app');
+    (app.listApps as any).mockRejectedValueOnce(new Error('ENOENT: /srv/secret/path/apps.json'));
+    const r = await listAppsHandler({}, viewer);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Failed to list apps');
+    expect(r.content[0].text).not.toContain('/srv/secret');
+  });
 });

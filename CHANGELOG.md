@@ -5,6 +5,12 @@ All notable changes to Overwatch will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Remote MCP server with OAuth 2.1.** Expose a Model Context Protocol server at `/mcp` for AI clients (Claude, etc.) to manage tenants over the network. Disabled by default; enable via the `mcp:` block in `overwatch.yaml` with `enabled: true` and `public_url` set to your externally reachable Overwatch URL. Implements OAuth 2.1 with PKCE (S256), reuses `JWT_SECRET` and `GOOGLE_CLIENT_ID` for credentials, and rate-limits both OAuth and MCP endpoints. Tools (`list_apps`, `list_tenants`, `get_tenant`, `update_tenant`, `start_tenant`, `stop_tenant`, `restart_tenant`) are role-gated by admin-users RBAC (read ops require viewer role, update + lifecycle ops require editor role). See [docs/mcp.md](docs/mcp.md).
+
 ## [1.6.18] — 2026-05-29
 
 ### Fixed

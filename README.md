@@ -23,6 +23,7 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 - **Log Retention**: Configurable max entries for alert history and audit logs
 - **Admin Access**: Generate JWT tokens for direct tenant application access (optional, per-app)
 - **Google OAuth**: Secure admin panel login with email allowlist
+- **Remote MCP Server**: Model Context Protocol server for AI clients (Claude, etc.) to manage tenants; OAuth 2.1/PKCE, disabled by default, see [docs/mcp.md](docs/mcp.md)
 - **Light/Dark Theme**: System-preference-aware with manual toggle
 - **Self-Update**: Update both the Docker image (`overwatch update`) and the CLI binary (`overwatch self-update`)
 
@@ -134,6 +135,7 @@ overwatch.yaml (infrastructure)     GUI / API (runtime)
 | [Architecture](docs/architecture.md) | System architecture and project structure |
 | [Security](docs/security.md) | Access control, secrets management, Docker socket security |
 | [Traefik](docs/traefik.md) | Reverse proxy, cert resolvers, middlewares, upstream TLS termination |
+| [MCP Server](docs/mcp.md) | Remote Model Context Protocol server for AI clients with OAuth 2.1 |
 | [Development](docs/development.md) | Local development setup, building Docker images |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions |
 
