@@ -12,11 +12,17 @@ describe('access tokens', () => {
     expect(info.email).toBe('a@b.c');
     expect(info.role).toBe('editor');
     expect(info.aud).toBe(mcpResourceUrl(ISSUER));
+    expect(info.scope).toBe('tenants');
   });
 
   it('rejects a token with the wrong audience', () => {
     const token = issueAccessToken({ email: 'a@b.c', role: 'editor', issuer: ISSUER, ttl: '1h' });
     expect(() => verifyAccessToken(token, { issuer: 'https://other.example.com' })).toThrow();
+  });
+
+  it('rejects an expired token', () => {
+    const token = issueAccessToken({ email: 'a@b.c', role: 'editor', issuer: ISSUER, ttl: '-1s' });
+    expect(() => verifyAccessToken(token, { issuer: ISSUER })).toThrow();
   });
 
   it('rejects a tampered token', () => {

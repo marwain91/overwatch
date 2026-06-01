@@ -17,7 +17,8 @@ interface AccessClaims {
 }
 
 export function issueAccessToken(opts: { email: string; role: AdminRole; issuer: string; ttl: string }): string {
-  const secret = process.env.JWT_SECRET!;
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET env var is required');
   const claims: Omit<AccessClaims, 'iss' | 'aud'> = {
     sub: opts.email,
     role: opts.role,
@@ -40,7 +41,8 @@ export interface VerifiedToken {
 }
 
 export function verifyAccessToken(token: string, opts: { issuer: string }): VerifiedToken {
-  const secret = process.env.JWT_SECRET!;
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET env var is required');
   const decoded = jwt.verify(token, secret, {
     algorithms: ['HS256'],
     issuer: opts.issuer,
@@ -49,7 +51,7 @@ export function verifyAccessToken(token: string, opts: { issuer: string }): Veri
   return {
     email: String(decoded.sub),
     role: decoded.role,
-    aud: Array.isArray(decoded.aud) ? decoded.aud[0] : String(decoded.aud),
+    aud: String(decoded.aud),
     scope: decoded.scope,
   };
 }
