@@ -1921,6 +1921,7 @@ import type { Express, Request, Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { rateLimit } from '../middleware/rateLimit';
 import { createOAuthRouter, OAuthRouterOptions } from '../routes/oauth';
 import { createTokenVerifier, McpAuthExtra } from './auth';
 import { protectedResourceMetadata } from '../oauth/metadata';
@@ -1980,6 +1981,12 @@ export function buildMcpServer(): McpServer {
 
 export function mountMcp(app: Express, opts: MountMcpOptions): void {
   const { issuer } = opts;
+
+  // Rate-limit the OAuth endpoints (login/token/register call out to Google +
+  // read admin-users) to blunt credential-stuffing / DoS. Reuses the existing
+  // rateLimit middleware (import { rateLimit } from '../middleware/rateLimit').
+  const oauthLimiter = rateLimit({ windowMs: 60_000, maxRequests: 20, message: 'Too many OAuth requests, slow down.' });
+  app.use('/oauth', oauthLimiter);
 
   // OAuth endpoints + both .well-known metadata documents are served by our router.
   app.use(createOAuthRouter(opts));
