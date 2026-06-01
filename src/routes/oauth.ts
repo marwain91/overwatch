@@ -4,11 +4,15 @@ import { randomBytes } from 'crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { asyncHandler } from '../utils/asyncHandler';
 import { authorizationServerMetadata, protectedResourceMetadata } from '../oauth/metadata';
-import { registerClient, getClient, putAuthCode } from '../oauth/store';
+import { registerClient, getClient, putAuthCode, consumeAuthCode, saveRefreshToken, consumeRefreshToken, revokeRefreshToken } from '../oauth/store';
 import { isAdminEmail, getUserRole, normaliseRole } from '../services/users';
+import { issueAccessToken, generateRefreshToken } from '../oauth/tokens';
+import { verifyPkceS256 } from '../oauth/pkce';
 
 export interface OAuthRouterOptions {
   issuer: string;
+  accessTokenTtl?: string;   // default '1h'
+  refreshTokenTtl?: string;  // default '30d'
 }
 
 const REQUEST_TOKEN_AUD = 'mcp-oauth-request';
@@ -19,6 +23,15 @@ interface AuthorizeParams {
   code_challenge: string;
   state?: string;
   resource?: string;
+}
+
+// Minimal duration parser for refresh-token expiry bookkeeping (s/m/h/d).
+function parseDurationMs(ttl: string): number {
+  const m = /^(\d+)([smhd])$/.exec(ttl.trim());
+  if (!m) return 30 * 24 * 3600 * 1000;
+  const n = Number(m[1]);
+  const unit = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as 's' | 'm' | 'h' | 'd'];
+  return n * unit;
 }
 
 function htmlEscape(s: string): string {
@@ -47,6 +60,9 @@ function loginPage(requestToken: string, googleClientId: string): string {
 export function createOAuthRouter(opts: OAuthRouterOptions): Router {
   const router = Router();
   const { issuer } = opts;
+  const accessTtl = opts.accessTokenTtl ?? '1h';
+  const refreshTtl = opts.refreshTokenTtl ?? '30d';
+  const refreshTtlMs = parseDurationMs(refreshTtl);
 
   router.get('/.well-known/oauth-authorization-server', (_req: Request, res: Response) => {
     res.json(authorizationServerMetadata(issuer));
@@ -148,6 +164,43 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     location.searchParams.set('code', code);
     if (params.state) location.searchParams.set('state', params.state);
     res.redirect(302, location.toString());
+  }));
+
+  router.post('/oauth/token', express.urlencoded({ extended: false }), asyncHandler(async (req: Request, res: Response) => {
+    const grant = req.body?.grant_type;
+
+    if (grant === 'authorization_code') {
+      const { code, redirect_uri, code_verifier } = req.body;
+      const rec = consumeAuthCode(code);
+      if (!rec) return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown or expired code' });
+      if (rec.redirect_uri !== redirect_uri) return res.status(400).json({ error: 'invalid_grant', error_description: 'redirect_uri mismatch' });
+      if (!verifyPkceS256(code_verifier, rec.code_challenge)) return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
+      // Re-check admin membership at token time (revocation safety).
+      if (!(await isAdminEmail(rec.email))) return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
+
+      const access_token = issueAccessToken({ email: rec.email, role: rec.role, issuer, ttl: accessTtl });
+      const refresh_token = generateRefreshToken();
+      await saveRefreshToken(refresh_token, { client_id: rec.client_id, email: rec.email, expires_at: Date.now() + refreshTtlMs });
+      return res.json({ token_type: 'Bearer', access_token, refresh_token, expires_in: 3600, scope: 'tenants' });
+    }
+
+    if (grant === 'refresh_token') {
+      const rec = await consumeRefreshToken(req.body?.refresh_token);
+      if (!rec) return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown or expired refresh token' });
+      if (!(await isAdminEmail(rec.email))) return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
+      const role = normaliseRole(await getUserRole(rec.email));
+      const access_token = issueAccessToken({ email: rec.email, role, issuer, ttl: accessTtl });
+      const refresh_token = generateRefreshToken(); // rotation
+      await saveRefreshToken(refresh_token, { client_id: rec.client_id, email: rec.email, expires_at: Date.now() + refreshTtlMs });
+      return res.json({ token_type: 'Bearer', access_token, refresh_token, expires_in: 3600, scope: 'tenants' });
+    }
+
+    return res.status(400).json({ error: 'unsupported_grant_type' });
+  }));
+
+  router.post('/oauth/revoke', express.urlencoded({ extended: false }), asyncHandler(async (req: Request, res: Response) => {
+    if (req.body?.token) await revokeRefreshToken(req.body.token);
+    res.status(200).json({}); // RFC 7009: always 200
   }));
 
   return router;
