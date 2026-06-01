@@ -75,4 +75,35 @@ describe('oauth /token', () => {
     const reused = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: rt });
     expect(reused.status).toBe(400); // old token no longer valid
   });
+
+  it('rejects an unknown/expired authorization code', async () => {
+    const res = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'NOPE', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: 'whatever',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
+
+  it('rejects a redirect_uri that does not match the code', async () => {
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    putAuthCode({ code: 'CODEx', client_id: 'c1', redirect_uri: 'https://client/cb', code_challenge: challenge, email: 'a@b.c', role: 'editor', expires_at: Date.now() + 60_000 });
+    const res = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODEx', client_id: 'c1', redirect_uri: 'https://client/EVIL', code_verifier: verifier,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
+
+  it('rejects an unsupported grant_type', async () => {
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'password' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('unsupported_grant_type');
+  });
+
+  it('rejects an unknown refresh token', async () => {
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: 'does-not-exist' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
 });
