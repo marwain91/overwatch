@@ -47,7 +47,15 @@ MODIFY  examples/overwatch.yaml (or docs) # document mcp config section
 CREATE  docs/mcp.md                    # operator + client connection guide
 ```
 
-> **SDK note (read before Phase 3):** Task 2 pins exact package versions and confirms exports. This plan targets the current split-package API documented by the MCP TS SDK: resource-server helpers (`requireBearerAuth`, `mcpAuthMetadataRouter`, `getOAuthProtectedResourceMetadataUrl`, `OAuthTokenVerifier`, `createMcpExpressApp`) from `@modelcontextprotocol/express`, and `McpServer` + transport + tool context (`ctx.mcpReq._meta?.progressToken`, `ctx.mcpReq.notify(...)`) from `@modelcontextprotocol/server`. If the installed version's import paths differ, adjust imports in the affected task; the logic and signatures below stay the same.
+> **SDK note (read before Phase 3) — RESOLVED by Task 2 spike.** We use the **stable single package `@modelcontextprotocol/sdk@1.29.0`** (the alpha split packages were rejected). Confirmed subpath specifiers and exports:
+> - `import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'` — `registerTool(name, { description, inputSchema }, (args, extra) => result)`. `inputSchema` is a **ZodRawShape** (the raw `{ key: zodType }` object, e.g. `myZodObject.shape`), NOT a `z.object(...)`. Omitting `inputSchema` makes the handler `(extra) => ...`.
+> - `import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'` — stateless mode via `new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })`, driven on Express with `await transport.handleRequest(req, res, req.body)`.
+> - `import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js'` — options `{ verifier: OAuthTokenVerifier, requiredScopes?, resourceMetadataUrl? }`. Sets `req.auth: AuthInfo`; the transport then exposes it to tool handlers as `extra.authInfo`.
+> - `import type { OAuthTokenVerifier } from '@modelcontextprotocol/sdk/server/auth/provider.js'` — `{ verifyAccessToken(token): Promise<AuthInfo> }`.
+> - `import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js'` — `{ token; clientId; scopes: string[]; expiresAt?; resource?: URL; extra?: Record<string, unknown> }`.
+> - Tool handler context `extra: RequestHandlerExtra` carries `extra.authInfo?`, `extra._meta?.progressToken` (`string | number | undefined`), and `extra.sendNotification(n)` for progress.
+>
+> Because our own OAuth router (Tasks 6–7) already serves both `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource`, Task 15 does **not** use the SDK's `mcpAuthMetadataRouter`; it only needs `requireBearerAuth` + the transport. Progress notifications stream over the same POST response in stateless mode, so the synchronous-with-progress design holds.
 
 ---
 
@@ -1847,9 +1855,9 @@ git commit -m "feat(mcp): update_tenant tool with progress notifications + audit
 - Modify: `src/index.ts`
 - Test: `src/__tests__/mcpServerMount.test.ts`
 
-`buildMcpServer()` constructs the `McpServer`, registers all seven tools (translating the `(args, auth, ctx)` handlers into the SDK's `registerTool` callback by reading `auth` from the bearer context and `progressToken` from request metadata), and returns it. `mountMcp(app, opts)` attaches the OAuth router, the protected-resource metadata route, and the `requireBearerAuth`-guarded `/mcp` transport. `src/index.ts` calls `mountMcp` only when `config.mcp.enabled`.
+`buildMcpServer()` constructs an `McpServer` and registers all seven tools, translating each `(args, auth[, ctx])` pure handler into the SDK's `registerTool` callback by reading `auth` from `extra.authInfo.extra` and building a progress notifier from `extra.sendNotification` + `extra._meta.progressToken`. `mountMcp(app, opts)` mounts our OAuth router (which already serves both `.well-known` documents and `/oauth/*`) and the `requireBearerAuth`-guarded `/mcp` endpoint, using a **stateless** `StreamableHTTPServerTransport` (a fresh `McpServer` + transport per POST). `src/index.ts` calls `mountMcp` only when `config.mcp.enabled`.
 
-> Use the exact import paths/signatures pinned in Task 2. The code below uses the documented API; adjust import specifiers if Task 2 recorded different ones.
+> Uses the stable `@modelcontextprotocol/sdk@1.29.0` API pinned in Task 2 (see the SDK note near the top of this plan for exact specifiers). `inputSchema` must be a ZodRawShape — pass `<zodObject>.shape`, not the `z.object(...)` itself.
 
 - [ ] **Step 1: Write the failing mount test (auth gating)**
 
@@ -1908,19 +1916,14 @@ Expected: FAIL — module not found.
 
 ```ts
 // src/mcp/server.ts
-// MCP SDK versions pinned in Task 2 — record them here:
-//   @modelcontextprotocol/server  <version>
-//   @modelcontextprotocol/express <version>
+// MCP SDK pinned in Task 2: @modelcontextprotocol/sdk@1.29.0 (stable, single package).
 import type { Express, Request, Response } from 'express';
-import { McpServer } from '@modelcontextprotocol/server';
-import {
-  requireBearerAuth,
-  mcpAuthMetadataRouter,
-  getOAuthProtectedResourceMetadataUrl,
-} from '@modelcontextprotocol/express';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { createOAuthRouter, OAuthRouterOptions } from '../routes/oauth';
 import { createTokenVerifier, McpAuthExtra } from './auth';
-import { authorizationServerMetadata, protectedResourceMetadata } from '../oauth/metadata';
+import { protectedResourceMetadata } from '../oauth/metadata';
 import {
   listAppsInput, listAppsHandler,
   listTenantsInput, listTenantsHandler,
@@ -1931,21 +1934,22 @@ import { updateTenantInput, updateTenantHandler } from './tools/update';
 
 export interface MountMcpOptions extends OAuthRouterOptions {}
 
-// Pull our auth context out of the SDK's bearer auth info (set by requireBearerAuth).
-function authFrom(ctx: any): McpAuthExtra {
-  const extra = ctx?.authInfo?.extra ?? ctx?.auth?.extra;
-  if (!extra?.email) throw new Error('missing auth context');
-  return extra as McpAuthExtra;
+// requireBearerAuth sets req.auth = AuthInfo; the transport forwards it to the
+// tool handler as `extra.authInfo`. Our verifier puts {email, role} in extra.extra.
+function authFrom(extra: any): McpAuthExtra {
+  const inner = extra?.authInfo?.extra;
+  if (!inner?.email) throw new Error('missing auth context');
+  return inner as McpAuthExtra;
 }
 
-function makeNotifier(ctx: any) {
-  const progressToken = ctx?.mcpReq?._meta?.progressToken ?? ctx?._meta?.progressToken;
+// Build a progress notifier from the SDK request context: forwards to the client
+// via extra.sendNotification using the request's progressToken (if the client sent one).
+function makeNotifier(extra: any) {
+  const progressToken = extra?._meta?.progressToken;
   return {
     notify: async (n: { progress: number; total?: number; message?: string }) => {
-      if (progressToken === undefined) return;
-      const notify = ctx?.mcpReq?.notify ?? ctx?.notify;
-      if (!notify) return;
-      await notify({ method: 'notifications/progress', params: { progressToken, ...n } });
+      if (progressToken === undefined || typeof extra?.sendNotification !== 'function') return;
+      await extra.sendNotification({ method: 'notifications/progress', params: { progressToken, ...n } });
     },
   };
 }
@@ -1953,22 +1957,23 @@ function makeNotifier(ctx: any) {
 export function buildMcpServer(): McpServer {
   const server = new McpServer({ name: 'overwatch', version: '1' });
 
-  server.registerTool('list_apps', { description: 'List managed apps', inputSchema: listAppsInput },
-    async (args: any, ctx: any) => listAppsHandler(args, authFrom(ctx)));
-  server.registerTool('list_tenants', { description: 'List tenants (optionally for one app)', inputSchema: listTenantsInput },
-    async (args: any, ctx: any) => listTenantsHandler(args, authFrom(ctx)));
-  server.registerTool('get_tenant', { description: 'Get a tenant\'s current image tag and details', inputSchema: getTenantInput },
-    async (args: any, ctx: any) => getTenantHandler(args, authFrom(ctx)));
+  // inputSchema is a ZodRawShape — pass the object's `.shape`, not the z.object().
+  server.registerTool('list_apps', { description: 'List managed apps', inputSchema: listAppsInput.shape },
+    async (args: any, extra: any) => listAppsHandler(args, authFrom(extra)));
+  server.registerTool('list_tenants', { description: 'List tenants (optionally for one app)', inputSchema: listTenantsInput.shape },
+    async (args: any, extra: any) => listTenantsHandler(args, authFrom(extra)));
+  server.registerTool('get_tenant', { description: 'Get a tenant\'s current image tag and details', inputSchema: getTenantInput.shape },
+    async (args: any, extra: any) => getTenantHandler(args, authFrom(extra)));
 
-  server.registerTool('start_tenant', { description: 'Start a tenant\'s containers', inputSchema: lifecycleInput },
-    async (args: any, ctx: any) => startTenantHandler(args, authFrom(ctx)));
-  server.registerTool('stop_tenant', { description: 'Stop a tenant\'s containers', inputSchema: lifecycleInput },
-    async (args: any, ctx: any) => stopTenantHandler(args, authFrom(ctx)));
-  server.registerTool('restart_tenant', { description: 'Restart a tenant\'s containers', inputSchema: lifecycleInput },
-    async (args: any, ctx: any) => restartTenantHandler(args, authFrom(ctx)));
+  server.registerTool('start_tenant', { description: 'Start a tenant\'s containers', inputSchema: lifecycleInput.shape },
+    async (args: any, extra: any) => startTenantHandler(args, authFrom(extra)));
+  server.registerTool('stop_tenant', { description: 'Stop a tenant\'s containers', inputSchema: lifecycleInput.shape },
+    async (args: any, extra: any) => stopTenantHandler(args, authFrom(extra)));
+  server.registerTool('restart_tenant', { description: 'Restart a tenant\'s containers', inputSchema: lifecycleInput.shape },
+    async (args: any, extra: any) => restartTenantHandler(args, authFrom(extra)));
 
-  server.registerTool('update_tenant', { description: 'Update a tenant to a new image tag (streams progress)', inputSchema: updateTenantInput },
-    async (args: any, ctx: any) => updateTenantHandler(args, authFrom(ctx), makeNotifier(ctx)));
+  server.registerTool('update_tenant', { description: 'Update a tenant to a new image tag (streams progress)', inputSchema: updateTenantInput.shape },
+    async (args: any, extra: any) => updateTenantHandler(args, authFrom(extra), makeNotifier(extra)));
 
   return server;
 }
@@ -1976,41 +1981,37 @@ export function buildMcpServer(): McpServer {
 export function mountMcp(app: Express, opts: MountMcpOptions): void {
   const { issuer } = opts;
 
-  // OAuth endpoints (register/authorize/token/revoke + AS metadata).
+  // OAuth endpoints + both .well-known metadata documents are served by our router.
   app.use(createOAuthRouter(opts));
 
-  // Protected Resource Metadata (RFC 9728) via the SDK helper, falling back to
-  // our own document so the route exists regardless of helper internals.
-  const resourceUrl = protectedResourceMetadata(issuer).resource;
-  try {
-    app.use(mcpAuthMetadataRouter({
-      oauthMetadata: authorizationServerMetadata(issuer) as any,
-      resourceServerUrl: new URL(resourceUrl),
-    } as any));
-  } catch {
-    app.get('/.well-known/oauth-protected-resource', (_req: Request, res: Response) => res.json(protectedResourceMetadata(issuer)));
-  }
-
   const verifier = createTokenVerifier({ issuer });
-  const bearer = requireBearerAuth({
-    verifier,
-    resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(new URL(resourceUrl)),
-  } as any);
+  // Point the 401 WWW-Authenticate at the protected-resource metadata our router serves.
+  const resourceMetadataUrl = new URL('/.well-known/oauth-protected-resource', issuer).toString();
+  const bearer = requireBearerAuth({ verifier, resourceMetadataUrl });
 
-  const server = buildMcpServer();
-  // Connect the McpServer to a Streamable HTTP transport and expose POST/GET /mcp.
-  // The express integration's transport handler is mounted behind bearer auth.
-  app.post('/mcp', bearer, server.streamableHttpHandler?.() ?? ((req: Request, res: Response) => server.handleHttpRequest(req, res)));
-  app.get('/mcp', bearer, server.streamableHttpHandler?.() ?? ((req: Request, res: Response) => server.handleHttpRequest(req, res)));
+  // Stateless Streamable HTTP: a fresh McpServer + transport per request. Progress
+  // notifications stream back over this same POST response.
+  const handle = async (req: Request, res: Response) => {
+    const server = buildMcpServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on('close', () => { void transport.close(); void server.close(); });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, (req as any).body);
+  };
+
+  app.post('/mcp', bearer, handle);
+  // Stateless mode has no standalone SSE stream; GET is not supported.
+  app.get('/mcp', bearer, (_req: Request, res: Response) =>
+    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method Not Allowed: use POST' }, id: null }));
 }
 ```
 
-> **Task 2 reconciliation:** the exact transport-mount call (`streamableHttpHandler()` vs a `StreamableHTTPServerTransport` you `connect()` and whose `handleRequest` you call) depends on the pinned version. If Step 4 fails on the transport line, replace the two `app.post/get('/mcp', ...)` lines with the version's documented Streamable-HTTP-on-Express snippet, keeping `bearer` as the first handler. The 401/metadata test must still pass.
+> **Note on protected-resource metadata path:** our router serves it at `/.well-known/oauth-protected-resource` (root), and we advertise exactly that URL in the bearer 401. We deliberately do not use the SDK's `mcpAuthMetadataRouter`/`getOAuthProtectedResourceMetadataUrl` (which would use a `/.well-known/oauth-protected-resource/mcp` suffix) to keep a single, consistent metadata location owned by our OAuth router.
 
 - [ ] **Step 4: Run to verify pass**
 
 Run: `D 'npx vitest run src/__tests__/mcpServerMount.test.ts'`
-Expected: PASS (2 tests). If the transport line throws at mount time, apply the reconciliation note, then re-run.
+Expected: PASS (2 tests).
 
 - [ ] **Step 5: Wire into `src/index.ts`**
 
