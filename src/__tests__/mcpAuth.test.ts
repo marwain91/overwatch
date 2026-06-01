@@ -22,6 +22,7 @@ describe('createTokenVerifier', () => {
     const info = await verifier.verifyAccessToken(token);
     expect(info.extra.email).toBe('a@b.c');
     expect(info.extra.role).toBe('editor'); // re-resolved live, not the token's 'viewer'
+    expect(typeof info.expiresAt).toBe('number');
   });
 
   it('rejects a token for a removed admin', async () => {

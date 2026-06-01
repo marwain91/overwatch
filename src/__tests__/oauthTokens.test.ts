@@ -13,6 +13,8 @@ describe('access tokens', () => {
     expect(info.role).toBe('editor');
     expect(info.aud).toBe(mcpResourceUrl(ISSUER));
     expect(info.scope).toBe('tenants');
+    expect(info).toHaveProperty('exp');
+    expect(typeof info.exp).toBe('number');
   });
 
   it('rejects a token with the wrong audience', () => {

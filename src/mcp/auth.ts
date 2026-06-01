@@ -4,6 +4,9 @@ import { listAdminUsers, normaliseRole, AdminRole } from '../services/users';
 export interface McpAuthExtra {
   email: string;
   role: AdminRole;
+  // Index signature so McpAuthInfo is structurally assignable to the SDK's
+  // AuthInfo (extra: Record<string, unknown>), letting us drop the verifier cast.
+  [key: string]: unknown;
 }
 
 export interface McpAuthInfo {
@@ -11,6 +14,7 @@ export interface McpAuthInfo {
   clientId: string;
   scopes: string[];
   extra: McpAuthExtra;
+  expiresAt: number;
 }
 
 // Implements the OAuthTokenVerifier contract consumed by requireBearerAuth:
@@ -33,6 +37,7 @@ export function createTokenVerifier(opts: { issuer: string }) {
         clientId: decoded.email,
         scopes: decoded.scope ? decoded.scope.split(' ') : [],
         extra: { email: decoded.email, role },
+        expiresAt: decoded.exp,
       };
     },
   };

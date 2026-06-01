@@ -74,13 +74,16 @@ export function mountMcp(app: Express, opts: MountMcpOptions): void {
   const oauthLimiter = rateLimit({ windowMs: 60_000, maxRequests: 20, message: 'Too many OAuth requests, slow down.' });
   app.use('/oauth', oauthLimiter);
 
+  // Even authenticated admins could flood /mcp; a modest limiter is cheap defense-in-depth.
+  const mcpLimiter = rateLimit({ windowMs: 60_000, maxRequests: 60, message: 'Too many MCP requests, slow down.' });
+
   // OAuth endpoints + both .well-known metadata documents are served by our router.
   app.use(createOAuthRouter(opts));
 
   const verifier = createTokenVerifier({ issuer });
   // Point the 401 WWW-Authenticate at the protected-resource metadata our router serves.
   const resourceMetadataUrl = new URL('/.well-known/oauth-protected-resource', issuer).toString();
-  const bearer = requireBearerAuth({ verifier: verifier as any, resourceMetadataUrl });
+  const bearer = requireBearerAuth({ verifier, resourceMetadataUrl });
 
   // Stateless Streamable HTTP: a fresh McpServer + transport per request. Progress
   // notifications stream back over this same POST response.
@@ -92,8 +95,8 @@ export function mountMcp(app: Express, opts: MountMcpOptions): void {
     await transport.handleRequest(req, res, (req as any).body);
   };
 
-  app.post('/mcp', bearer, handle);
+  app.post('/mcp', mcpLimiter, bearer, handle);
   // Stateless mode has no standalone SSE stream; GET is not supported.
-  app.get('/mcp', bearer, (_req: Request, res: Response) =>
+  app.get('/mcp', mcpLimiter, bearer, (_req: Request, res: Response) =>
     res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method Not Allowed: use POST' }, id: null }));
 }

@@ -11,7 +11,13 @@ vi.mock('../config', async (orig) => {
   return { ...actual, getDataDir: () => tmpDir };
 });
 
+vi.mock('../services/users', async (orig) => {
+  const actual = await (orig as any)();
+  return { ...actual, listAdminUsers: vi.fn(async () => [{ email: 'a@b.c', role: 'editor', addedAt: 'x', addedBy: 'x' }]) };
+});
+
 import { mountMcp } from '../mcp/server';
+import { issueAccessToken } from '../oauth/tokens';
 
 const ISSUER = 'https://ow.example.com';
 
@@ -38,5 +44,19 @@ describe('mountMcp', () => {
     const res = await request(app).post('/mcp').send({ jsonrpc: '2.0', method: 'tools/list', id: 1 });
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toMatch(/Bearer/);
+  });
+
+  it('accepts a valid bearer token through requireBearerAuth (regression: expiresAt)', async () => {
+    const app = express();
+    app.use(express.json());
+    mountMcp(app, { issuer: ISSUER, accessTokenTtl: '1h', refreshTokenTtl: '30d' });
+    const token = issueAccessToken({ email: 'a@b.c', role: 'editor', issuer: ISSUER, ttl: '1h' });
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${token}`)
+      .set('Accept', 'application/json, text/event-stream')
+      .send({ jsonrpc: '2.0', method: 'initialize', id: 1, params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+    expect(res.status).not.toBe(401);
+    expect(JSON.stringify(res.body) + res.text).not.toMatch(/expiration/i);
   });
 });

@@ -38,6 +38,7 @@ export interface VerifiedToken {
   role: AdminRole;
   aud: string;
   scope: string;
+  exp: number;
 }
 
 export function verifyAccessToken(token: string, opts: { issuer: string }): VerifiedToken {
@@ -51,8 +52,9 @@ export function verifyAccessToken(token: string, opts: { issuer: string }): Veri
   return {
     email: String(decoded.sub),
     role: decoded.role,
-    aud: String(decoded.aud),
+    aud: Array.isArray(decoded.aud) ? decoded.aud[0] : String(decoded.aud),
     scope: decoded.scope,
+    exp: Number(decoded.exp),
   };
 }
 
