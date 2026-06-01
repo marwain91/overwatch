@@ -43,5 +43,14 @@ describe('oauth /register + metadata', () => {
   it('rejects registration without redirect_uris', async () => {
     const res = await request(appWith()).post('/oauth/register').send({ client_name: 'x' });
     expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_client_metadata');
+  });
+
+  it('rejects a redirect_uri with no host', async () => {
+    const res = await request(appWith())
+      .post('/oauth/register')
+      .send({ client_name: 'x', redirect_uris: ['http://'] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_redirect_uri');
   });
 });

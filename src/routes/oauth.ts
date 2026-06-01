@@ -25,8 +25,17 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     if (!Array.isArray(redirect_uris) || redirect_uris.length === 0) {
       return res.status(400).json({ error: 'invalid_client_metadata', error_description: 'redirect_uris is required' });
     }
-    if (!redirect_uris.every((u: unknown) => typeof u === 'string' && /^https?:\/\//.test(u))) {
-      return res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'redirect_uris must be absolute http(s) URLs' });
+    const isValidRedirectUri = (u: unknown): u is string => {
+      if (typeof u !== 'string') return false;
+      try {
+        const parsed = new URL(u);
+        return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && parsed.host.length > 0;
+      } catch {
+        return false;
+      }
+    };
+    if (!redirect_uris.every(isValidRedirectUri)) {
+      return res.status(400).json({ error: 'invalid_redirect_uri', error_description: 'redirect_uris must be absolute http(s) URLs with a host' });
     }
     const client = await registerClient({ client_name, redirect_uris });
     res.status(201).json({
