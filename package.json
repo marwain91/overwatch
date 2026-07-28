@@ -46,7 +46,7 @@
     "express": "^5.2.1",
     "google-auth-library": "^10.6.2",
     "inquirer": "^13.4.3",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "^4.3.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.22.3",
     "node-cron": "^4.2.1",
