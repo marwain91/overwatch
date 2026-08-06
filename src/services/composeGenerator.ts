@@ -51,6 +51,10 @@ export function generateComposeFile(options: GenerateOptions): string {
   const needsInternalNetwork = app.services.some(s => s.networks?.includes('internal'));
   const imageRegistry = `${app.registry.url}/${app.registry.repository}`;
 
+  // Resolve depends_on names against the app's own services so an init
+  // container dependency can be rendered with the right wait condition.
+  const servicesByName = new Map(app.services.map(s => [s.name, s]));
+
   const lines: string[] = [];
   lines.push('services:');
 
@@ -166,11 +170,33 @@ export function generateComposeFile(options: GenerateOptions): string {
       }
     }
 
-    // Depends on
+    // Depends on — always long form.
+    //
+    // Short-form `depends_on` ("- migrator") only controls START ORDER: it
+    // never waits for the dependency to finish and never inspects its exit
+    // code. For an init container that is no gating at all — a migrator that
+    // died on `sh: drizzle-kit: not found` still let the backend start and
+    // report healthy against a schema three migrations old.
+    //
+    // `service_completed_successfully` makes a non-zero init container abort
+    // `docker compose up` and leave dependents unstarted. Compose rejects
+    // mixing short and long form inside one block, so every dependency gets an
+    // explicit condition; `service_started` is exactly what short form meant,
+    // which keeps startup timing unchanged for non-init dependencies.
     if (service.depends_on && service.depends_on.length > 0) {
       lines.push('    depends_on:');
       for (const dep of service.depends_on) {
-        lines.push(`      - ${dep}`);
+        const target = servicesByName.get(dep);
+        if (!target) {
+          throw new Error(
+            `App '${app.id}' service '${service.name}' declares depends_on '${dep}', ` +
+            `which is not a known service. Known services: ${app.services.map(s => s.name).join(', ')}.`,
+          );
+        }
+        lines.push(`      ${dep}:`);
+        lines.push(
+          `        condition: ${target.is_init_container ? 'service_completed_successfully' : 'service_started'}`,
+        );
       }
     }
 

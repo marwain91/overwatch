@@ -311,7 +311,7 @@ Each service in an app defines a container that gets deployed per tenant:
 | `name` | Yes | Service name — also used as the image name in the registry |
 | `image_suffix` | No | Override image name if it differs from service name |
 | `required` | No | Must be running for tenant to be "healthy" (default: false) |
-| `is_init_container` | No | One-time setup container, e.g. migrations (default: false). Gets `restart: "no"` |
+| `is_init_container` | No | One-time setup container, e.g. migrations (default: false). Gets `restart: "no"`, and any service that `depends_on` it waits for it to exit 0 — see [Init containers and `depends_on`](#init-containers-and-depends_on) |
 | `user` | No | Run container as specific user (e.g. `"root"`) |
 | `ports.internal` | No | Container port |
 | `ports.external` | No | Host-mapped port |
@@ -328,8 +328,37 @@ Each service in an app defines a container that gets deployed per tenant:
 | `volumes[].container_path` | No | Mount path inside container |
 | `volumes[].name_template` | No | Template for volume name with `${appId}` and `${tenantId}` substitution |
 | `volumes[].external` | No | Declare volume as external (default: false) |
-| `depends_on` | No | Other service names this service depends on |
+| `depends_on` | No | Other service names this service depends on. Must name services of the same app — an unknown name fails compose generation. See [Init containers and `depends_on`](#init-containers-and-depends_on) |
 | `networks` | No | Network list: `["external"]` (default), `["external", "internal"]`, or `["internal"]` |
+
+### Init containers and `depends_on`
+
+Overwatch renders `depends_on` in Compose's **long form**, choosing the wait condition from the dependency's own definition:
+
+| Dependency | Emitted condition | Meaning |
+|------------|-------------------|---------|
+| `is_init_container: true` | `service_completed_successfully` | Wait for it to exit **0**. A non-zero exit aborts `docker compose up` and dependents are never started |
+| Any other service | `service_started` | Start ordering only — identical to the short form it replaces |
+
+```yaml
+backend:
+  depends_on:
+    migrator:
+      condition: service_completed_successfully
+```
+
+This is what makes `is_init_container` meaningful: a failed migration becomes a failed deploy instead of a backend serving application code against an outdated schema. Compose does not allow mixing short and long form inside one `depends_on` block, so every dependency gets an explicit condition.
+
+**Init containers must be idempotent.** Compose starts a completed init container again on the *next* `docker compose up` — including a plain `up -d` with no changes, and every tenant update (which runs `up -d --force-recreate`). A migration runner that is safe to re-run (applies only pending migrations, then exits 0) is fine. One that fails when there is nothing to do — or that is not safe to apply twice — will now **block the services that depend on it**, where previously its failure was silently ignored.
+
+When a deploy fails this way, Overwatch reports the compose error together with the init container's exit code and log tail, e.g.:
+
+```
+service "migrator" didn't complete successfully: exit 127
+
+init container 'migrator' (product-daktela-migrator) exited 127:
+sh: drizzle-kit: not found
+```
 
 ### `env_mapping` — Environment Variable Mapping
 

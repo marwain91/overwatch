@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Init container failures no longer pass as successful deploys.** Generated compose files emitted short-form `depends_on`, which only orders startup — it never waits for the dependency to finish and never checks its exit code. A migrator that died (e.g. `sh: drizzle-kit: not found`, exit 127) still let the backend start and report healthy against an un-migrated schema; the only symptom was a 500 on the one screen querying the missing column. Services depending on a service with `is_init_container: true` are now emitted as `condition: service_completed_successfully`, so a failed migration aborts `docker compose up` and leaves dependents unstarted. Non-init dependencies keep today's semantics via an explicit `condition: service_started` (Compose forbids mixing short and long form in one block). A `depends_on` naming an unknown service now fails compose generation with a message naming the app, service, and available services, instead of emitting a dangling reference.
+- **Failed deploys report why they failed.** `docker compose` writes its fatal error after a wall of progress output, so the previous "first non-empty stderr line" heuristic reported noise — a gated init container failure surfaced as `level=warning msg="No services to build"`. Compose failures are now matched against known fatal signatures (`service "…" didn't complete successfully: exit N`, `dependency failed to start: …`, `Error response from daemon: …`), and tenant create/update attach the failed init container's exit code and log tail to the operator-visible error, collected before rollback destroys the container.
+
 ## [1.7.0] — 2026-06-01
 
 ### Added
