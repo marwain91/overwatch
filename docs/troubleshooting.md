@@ -45,6 +45,18 @@
 3. Check database connectivity from tenant containers
 4. Ensure required services are correctly marked in the app configuration
 
+## Tenant Update Fails on the Init Container
+
+**Symptom:** A tenant update reports FAILED with `service "migrator" didn't complete successfully: exit N`, followed by the init container's log tail. The tenant is rolled back to its previous tag and image.
+
+**This is working as intended** — the migration failed, so the dependent services were never started against a schema that wasn't migrated. Before v1.7.1 the same failure was silent: the init container died, the backend started anyway, and the deploy looked successful.
+
+**Solutions:**
+1. Read the attached init container logs — the exit code and the last 50 log lines are included in the failure. `exit 127` is typically a missing binary in the image (e.g. `sh: drizzle-kit: not found`), not a bad migration.
+2. Fix the image or the migration, then re-run the update. The tenant stays on its previous working tag in the meantime.
+3. **If the migration succeeded but the re-run fails**, the init container is not idempotent. Compose starts a completed init container again on every `up`, so a migration runner must be safe to re-run and exit 0 when there is nothing to do. See [configuration.md](./configuration.md#init-containers-and-depends_on).
+4. To inspect state by hand: `docker ps -a | grep <app>-<tenant>-` — an init container in `Exited (0)` is healthy; any non-zero exit blocks its dependents.
+
 ## Google OAuth Not Working
 
 **Symptom:** "Google OAuth not configured" error or login fails.
