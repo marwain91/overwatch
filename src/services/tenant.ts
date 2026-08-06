@@ -13,12 +13,14 @@ import { generateComposeFile } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
 import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
+import { describeFailedInitContainers } from './initContainerDiagnostics';
 import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
 import { eventBus } from './eventBus';
 import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { SLUG_RE, isValidSlug } from '../utils/validators';
 import { parseEnv } from '../utils/env';
+import { extractComposeErrorMessage } from '../utils/composeErrors';
 
 const execFileAsync = promisify(execFile);
 
@@ -240,7 +242,11 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     // Rollback in reverse order of creation. If compose was written and `up` was
     // attempted, containers may exist even when the original command failed —
     // always attempt `down -v` so we don't leak them.
+    // Gather init container evidence first: `down -v` deletes the containers
+    // whose logs explain a failed first migration.
+    let initFailures = '';
     if (composeWritten) {
+      initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
       await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
     }
     if (tenantDirCreated) {
@@ -252,7 +258,8 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     if (!tenantDirCreated && error instanceof Error && error.message.includes(`Tenant '${tenantId}' already exists`)) {
       throw error;
     }
-    throw new Error(`Failed to create tenant: ${error instanceof Error ? error.message : error}`);
+    const reason = extractComposeErrorMessage(error);
+    throw new Error(`Failed to create tenant: ${reason}${initFailures ? `\n\n${initFailures}` : ''}`);
   }
 
   return {
@@ -538,7 +545,14 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     await pruneReplacedImages(oldImages, tenantPath, composePath, appId, tenantId);
     emit('done', 'completed');
   } catch (error: any) {
-    const detail = extractComposeErrorMessage(error);
+    // Collect init container evidence BEFORE rolling back — the restore below
+    // recreates containers and destroys the failed migrator's logs. With
+    // dependents gated on service_completed_successfully, a failed migration
+    // lands here, and "didn't complete successfully: exit 127" alone doesn't
+    // tell an operator what broke.
+    const composeError = extractComposeErrorMessage(error);
+    const initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
+    const detail = initFailures ? `${composeError}\n\n${initFailures}` : composeError;
     await restoreTenantUpdateStateBestEffort('restart failure');
     await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']).catch((rollbackErr: any) => {
       console.error(`[tenant:update] Failed to restart restored compose for ${appId}/${tenantId}: ${rollbackErr?.message || rollbackErr}`);
@@ -588,25 +602,6 @@ async function pruneReplacedImages(
   } catch (err: any) {
     console.warn(`[tenant:update] image cleanup skipped for ${appId}/${tenantId}: ${err?.message || err}`);
   }
-}
-
-/**
- * `docker compose` stuffs the useful error into `stderr` along with a lot of
- * progress noise. Pull out the "Error:" line when present; fall back to the
- * exec error message.
- */
-function extractComposeErrorMessage(error: any): string {
-  const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
-  const errorLine = stderr.split('\n').find((l: string) => /^Error\s/i.test(l) || /^Error\s+response/i.test(l));
-  if (errorLine) return errorLine.trim();
-  // Fallback: first non-empty non-"Pulling"/"Pulled" line of stderr.
-  for (const raw of stderr.split('\n')) {
-    const line = raw.trim();
-    if (!line) continue;
-    if (/^\w+\s+(Pulling|Pulled|Skipped|Interrupted)/i.test(line)) continue;
-    return line;
-  }
-  return error?.message || String(error);
 }
 
 export async function getTenantConfig(appId: string, tenantId: string): Promise<TenantConfig | null> {
