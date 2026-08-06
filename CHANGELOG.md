@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.1] — 2026-08-06
+
 ### Fixed
 
 - **Init container failures no longer pass as successful deploys.** Generated compose files emitted short-form `depends_on`, which only orders startup — it never waits for the dependency to finish and never checks its exit code. A migrator that died (e.g. `sh: drizzle-kit: not found`, exit 127) still let the backend start and report healthy against an un-migrated schema; the only symptom was a 500 on the one screen querying the missing column. Services depending on a service with `is_init_container: true` are now emitted as `condition: service_completed_successfully`, so a failed migration aborts `docker compose up` and leaves dependents unstarted. Non-init dependencies keep today's semantics via an explicit `condition: service_started` (Compose forbids mixing short and long form in one block). A `depends_on` naming an unknown service now fails compose generation with a message naming the app, service, and available services, instead of emitting a dangling reference.
 - **Failed deploys report why they failed.** `docker compose` writes its fatal error after a wall of progress output, so the previous "first non-empty stderr line" heuristic reported noise — a gated init container failure surfaced as `level=warning msg="No services to build"`. Compose failures are now matched against known fatal signatures (`service "…" didn't complete successfully: exit N`, `dependency failed to start: …`, `Error response from daemon: …`), and tenant create/update attach the failed init container's exit code and log tail to the operator-visible error, collected before rollback destroys the container.
+
+### Upgrade notes
+
+- **Existing tenants are unaffected until their compose file is regenerated**, which happens only during a tenant update (`updateTenant`). There is no standalone re-render command, so a tenant that shipped against a dead migrator keeps its ungated compose file until you run an update — re-applying its current image tag is enough.
+- **Init containers must be idempotent.** Compose starts a completed init container again on every `up`, including the `up -d --force-recreate` that a tenant update runs. A migration runner that errors when there is nothing to migrate previously failed harmlessly; it will now block the services that depend on it. Verify your init containers before re-rendering. See [docs/configuration.md](docs/configuration.md#init-containers-and-depends_on).
 
 ## [1.7.0] — 2026-06-01
 
