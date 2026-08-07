@@ -1,8 +1,24 @@
 name: Release
+run-name: Release ${{ inputs.tag || github.ref_name }}
 
+# Tags are immutable, so a release build lost to an outage cannot be recovered
+# by re-pushing its tag. `workflow_dispatch` rebuilds any existing tag without
+# re-cutting it: the checkout, image tags, and release upload all follow the
+# `tag` input rather than the dispatched ref.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to rebuild, e.g. v1.7.1'
+        required: true
+        type: string
+      mark_latest:
+        description: 'Also move the :latest image tag to this build (leave off when rebuilding an older release)'
+        required: false
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -16,8 +32,22 @@ jobs:
       packages: write
 
     steps:
+      # Reject anything that isn't a vX.Y.Z tag before it reaches `ref:`.
+      # Passed via env rather than interpolated into the script.
+      - name: Validate tag input
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::'$TAG' is not a vX.Y.Z release tag"; exit 1 ;;
+          esac
+
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -46,14 +76,21 @@ jobs:
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Derive the version from the tag being built. On a manual rebuild the
+          # dispatched ref is usually a branch, so semver must read the input
+          # instead of the ref. `latest` only moves on a real tag push unless the
+          # operator opts in — rebuilding an old release must not demote latest.
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=semver,pattern={{version}},value=${{ inputs.tag || github.ref_name }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag || github.ref_name }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' || inputs.mark_latest }}
 
-      - name: Get build time
+      - name: Resolve build metadata
         id: build_time
-        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+        # github.sha is the dispatched ref's commit, not the tag we checked out.
+        run: |
+          echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
@@ -64,7 +101,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             BUILD_TIME=${{ steps.build_time.outputs.value }}
-            BUILD_COMMIT=${{ github.sha }}
+            BUILD_COMMIT=${{ steps.build_time.outputs.sha }}
 
   cli:
     runs-on: ubuntu-latest
@@ -72,8 +109,20 @@ jobs:
       contents: write
 
     steps:
+      - name: Validate tag input
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::'$TAG' is not a vX.Y.Z release tag"; exit 1 ;;
+          esac
+
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -104,6 +153,10 @@ jobs:
       - name: Upload binaries to release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
+          # On dispatch the ref is a branch, so name the release explicitly.
+          # No `body:` — an existing release keeps its notes; a release created
+          # by a rebuild starts empty and needs `gh release edit --notes-file`.
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             dist/bin/overwatch-linux-x64
             dist/bin/overwatch-linux-x64.sha256
