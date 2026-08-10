@@ -40,18 +40,18 @@
     "outputPath": "dist/bin"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "dockerode": "^5.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "dockerode": "^5.0.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "google-auth-library": "^10.6.2",
     "inquirer": "^13.4.3",
     "js-yaml": "^4.1.0",
     "jsonwebtoken": "^9.0.2",
-    "mysql2": "^3.22.3",
-    "node-cron": "^4.2.1",
-    "pg": "^8.21.0",
-    "ws": "^8.20.1",
+    "mysql2": "^3.23.2",
+    "node-cron": "^4.6.0",
+    "pg": "^8.22.0",
+    "ws": "^8.21.2",
     "zod": "^3.22.4"
   },
   "devDependencies": {
@@ -62,7 +62,7 @@
     "@types/jsonwebtoken": "^9.0.5",
     "@types/node": "^25.9.0",
     "@types/node-cron": "^3.0.11",
-    "@types/pg": "^8.20.0",
+    "@types/pg": "^8.20.4",
     "@types/supertest": "^7.2.0",
     "@types/ws": "^8.5.10",
     "@yao-pkg/pkg": "^6.19.0",
