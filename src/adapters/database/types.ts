@@ -35,6 +35,13 @@ export interface DatabaseProcess {
   query: string | null;
 }
 
+export interface CreateDatabaseResult {
+  /** True only when this call created the database */
+  created: boolean;
+  /** True only when this call created the database user */
+  userCreated: boolean;
+}
+
 /**
  * Interface for database adapters.
  * Each adapter handles database operations for a specific database engine.
@@ -56,14 +63,22 @@ export interface DatabaseAdapter {
   testConnection(): Promise<boolean>;
 
   /**
-   * Create a new database and user for a tenant
+   * Create a database and user for a tenant. Reports what this call created so
+   * callers only ever roll back their own objects; a failure part-way drops
+   * only what this call created before rethrowing.
    */
-  createDatabase(tenantId: string, password: string): Promise<void>;
+  createDatabase(tenantId: string, password: string): Promise<CreateDatabaseResult>;
 
   /**
-   * Drop the database and user for a tenant
+   * Whether the tenant's database already exists
    */
-  dropDatabase(tenantId: string): Promise<void>;
+  databaseExists(tenantId: string): Promise<boolean>;
+
+  /**
+   * Drop the database and user for a tenant. `keepUser` leaves the user alone
+   * (rollback of a call that adopted a pre-existing user).
+   */
+  dropDatabase(tenantId: string, options?: { keepUser?: boolean }): Promise<void>;
 
   /**
    * List all tenant databases

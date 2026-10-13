@@ -2,7 +2,7 @@ import mysql from 'mysql2/promise';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { createReadStream, createWriteStream } from 'fs';
-import { DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from './types';
+import { DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
 import { BaseDatabaseAdapter } from './base';
 
 const execFileAsync = promisify(execFile);
@@ -34,7 +34,20 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     await this.pool!.query('SELECT 1');
   }
 
-  async createDatabase(tenantId: string, password: string): Promise<void> {
+  async databaseExists(tenantId: string): Promise<boolean> {
+    if (!this.pool) {
+      await this.initialize();
+    }
+    const dbName = this.getDatabaseName(tenantId);
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
+    const [rows] = await this.pool!.query(
+      'SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?',
+      [dbName]
+    );
+    return (rows as any[]).length > 0;
+  }
+
+  async createDatabase(tenantId: string, password: string): Promise<CreateDatabaseResult> {
     if (!this.pool) {
       await this.initialize();
     }
@@ -45,25 +58,49 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     this.validateIdentifiers(dbName, userName);
 
     const connection = await this.pool!.getConnection();
+    let created = false;
+    let userCreated = false;
 
     try {
-      await connection.query(
-        `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+      const [dbRows] = await connection.query(
+        'SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?',
+        [dbName]
       );
-      await connection.query(
-        `CREATE USER IF NOT EXISTS '${userName}'@'%' IDENTIFIED BY ?`,
-        [password]
+      if ((dbRows as any[]).length === 0) {
+        await connection.query(
+          `CREATE DATABASE \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+        );
+        created = true;
+      }
+
+      const [userRows] = await connection.query(
+        `SELECT 1 FROM mysql.user WHERE User = ? AND Host = '%'`,
+        [userName]
       );
+      if ((userRows as any[]).length === 0) {
+        await connection.query(`CREATE USER '${userName}'@'%' IDENTIFIED BY ?`, [password]);
+        userCreated = true;
+      } else {
+        // Pre-existing user: set the password so it matches the .env we write
+        await connection.query(`ALTER USER '${userName}'@'%' IDENTIFIED BY ?`, [password]);
+      }
+
       await connection.query(
         `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${userName}'@'%'`
       );
       await connection.query('FLUSH PRIVILEGES');
+      return { created, userCreated };
+    } catch (error) {
+      // Undo only what this call created; never touch pre-existing objects
+      if (created) await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``).catch(() => {});
+      if (userCreated) await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`).catch(() => {});
+      throw error;
     } finally {
       connection.release();
     }
   }
 
-  async dropDatabase(tenantId: string): Promise<void> {
+  async dropDatabase(tenantId: string, options: { keepUser?: boolean } = {}): Promise<void> {
     if (!this.pool) {
       await this.initialize();
     }
@@ -77,7 +114,9 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
 
     try {
       await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
-      await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`);
+      if (!options.keepUser) {
+        await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`);
+      }
       await connection.query('FLUSH PRIVILEGES');
     } finally {
       connection.release();
