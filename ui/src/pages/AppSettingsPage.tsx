@@ -42,8 +42,10 @@ export function AppSettingsPage() {
         default_image_tag: defaultImageTag,
         registry: registry!,
         services,
-        backup: backup?.enabled ? backup : undefined,
-        admin_access: adminAccess?.enabled ? adminAccess : undefined,
+        // updateApp shallow-merges, so omitting a block the app already has would keep it
+        // enabled. Send it with enabled:false instead; never invent one the app never had.
+        backup: backup?.enabled ? backup : app?.backup ? { ...backup!, enabled: false } : undefined,
+        admin_access: adminAccess?.enabled ? adminAccess : app?.admin_access ? { ...adminAccess!, enabled: false } : undefined,
       });
       toast.success('App settings saved');
     } catch (err: unknown) {
