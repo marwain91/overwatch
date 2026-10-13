@@ -104,7 +104,7 @@ export function useRestoreBackup(appId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ snapshotId, tenantId }: { snapshotId: string; tenantId: string }) =>
-      api.post(`/apps/${appId}/backups/${snapshotId}/restore`, { tenantId }),
+      api.post<{ success: boolean; message: string; warnings?: string[] }>(`/apps/${appId}/backups/${snapshotId}/restore`, { tenantId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tenants', appId] });
       qc.invalidateQueries({ queryKey: ['backup-summary', appId] });

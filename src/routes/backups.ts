@@ -159,7 +159,11 @@ router.post('/:snapshotId/restore', requireRole('admin'), asyncHandler(async (re
   const result = await restoreBackup(appId, snapshotId, tenantId);
 
   if (result.success) {
-    res.json({ success: true, message: `Backup restored to ${tenantId}` });
+    res.json({
+      success: true,
+      message: `Backup restored to ${tenantId}`,
+      ...(result.warnings?.length ? { warnings: result.warnings } : {}),
+    });
   } else {
     res.status(500).json({ error: result.error, isLocked: result.isLocked, lockInfo: result.lockInfo });
   }
@@ -196,6 +200,7 @@ router.post('/:snapshotId/create-tenant', requireRole('admin'), asyncHandler(asy
       appId,
       tenantId,
       domain,
+      ...(result.warnings?.length ? { warnings: result.warnings } : {}),
     });
   } else {
     res.status(500).json({ error: result.error, isLocked: result.isLocked, lockInfo: result.lockInfo });

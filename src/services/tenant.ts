@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { loadConfig, getAppsDir, resolveAppDbPrefix } from '../config';
+import { loadConfig, getAppsDir } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
@@ -20,7 +20,7 @@ import { eventBus } from './eventBus';
 import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { SLUG_RE } from '../utils/validators';
-import { parseEnv } from '../utils/env';
+import { resolveTenantDbId } from './tenantDb';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
@@ -282,7 +282,6 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   const tenantPath = getTenantPath(appId, tenantId);
   const app = await getApp(appId);
   const db = getDatabaseAdapter(app ?? undefined);
-  const effectivePrefix = resolveAppDbPrefix(app ?? undefined);
 
   // Check if tenant exists
   try {
@@ -295,25 +294,8 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   const appsDir = getAppsDir();
   await assertWithinDir(tenantPath, appsDir);
 
-  // Read DB_NAME from tenant .env (may differ from constructed name for migrated tenants)
-  // The adapter prepends the app's effective db_prefix, so we pass appId_tenantId as the identifier
-  let dbTenantId = `${appId}_${tenantId}`;
-  try {
-    const envContent = await fs.readFile(path.join(tenantPath, '.env'), 'utf-8');
-    const env = parseEnv(envContent);
-    if (env.DB_NAME) {
-      // Strip the effective prefix if present, since the adapter re-adds it.
-      // When the app has an empty prefix, pass DB_NAME through as-is.
-      if (effectivePrefix) {
-        const prefix = `${effectivePrefix}_`;
-        dbTenantId = env.DB_NAME.startsWith(prefix) ? env.DB_NAME.slice(prefix.length) : env.DB_NAME;
-      } else {
-        dbTenantId = env.DB_NAME;
-      }
-    }
-  } catch {
-    // Fall back to constructed name
-  }
+  // DB_NAME in the tenant .env may differ from the constructed name (migrated tenants)
+  const dbTenantId = await resolveTenantDbId(appId, tenantId, app);
 
   // Stop containers. If this fails we refuse to drop the DB — orphaned
   // containers running against a gone DB are worse than an incomplete delete.
