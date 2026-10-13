@@ -1,19 +1,13 @@
-import { docker } from './docker';
+import { docker, getManagedContainerNamePattern } from './docker';
 import { eventBus } from './eventBus';
 import { listApps } from './app';
 
 let eventStream: NodeJS.ReadableStream | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-function getContainerPattern(appIds: string[]): RegExp {
-  const escaped = appIds.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  // Match: {appId}-{tenantId}-{service}(-N)?
-  return new RegExp(`^/?(${escaped.join('|')})-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
-}
-
 async function startListening(): Promise<void> {
   const apps = await listApps();
-  const pattern = getContainerPattern(apps.map(a => a.id));
+  const pattern = getManagedContainerNamePattern(apps.map(a => a.id));
 
   docker.getEvents({
     filters: {
@@ -59,17 +53,25 @@ async function startListening(): Promise<void> {
   });
 }
 
+// startListening() rejects when listApps() throws (e.g. an apps.d file caught
+// mid-write). Left uncaught that is an unhandled rejection, which kills the
+// process; retry on the normal reconnect cadence instead.
+function onStartFailure(err: unknown): void {
+  console.error('[DockerEvents] Failed to start listener:', (err as Error)?.message || err);
+  scheduleReconnect();
+}
+
 function scheduleReconnect(): void {
   if (reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     console.log('[DockerEvents] Reconnecting...');
-    startListening();
+    startListening().catch(onStartFailure);
   }, 5000);
 }
 
 export function startDockerEventListener(): void {
-  startListening();
+  startListening().catch(onStartFailure);
 }
 
 export function stopDockerEventListener(): void {

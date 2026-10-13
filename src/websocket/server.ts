@@ -3,7 +3,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import jwt from 'jsonwebtoken';
 import { URL } from 'url';
 import { eventBus } from '../services/eventBus';
-import { createWSMessage, WSMessage } from './types';
+import { createWSMessage, WSMessage, WSMessageType } from './types';
 
 const JWT_SECRET = process.env.JWT_SECRET!;
 const HEARTBEAT_INTERVAL = 30_000;
@@ -11,8 +11,19 @@ const AUTH_TIMEOUT = 5_000; // 5 seconds to authenticate after connecting
 const MAX_PAYLOAD = 4 * 1024; // 4 KB — auth messages only, no large payloads needed
 const MAX_CONNECTIONS_PER_USER = 5;
 
+// eventBus events relayed verbatim to every authenticated client.
+const BROADCAST_EVENTS: WSMessageType[] = [
+  'container:event',
+  'metrics:snapshot',
+  'health:change',
+  'alert:fired',
+  'alert:resolved',
+  'tenant:update:progress',
+];
+
 let wss: WebSocketServer | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let eventUnsubscribers: Array<() => void> = [];
 const clients = new Set<WebSocket>();
 const connectionsByUser = new Map<string, number>();
 
@@ -147,37 +158,17 @@ export function createWebSocketServer(server: HTTPServer): WebSocketServer {
     }
   }, HEARTBEAT_INTERVAL);
 
-  // Subscribe to eventBus events and broadcast
-  eventBus.on('container:event', (data) => {
-    broadcast(createWSMessage('container:event', data));
-  });
-
-  eventBus.on('metrics:snapshot', (data) => {
-    broadcast(createWSMessage('metrics:snapshot', data));
-  });
-
-  eventBus.on('health:change', (data) => {
-    broadcast(createWSMessage('health:change', data));
-  });
-
-  eventBus.on('alert:fired', (data) => {
-    broadcast(createWSMessage('alert:fired', data));
-  });
-
-  eventBus.on('alert:resolved', (data) => {
-    broadcast(createWSMessage('alert:resolved', data));
-  });
-
-  eventBus.on('tenant:update:progress', (data) => {
-    broadcast(createWSMessage('tenant:update:progress', data));
-  });
+  // Subscribe to eventBus events and broadcast. Handlers are kept so stop can
+  // remove them; otherwise every stop/create cycle stacks another listener
+  // and each event is broadcast once per cycle.
+  for (const type of BROADCAST_EVENTS) {
+    const handler = (data: unknown) => broadcast(createWSMessage(type, data));
+    eventBus.on(type, handler);
+    eventUnsubscribers.push(() => eventBus.off(type, handler));
+  }
 
   console.log('[WebSocket] Server initialized');
   return wss;
-}
-
-export function getConnectedClients(): number {
-  return clients.size;
 }
 
 export function stopWebSocketServer(): void {
@@ -185,6 +176,8 @@ export function stopWebSocketServer(): void {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+  for (const off of eventUnsubscribers) off();
+  eventUnsubscribers = [];
   for (const client of clients) {
     client.terminate();
   }

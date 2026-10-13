@@ -3,22 +3,12 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { eventBus } from './eventBus';
 import { loadConfig, getDataDir } from '../config';
+import type { OverwatchConfig } from '../config';
 import { sendWebhook } from '../notifications/webhook';
 import { NotificationChannel, AlertHistoryEntry } from '../notifications/types';
 import { writeSecretFile } from '../utils/security';
 
-interface AlertRule {
-  id: string;
-  name: string;
-  condition: {
-    type: 'container_down' | 'cpu_threshold' | 'memory_threshold' | 'health_check_failed';
-    duration?: string;
-    threshold?: number;
-    consecutive_failures?: number;
-  };
-  cooldown: string;
-  severity?: string;
-}
+type AlertRule = NonNullable<OverwatchConfig['alert_rules']>[number];
 
 interface ActiveAlert {
   ruleId: string;
@@ -29,8 +19,10 @@ interface ActiveAlert {
 const cooldowns = new Map<string, number>(); // ruleId+scope -> lastFiredAt timestamp
 const activeAlerts = new Map<string, ActiveAlert>(); // ruleId+scope -> alert info
 const containerDownTimers = new Map<string, number>(); // containerName -> downSince timestamp
-const cpuThresholdTimers = new Map<string, number>(); // containerName -> exceededSince timestamp
-const memThresholdTimers = new Map<string, number>(); // containerName -> exceededSince timestamp
+// Keyed per rule so two rules of the same type (e.g. 80% warn / 95% critical)
+// don't reset each other's timer on every snapshot.
+const cpuThresholdTimers = new Map<string, number>(); // ruleId:containerName -> exceededSince timestamp
+const memThresholdTimers = new Map<string, number>(); // ruleId:containerName -> exceededSince timestamp
 
 let started = false;
 
@@ -56,7 +48,9 @@ function getNotificationChannelsFile(): string {
 
 async function appendAlertHistory(entry: AlertHistoryEntry): Promise<void> {
   const line = JSON.stringify(entry);
-  await fs.appendFile(getAlertHistoryFile(), line + '\n').catch(() => {});
+  await fs.appendFile(getAlertHistoryFile(), line + '\n', { mode: 0o600 }).catch((err) => {
+    console.error(`[AlertEngine] Failed to append alert history: ${err?.message || err}`);
+  });
 }
 
 async function loadNotificationChannels(): Promise<NotificationChannel[]> {
@@ -145,7 +139,7 @@ function resolveAlert(rule: AlertRule, scope: string): void {
 
 function getRules(): AlertRule[] {
   const config = loadConfig();
-  return (config as any).alert_rules || [];
+  return config.alert_rules ?? [];
 }
 
 export function startAlertEngine(): void {
@@ -168,16 +162,17 @@ export function startAlertEngine(): void {
         const durationMs = parseDuration(rule.condition.duration || '3m');
 
         for (const container of data.containers || []) {
+          const timerKey = `${rule.id}:${container.name}`;
           if (container.cpuPercent > threshold) {
-            if (!cpuThresholdTimers.has(container.name)) {
-              cpuThresholdTimers.set(container.name, now);
+            if (!cpuThresholdTimers.has(timerKey)) {
+              cpuThresholdTimers.set(timerKey, now);
             }
-            const exceededSince = cpuThresholdTimers.get(container.name)!;
+            const exceededSince = cpuThresholdTimers.get(timerKey)!;
             if (now - exceededSince >= durationMs) {
               fireAlert(rule, container.name, `CPU ${container.cpuPercent.toFixed(1)}% > ${threshold}% for ${container.name}`, container.tenantId, container.name);
             }
           } else {
-            cpuThresholdTimers.delete(container.name);
+            cpuThresholdTimers.delete(timerKey);
             resolveAlert(rule, container.name);
           }
         }
@@ -188,16 +183,17 @@ export function startAlertEngine(): void {
         const durationMs = parseDuration(rule.condition.duration || '3m');
 
         for (const container of data.containers || []) {
+          const timerKey = `${rule.id}:${container.name}`;
           if (container.memPercent > threshold) {
-            if (!memThresholdTimers.has(container.name)) {
-              memThresholdTimers.set(container.name, now);
+            if (!memThresholdTimers.has(timerKey)) {
+              memThresholdTimers.set(timerKey, now);
             }
-            const exceededSince = memThresholdTimers.get(container.name)!;
+            const exceededSince = memThresholdTimers.get(timerKey)!;
             if (now - exceededSince >= durationMs) {
               fireAlert(rule, container.name, `Memory ${container.memPercent.toFixed(1)}% > ${threshold}% for ${container.name}`, container.tenantId, container.name);
             }
           } else {
-            memThresholdTimers.delete(container.name);
+            memThresholdTimers.delete(timerKey);
             resolveAlert(rule, container.name);
           }
         }
@@ -217,7 +213,7 @@ export function startAlertEngine(): void {
             if (containerDownTimers.has(data.containerName)) {
               fireAlert(rule, data.containerName, `Container ${data.containerName} has been down for ${rule.condition.duration || '5m'}`, undefined, data.containerName);
             }
-          }, durationMs);
+          }, durationMs).unref();
         } else if (data.action === 'start') {
           containerDownTimers.delete(data.containerName);
           resolveAlert(rule, data.containerName);

@@ -1,5 +1,5 @@
 import cron, { ScheduledTask } from 'node-cron';
-import { docker, extractContainerInfo } from './docker';
+import { docker, extractContainerInfo, getManagedContainerNamePattern } from './docker';
 import { eventBus } from './eventBus';
 import { listApps } from './app';
 
@@ -61,11 +61,6 @@ const metricsHistory = new Map<string, RingBuffer<ContainerMetrics>>();
 let scheduledTask: ScheduledTask | null = null;
 let collecting = false;
 
-function getContainerPattern(appIds: string[]): RegExp {
-  const escaped = appIds.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  return new RegExp(`^/?(${escaped.join('|')})-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
-}
-
 function calculateCpuPercent(stats: any): number {
   const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
   const systemDelta = stats.cpu_stats.system_cpu_usage - stats.precpu_stats.system_cpu_usage;
@@ -95,7 +90,7 @@ async function collectMetrics(): Promise<void> {
   try {
     const containers = await docker.listContainers({ filters: { status: ['running'] } });
     const apps = await listApps();
-    const pattern = getContainerPattern(apps.map(a => a.id));
+    const pattern = getManagedContainerNamePattern(apps.map(a => a.id));
 
     const managedContainers = containers.filter(c =>
       c.Names.some(n => pattern.test(n))
@@ -106,7 +101,9 @@ async function collectMetrics(): Promise<void> {
         const container = docker.getContainer(c.Id);
         const stats = await container.stats({ stream: false });
         const name = c.Names[0].replace(/^\//, '');
-        const info = extractContainerInfo(name);
+        // Labels first, then known apps: the bare name split misreads
+        // hyphenated app/tenant ids.
+        const info = extractContainerInfo(name, c.Labels ?? {}, apps);
         if (!info) return null;
 
         const cpuPercent = calculateCpuPercent(stats);

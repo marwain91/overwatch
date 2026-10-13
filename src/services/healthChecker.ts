@@ -1,7 +1,7 @@
 import http from 'http';
 import net from 'net';
 import cron, { ScheduledTask } from 'node-cron';
-import { docker, extractContainerInfo } from './docker';
+import { docker, extractContainerInfo, getManagedContainerNamePattern } from './docker';
 import { eventBus } from './eventBus';
 import { listApps } from './app';
 import { AppService } from '../models/app';
@@ -19,23 +19,6 @@ interface HealthState {
 const healthStates = new Map<string, HealthState>();
 let scheduledTask: ScheduledTask | null = null;
 let checking = false;
-
-function getContainerPattern(appIds: string[]): RegExp {
-  const escaped = appIds.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  return new RegExp(`^/?(${escaped.join('|')})-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
-}
-
-function parseInterval(interval: string): number {
-  const match = interval.match(/^(\d+)([smh]?)$/);
-  if (!match) return 30;
-  const value = parseInt(match[1], 10);
-  const unit = match[2] || 's';
-  switch (unit) {
-    case 'm': return value * 60;
-    case 'h': return value * 3600;
-    default: return value;
-  }
-}
 
 async function checkHTTP(host: string, port: number, path: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -74,7 +57,7 @@ async function runHealthChecks(): Promise<void> {
 
   try {
     const apps = await listApps();
-    const pattern = getContainerPattern(apps.map(a => a.id));
+    const pattern = getManagedContainerNamePattern(apps.map(a => a.id));
 
     // Build service config map keyed by appId -> serviceName -> config
     const serviceMap = new Map<string, Map<string, AppService>>();
@@ -94,7 +77,9 @@ async function runHealthChecks(): Promise<void> {
 
     for (const container of managedContainers) {
       const name = container.Names[0].replace(/^\//, '');
-      const info = extractContainerInfo(name);
+      // Labels first, then known apps: the bare name split misreads
+      // hyphenated app/tenant ids and the check would be skipped.
+      const info = extractContainerInfo(name, container.Labels ?? {}, apps);
       if (!info) continue;
 
       const { appId, tenantId, service: serviceName } = info;
@@ -155,7 +140,8 @@ async function runHealthChecks(): Promise<void> {
 }
 
 export function startHealthChecker(): void {
-  // Use a default interval; per-app intervals are evaluated during checks
+  // Fixed 10s cadence. Per-service health_check.interval only drives Docker's
+  // own healthcheck (see composeGenerator); it is not applied here.
   const minInterval = 10;
   const cronExpr = `*/${minInterval} * * * * *`;
 

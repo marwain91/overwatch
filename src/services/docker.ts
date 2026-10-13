@@ -89,6 +89,15 @@ function extractContainerInfoFromKnownApps(
 }
 
 /**
+ * Name pattern for containers managed by Overwatch:
+ * {appId}-{tenantId}-{service}(-N)?
+ */
+export function getManagedContainerNamePattern(appIds: string[]): RegExp {
+  const escaped = appIds.map(id => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(`^/?(${escaped.join('|')})-[a-z0-9-]+-[a-z0-9-]+(?:-\\d+)?$`);
+}
+
+/**
  * Extract appId, tenantId, and service from a container name.
  * Pattern: {appId}-{tenantId}-{service}(-N)?
  */

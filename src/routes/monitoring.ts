@@ -13,6 +13,8 @@ import { loadConfig } from '../config';
 import { SLUG_RE, CONTAINER_NAME_RE, UUID_RE } from '../utils/validators';
 import { queryString, queryInt } from '../utils/query';
 import { requireRole } from '../middleware/requireRole';
+import { getCurrentUserEmail } from '../utils/jwt';
+import { getUserRole, can } from '../services/users';
 
 const router = Router();
 
@@ -116,13 +118,41 @@ router.get('/alerts', asyncHandler(async (req, res) => {
 // GET /api/monitoring/alerts/rules — configured rules (from config)
 router.get('/alerts/rules', asyncHandler(async (req, res) => {
   const config = loadConfig();
-  res.json((config as any).alert_rules || []);
+  res.json(config.alert_rules ?? []);
 }));
 
-// GET /api/monitoring/notifications — list notification channels
+const MASK = '••••••••';
+
+/** Keep only the origin: Slack/Discord-style webhook URLs carry their secret in the path. */
+function redactWebhookUrl(url: string): string {
+  try {
+    return `${new URL(url).origin}/${MASK}`;
+  } catch {
+    return MASK;
+  }
+}
+
+// GET /api/monitoring/notifications — list notification channels. Webhook URLs
+// and custom headers (e.g. Authorization) are credentials, so only admins — the
+// only role that can edit channels — get them unredacted.
 router.get('/notifications', asyncHandler(async (req, res) => {
   const channels = await getNotificationChannelsData();
-  res.json(channels);
+  const email = getCurrentUserEmail(req);
+  const role = email ? await getUserRole(email) : undefined;
+  if (can(role, 'admin')) {
+    res.json(channels);
+    return;
+  }
+  res.json(channels.map(c => ({
+    ...c,
+    config: {
+      ...c.config,
+      url: redactWebhookUrl(c.config.url),
+      headers: c.config.headers
+        ? Object.fromEntries(Object.keys(c.config.headers).map(k => [k, MASK]))
+        : undefined,
+    },
+  })));
 }));
 
 // POST /api/monitoring/notifications — add channel (admin-only: webhooks can exfiltrate)
