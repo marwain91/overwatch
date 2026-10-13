@@ -4,14 +4,7 @@ import * as yaml from 'js-yaml';
 import { execFileSync } from 'child_process';
 import { VERSION } from '../version';
 import { findConfigPath } from '../config/loader';
-
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
-const CYAN = '\x1b[36m';
-const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-const NC = '\x1b[0m';
+import { GREEN, YELLOW, RED, CYAN, BOLD, DIM, NC } from './config/utils';
 
 export function findDeployDir(): string {
   // Check DEPLOY_DIR env first

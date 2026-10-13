@@ -10,12 +10,10 @@ import { runInfra } from './cli/infra';
 import { runMigrate } from './cli/migrate';
 import { runSnapshot } from './cli/snapshot';
 import { VERSION } from './version';
+import { BOLD, NC } from './cli/config/utils';
 
 const command = process.argv[2];
 const args = process.argv.slice(3);
-
-const BOLD = '\x1b[1m';
-const NC = '\x1b[0m';
 
 const run = (fn: (args: string[]) => Promise<void>) =>
   fn(args).catch((err: Error) => {

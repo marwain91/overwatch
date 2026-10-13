@@ -4,11 +4,7 @@ import { execFileSync } from 'child_process';
 import { findDeployDir } from './lifecycle';
 import { runSelfUpdate } from './self-update';
 import { listImageTags, sortTagsForDisplay } from '../services/registry';
-
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
-const DIM = '\x1b[2m';
-const NC = '\x1b[0m';
+import { GREEN, YELLOW, DIM, NC } from './config/utils';
 
 function exec(cmd: string, args: string[]): string {
   return execFileSync(cmd, args, { stdio: 'pipe', encoding: 'utf-8' }).trim();

@@ -1,4 +1,4 @@
-// ANSI color constants (matches src/cli/init.ts convention)
+// ANSI color constants + output helpers shared by every CLI command
 export const GREEN = '\x1b[32m';
 export const YELLOW = '\x1b[33m';
 export const RED = '\x1b[31m';

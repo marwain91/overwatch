@@ -136,3 +136,23 @@ data_dir: "${path.join(deployDir, 'overwatch', 'data')}"
     expect(destChange?.status).toBe('updated');
   });
 });
+
+describe('overwatch infra deploy — deploy dir resolution', () => {
+  afterEach(() => {
+    delete process.env.DEPLOY_DIR;
+    vi.doUnmock('../services/infraTemplates');
+    vi.restoreAllMocks();
+  });
+
+  it('honours the documented DEPLOY_DIR override', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const deployInfra = vi.fn(async () => ({ changes: [], composeRestarted: false }));
+    vi.doMock('../services/infraTemplates', () => ({ deployInfra }));
+    process.env.DEPLOY_DIR = deployDir;
+
+    const { runInfra } = await import('../cli/infra');
+    await runInfra(['deploy', '--dry-run']);
+
+    expect(deployInfra).toHaveBeenCalledWith({ deployDir, dryRun: true });
+  });
+});

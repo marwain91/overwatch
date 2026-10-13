@@ -4,15 +4,9 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { VERSION } from '../version';
+import { GREEN, YELLOW, RED, BOLD, DIM, NC } from './config/utils';
 
 const MAX_REDIRECTS = 5;
-
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
-const DIM = '\x1b[2m';
-const BOLD = '\x1b[1m';
-const NC = '\x1b[0m';
 
 const REPO = 'marwain91/overwatch';
 

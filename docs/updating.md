@@ -20,14 +20,14 @@ overwatch update --check
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEPLOY_DIR` | Auto-detected from CLI location | Path to the deployment directory |
+| `DEPLOY_DIR` | Auto-detected from CLI location | Path to the deployment directory (the one containing `overwatch/` and `infrastructure/`) |
 | `SERVICE_NAME` | `overwatch` | Docker Compose service name to restart |
 | `IMAGE` | `ghcr.io/marwain91/overwatch:latest` | Image to pull and check |
 
 Example with overrides:
 
 ```bash
-DEPLOY_DIR=/opt/myapp/deploy/overwatch SERVICE_NAME=admin overwatch update
+DEPLOY_DIR=/opt/myapp/deploy SERVICE_NAME=admin overwatch update
 ```
 
 ## Updating the CLI Binary

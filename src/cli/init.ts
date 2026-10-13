@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
+import { GREEN, YELLOW, RED, CYAN, BOLD, DIM, NC, header, success, warn, fail, info } from './config/utils';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -34,14 +35,6 @@ interface InitConfig {
 
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
-const CYAN = '\x1b[36m';
-const BOLD = '\x1b[1m';
-const DIM = '\x1b[2m';
-const NC = '\x1b[0m';
-
 const DNS_PROVIDERS: Record<string, DnsProviderDef> = {
   cloudflare: {
     label: 'Cloudflare',
@@ -68,29 +61,6 @@ const DNS_PROVIDERS: Record<string, DnsProviderDef> = {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
 
-function header(title: string): void {
-  const bar = '━'.repeat(Math.max(0, 48 - title.length));
-  console.log('');
-  console.log(`${CYAN}━━━ ${title} ${bar}${NC}`);
-  console.log('');
-}
-
-function success(msg: string): void {
-  console.log(`  ${GREEN}✓${NC} ${msg}`);
-}
-
-function warn(msg: string): void {
-  console.log(`  ${YELLOW}!${NC} ${msg}`);
-}
-
-function fail(msg: string): void {
-  console.log(`  ${RED}✗${NC} ${msg}`);
-}
-
-function info(msg: string): void {
-  console.log(`  ${DIM}${msg}${NC}`);
-}
-
 function generateSecret(length: number): string {
   return crypto.randomBytes(Math.ceil(length * 0.75)).toString('base64url').slice(0, length);
 }
@@ -104,7 +74,9 @@ function commandExists(cmd: string): boolean {
   }
 }
 
-async function writeFileSafe(filePath: string, content: string): Promise<boolean> {
+const SECRET_FILE_MODE = 0o600;
+
+async function writeFileSafe(filePath: string, content: string, mode?: number): Promise<boolean> {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -128,7 +100,9 @@ async function writeFileSafe(filePath: string, content: string): Promise<boolean
     }
   }
 
-  fs.writeFileSync(filePath, content, 'utf-8');
+  fs.writeFileSync(filePath, content, { encoding: 'utf-8', mode });
+  // `mode` only applies on create; tighten an overwritten file too.
+  if (mode !== undefined) fs.chmodSync(filePath, mode);
   success(`Created ${path.basename(filePath)}`);
   return true;
 }
@@ -615,6 +589,7 @@ async function generateFiles(config: InitConfig): Promise<void> {
   await writeFileSafe(
     path.join(base, 'infrastructure', '.env'),
     generateInfraEnv(config),
+    SECRET_FILE_MODE, // DB root password
   );
 
   // Overwatch
@@ -629,6 +604,7 @@ async function generateFiles(config: InitConfig): Promise<void> {
   await writeFileSafe(
     path.join(base, 'overwatch', '.env'),
     generateOverwatchEnv(config),
+    SECRET_FILE_MODE, // JWT_SECRET, DB root password, registry token
   );
 
   // Data files

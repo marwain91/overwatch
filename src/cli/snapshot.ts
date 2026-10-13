@@ -1,11 +1,5 @@
 import { createSnapshot, listSnapshots, restoreSnapshot, pruneOldSnapshots } from '../services/configSnapshots';
-
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
-const DIM = '\x1b[2m';
-const BOLD = '\x1b[1m';
-const NC = '\x1b[0m';
+import { GREEN, YELLOW, RED, BOLD, DIM, NC } from './config/utils';
 
 function usage(): void {
   console.log('');

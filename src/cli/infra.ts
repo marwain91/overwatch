@@ -1,13 +1,7 @@
 import * as path from 'path';
 import { findConfigPath } from '../config/loader';
 import { deployInfra, InfraFileChange } from '../services/infraTemplates';
-
-const GREEN = '\x1b[32m';
-const YELLOW = '\x1b[33m';
-const RED = '\x1b[31m';
-const DIM = '\x1b[2m';
-const BOLD = '\x1b[1m';
-const NC = '\x1b[0m';
+import { GREEN, YELLOW, RED, BOLD, DIM, NC } from './config/utils';
 
 function usage(): void {
   console.log('');
@@ -28,8 +22,12 @@ function usage(): void {
  * of the dir containing overwatch.yaml.
  */
 function resolveDeployDir(): string {
-  if (process.env.OVERWATCH_DEPLOY_DIR) {
-    return process.env.OVERWATCH_DEPLOY_DIR;
+  // DEPLOY_DIR is the documented override shared with the other commands
+  // (findDeployDir can't be reused: it requires infrastructure/ to exist,
+  // which this command creates). OVERWATCH_DEPLOY_DIR is kept for back-compat.
+  const fromEnv = process.env.DEPLOY_DIR || process.env.OVERWATCH_DEPLOY_DIR;
+  if (fromEnv) {
+    return fromEnv;
   }
   const configPath = findConfigPath();
   // overwatch.yaml lives at <deployDir>/overwatch/overwatch.yaml

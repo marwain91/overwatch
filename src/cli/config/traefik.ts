@@ -327,5 +327,4 @@ async function mutateConfig(mutate: (raw: any) => void): Promise<void> {
   await fs.writeFile(tmp, yaml.dump(raw, { lineWidth: 120, noRefs: true }), { mode: 0o644 });
   await fs.rename(tmp, configPath);
   clearConfigCache();
-  void path; // avoid unused import lint
 }
