@@ -6,7 +6,12 @@ import { listApps } from './app';
 import { getDataDir } from '../config';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 
-const scheduledTasks = new Map<string, ScheduledTask>();
+interface ScheduledEntry {
+  task: ScheduledTask;
+  schedule: string;
+}
+const scheduledTasks = new Map<string, ScheduledEntry>();
+const warnedInvalid = new Set<string>();
 
 interface InFlightRun {
   appId: string;
@@ -111,29 +116,83 @@ export function startBackupScheduler(appId: string, schedule: string): void {
     }
   }, { name: `backup-${appId}`, noOverlap: true });
 
-  scheduledTasks.set(appId, task);
+  scheduledTasks.set(appId, { task, schedule });
   console.log(`Backup scheduler started for app '${appId}' (schedule: "${schedule}")`);
 }
 
 /**
- * Stop the backup scheduler for a specific app.
+ * Stop the backup scheduler for a specific app, or all of them.
  */
 export function stopBackupScheduler(appId?: string): void {
   if (appId) {
-    const task = scheduledTasks.get(appId);
-    if (task) {
-      task.stop();
+    const entry = scheduledTasks.get(appId);
+    if (entry) {
+      entry.task.stop();
       scheduledTasks.delete(appId);
       console.log(`Backup scheduler stopped for app '${appId}'`);
     }
-  } else {
-    // Stop all schedulers
-    for (const [id, task] of scheduledTasks) {
-      task.stop();
-    }
-    scheduledTasks.clear();
-    if (scheduledTasks.size === 0) {
-      console.log('All backup schedulers stopped');
-    }
+    return;
   }
+  for (const entry of scheduledTasks.values()) {
+    entry.task.stop();
+  }
+  scheduledTasks.clear();
+  console.log('All backup schedulers stopped');
+}
+
+let reconcileChain: Promise<void> = Promise.resolve();
+
+/**
+ * Make running backup tasks match the current app definitions: start new,
+ * stop removed/disabled, restart when the schedule changed. Idempotent.
+ * Calls are serialized so overlapping triggers can't act on stale app lists.
+ */
+export function reconcileBackupSchedulers(): Promise<void> {
+  const run = reconcileChain.then(doReconcile, doReconcile);
+  reconcileChain = run.catch(() => {});
+  return run;
+}
+
+async function doReconcile(): Promise<void> {
+  const apps = await listApps();
+  const desired = new Map<string, string>();
+  for (const app of apps) {
+    if (app.backup?.enabled && app.backup?.schedule) desired.set(app.id, app.backup.schedule);
+  }
+
+  for (const id of [...scheduledTasks.keys()]) {
+    if (!desired.has(id)) stopBackupScheduler(id);
+  }
+
+  for (const [id, schedule] of desired) {
+    const running = scheduledTasks.get(id);
+    if (running?.schedule === schedule) continue;
+    if (running) stopBackupScheduler(id);
+    if (!cron.validate(schedule)) {
+      // Reconcile runs every minute; report each bad schedule once.
+      const key = `${id}\0${schedule}`;
+      if (!warnedInvalid.has(key)) {
+        warnedInvalid.add(key);
+        startBackupScheduler(id, schedule); // logs the invalid-expression error
+      }
+      continue;
+    }
+    startBackupScheduler(id, schedule);
+  }
+}
+
+let reconcileTask: ScheduledTask | undefined;
+
+/** Re-reconcile every minute: CLI edits to apps.d bypass the server's mutation hooks. */
+export function startSchedulerReconciler(): void {
+  if (reconcileTask) return;
+  reconcileTask = cron.schedule('* * * * *', () => {
+    reconcileBackupSchedulers().catch(err =>
+      console.error('[Scheduler] reconcile failed:', err?.message ?? err));
+  }, { name: 'backup-reconcile', noOverlap: true });
+}
+
+export function stopSchedulerReconciler(): void {
+  reconcileTask?.stop();
+  reconcileTask = undefined;
 }

@@ -147,6 +147,20 @@ async function readApps(): Promise<AppDefinition[]> {
   return apps;
 }
 
+let appsChangedHook: (() => void | Promise<unknown>) | undefined;
+/** Register a callback run after every successful app mutation (used by the backup scheduler). */
+export function setAppsChangedHook(fn: (() => void | Promise<unknown>) | undefined): void {
+  appsChangedHook = fn;
+}
+function notifyAppsChanged(): void {
+  try {
+    Promise.resolve(appsChangedHook?.()).catch(err =>
+      console.error('[apps] change hook failed:', err?.message ?? err));
+  } catch (err: any) {
+    console.error('[apps] change hook failed:', err?.message ?? err);
+  }
+}
+
 async function writeStatic(appDef: AppDefinition): Promise<void> {
   const { createdAt, updatedAt, ...staticOnly } = appDef;
   await writeJsonAtomic(getStaticFile(appDef.id), staticOnly, { mode: 0o644 });
@@ -219,6 +233,7 @@ export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
 
     await writeStatic(parsed.data);
     await upsertRuntime(parsed.data.id, () => ({ createdAt: now, updatedAt: now }));
+    notifyAppsChanged();
     return parsed.data;
   });
 }
@@ -245,6 +260,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
       createdAt: prev?.createdAt ?? parsed.data.createdAt,
       updatedAt: now,
     }));
+    notifyAppsChanged();
     return parsed.data;
   });
 }
@@ -318,6 +334,7 @@ export async function applyApp(
         updatedAt: now,
       }));
       await reconcileEnvVarDeclarations(next);
+      notifyAppsChanged();
       return {
         result: 'updated' as ApplyResult,
         app: { ...next, createdAt: entry.createdAt, updatedAt: entry.updatedAt },
@@ -330,6 +347,7 @@ export async function applyApp(
     clearAdapterCache(next.id);
     const entry = await upsertRuntime(next.id, () => ({ createdAt: now, updatedAt: now }));
     await reconcileEnvVarDeclarations(next);
+    notifyAppsChanged();
     return {
       result: 'created' as ApplyResult,
       app: { ...next, createdAt: entry.createdAt, updatedAt: entry.updatedAt },
@@ -422,6 +440,7 @@ export async function deleteApp(id: string, force: boolean = false, deletedBy: s
 
     await removeStatic(id);
     await deleteRuntime(id);
+    notifyAppsChanged();
   });
 }
 
@@ -447,6 +466,7 @@ export async function restoreApp(id: string): Promise<AppDefinition> {
     await upsertRuntime(restored.id, () => ({ createdAt: restored.createdAt, updatedAt: restored.updatedAt }));
     trashed.splice(tIdx, 1);
     await saveTrashed(trashed);
+    notifyAppsChanged();
     return restored;
   });
 }
@@ -465,5 +485,6 @@ export async function purgeApp(id: string): Promise<void> {
     }
     trashed.splice(tIdx, 1);
     await saveTrashed(trashed);
+    notifyAppsChanged();
   });
 }
