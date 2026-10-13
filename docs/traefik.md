@@ -92,6 +92,8 @@ These keys are reserved and rejected at validation time:
 - `traefik.http.routers.*.entrypoints`
 - `traefik.http.routers.*.tls`
 
+Matching is case-insensitive. At generation time, a raw label key containing characters outside `A-Z a-z 0-9 . _ - [ ]` is dropped, as is any reserved key, so escaped or non-ASCII spellings of a reserved key cannot slip through. `com.overwatch.*` (container ownership) and `com.docker.*` keys are reserved the same way.
+
 Use the typed fields (`cert_resolver`, `host_aliases`, `middlewares`) instead — they cover the same ground without breaking multi-tenancy invariants.
 
 ## Per-app middleware library

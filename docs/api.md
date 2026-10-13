@@ -153,6 +153,8 @@ All env var endpoints are scoped to an app: `/api/apps/:appId/env-vars`.
 | `POST` | `/api/apps/:appId/env-vars/tenants/:tenantId/overrides` | `editor` | Set a tenant-specific override |
 | `DELETE` | `/api/apps/:appId/env-vars/tenants/:tenantId/overrides/:key` | `editor` | Remove a tenant override |
 
+`POST /api/apps/:appId/env-vars` takes `sensitive` as a boolean; omitting it keeps the stored flag. A `value` omitted on an existing variable keeps the stored value, but `sensitive: false` on a sensitive variable needs a new `value` in the same request, otherwise the response is 400. `description` must be a string, and tenant override writes also require `sensitive` to be a boolean when present.
+
 ## Status & Containers
 
 | Method | Endpoint | Role | Description |

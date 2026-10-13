@@ -30,6 +30,8 @@ or `/oauth/*` routes are mounted.
 | `update_tenant` | editor |
 | `start_tenant`, `stop_tenant`, `restart_tenant` | editor |
 
+`appId` and `tenantId` must be lowercase slugs (`a-z`, `0-9`, `-`, up to 63 characters), the same rule the REST API enforces.
+
 Authorization reuses `admin-users.json`: only listed admins can sign in, and
 their role gates which tools they can call. Role and membership are re-checked
 on every request, so removing an admin revokes MCP access immediately.

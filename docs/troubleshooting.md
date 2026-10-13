@@ -16,6 +16,14 @@
 3. Verify root password environment variable is set correctly
 4. Check database container is running and healthy
 
+## Startup Refuses JWT_SECRET
+
+**Symptom:** Overwatch exits at startup with `JWT_SECRET is still a documented placeholder`.
+
+**Cause:** `JWT_SECRET` is still `replace-with-at-least-32-random-characters` from `.env.example` (or `dev-secret-at-least-32-characters` from older development docs). That value is public, so anyone could forge sessions, and Overwatch refuses to run with it (since v1.7.2).
+
+**Solution:** Generate a secret (`openssl rand -hex 32`), set it as `JWT_SECRET` in `.env`, and restart. Every existing session is invalidated, so admins sign in again.
+
 ## Registry Authentication Failed
 
 **Symptom:** "Failed to login to registry" or tag fetching fails.

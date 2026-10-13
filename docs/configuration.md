@@ -430,7 +430,7 @@ environment:
 
 | Variable | Description |
 |----------|-------------|
-| `JWT_SECRET` | Secret for Overwatch session tokens |
+| `JWT_SECRET` | Secret for Overwatch session tokens. Must be random; startup refuses the `.env.example` placeholder |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID for admin login |
 
 ### Database (name from config)
