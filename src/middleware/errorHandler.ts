@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
+import { ZodError } from 'zod';
 import { HttpError } from '../utils/httpErrors';
 
 /**
@@ -11,6 +12,12 @@ export function errorHandler(err: any, req: Request, res: Response, next: NextFu
   console.error(`Error in ${req.method} ${req.path}:`, err);
   if (res.headersSent) {
     next(err);
+    return;
+  }
+  if (err instanceof ZodError) {
+    // Schema parse failures are caller input problems, not server faults.
+    const detail = err.errors.map(e => `${e.path.join('.') || 'value'}: ${e.message}`).join(', ');
+    res.status(400).json({ error: `Invalid input: ${detail}` });
     return;
   }
   const rawStatus = err instanceof HttpError ? err.status : (err?.status || err?.statusCode);

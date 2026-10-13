@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { updateTenant, validateImageTag } from '../../services/tenant';
 import { eventBus } from '../../services/eventBus';
-import { requireToolRole, writeMcpAudit, ToolRoleError } from '../audit';
+import { requireToolRole, writeMcpAudit, ToolRoleError, toolErrorMessage } from '../audit';
 import { McpAuthExtra } from '../auth';
 import { slugInput } from './read';
 import type { TenantUpdateProgress } from '../../websocket/types';
@@ -60,7 +60,7 @@ export async function updateTenantHandler(
     return { content: [{ type: 'text', text: `Updated ${args.appId}/${args.tenantId} to ${args.imageTag}` }], structuredContent: { success: true, ...args } };
   } catch (e: any) {
     writeMcpAudit({ email: auth.email, tool: 'update_tenant', args, status: e instanceof HttpError ? e.status : 500 });
-    return { isError: true, content: [{ type: 'text', text: e?.message || String(e) }] };
+    return { isError: true, content: [{ type: 'text', text: toolErrorMessage(e, 'Failed to update tenant') }] };
   } finally {
     eventBus.off('tenant:update:progress', onProgress);
   }

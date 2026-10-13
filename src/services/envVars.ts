@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getAppsDir, getDataDir } from '../config';
 import { withFileLock } from './fileLock';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
+import { NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const EnvVarSchema = z.object({
   key: z.string(),
@@ -203,11 +204,11 @@ export async function setEnvVar(
 ): Promise<EnvVar> {
   const keyValidation = validateEnvVarKey(key);
   if (!keyValidation.valid) {
-    throw new Error(keyValidation.error);
+    throw new ValidationError(keyValidation.error || 'Invalid environment variable key');
   }
   const valueValidation = validateEnvVarValue(value);
   if (!valueValidation.valid) {
-    throw new Error(valueValidation.error);
+    throw new ValidationError(valueValidation.error || 'Invalid environment variable value');
   }
 
   return withFileLock('env-vars', async () => {
@@ -246,7 +247,7 @@ export async function deleteEnvVar(appId: string, key: string): Promise<void> {
     const vars = store[appId] || [];
     const index = vars.findIndex(v => v.key === key);
     if (index === -1) {
-      throw new Error(`Environment variable "${key}" not found`);
+      throw new NotFoundError(`Environment variable "${key}" not found`);
     }
     vars.splice(index, 1);
     store[appId] = vars;
@@ -272,11 +273,11 @@ export async function setTenantOverride(
 ): Promise<void> {
   const keyValidation = validateEnvVarKey(key);
   if (!keyValidation.valid) {
-    throw new Error(keyValidation.error);
+    throw new ValidationError(keyValidation.error || 'Invalid environment variable key');
   }
   const valueValidation = validateEnvVarValue(value);
   if (!valueValidation.valid) {
-    throw new Error(valueValidation.error);
+    throw new ValidationError(valueValidation.error || 'Invalid environment variable value');
   }
 
   return withFileLock('tenant-overrides', async () => {
@@ -312,12 +313,12 @@ export async function deleteTenantOverride(appId: string, tenantId: string, key:
     const tenant = appOverrides.find(t => t.tenantId === tenantId);
 
     if (!tenant) {
-      throw new Error(`No overrides found for tenant "${tenantId}"`);
+      throw new NotFoundError(`No overrides found for tenant "${tenantId}"`);
     }
 
     const index = tenant.overrides.findIndex(o => o.key === key);
     if (index === -1) {
-      throw new Error(`Override "${key}" not found for tenant "${tenantId}"`);
+      throw new NotFoundError(`Override "${key}" not found for tenant "${tenantId}"`);
     }
 
     tenant.overrides.splice(index, 1);

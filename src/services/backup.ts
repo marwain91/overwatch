@@ -11,6 +11,7 @@ import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { invalidateBackupCache } from './backupCache';
+import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,7 +32,7 @@ function getResticEnv(app: AppDefinition): NodeJS.ProcessEnv {
   const backup = app.backup;
 
   if (!backup || !backup.enabled) {
-    throw new Error(`Backup not configured for app '${app.id}'`);
+    throw new ValidationError(`Backup not configured for app '${app.id}'`);
   }
 
   let repository: string;
@@ -41,13 +42,13 @@ function getResticEnv(app: AppDefinition): NodeJS.ProcessEnv {
     // Refuse plaintext S3 endpoints — credentials in headers would travel unencrypted.
     // Escape hatch for dev/localstack: OVERWATCH_ALLOW_INSECURE_S3=1.
     if (endpoint && endpoint.startsWith('http://') && process.env.OVERWATCH_ALLOW_INSECURE_S3 !== '1') {
-      throw new Error(
+      throw new ValidationError(
         `S3 endpoint '${endpoint}' uses http:// — refusing. Set OVERWATCH_ALLOW_INSECURE_S3=1 if you really intend this (e.g. localstack).`
       );
     }
     repository = `s3:${endpoint}/${bucket}`;
   } else {
-    throw new Error(`Invalid backup S3 configuration for app '${app.id}'`);
+    throw new ValidationError(`Invalid backup S3 configuration for app '${app.id}'`);
   }
 
   // Allowlist, not spread. `...process.env` leaked JWT_SECRET / GOOGLE_CLIENT_ID
@@ -168,8 +169,13 @@ export async function getBackupInfo(appId: string): Promise<BackupInfo & { isLoc
 
 export async function initializeRepository(appId: string): Promise<void> {
   const app = await getApp(appId);
-  if (!app) throw new Error(`App '${appId}' not found`);
-  await execFileAsync('restic', ['init'], { env: getResticEnv(app) });
+  if (!app) throw new NotFoundError(`App '${appId}' not found`);
+  try {
+    await execFileAsync('restic', ['init'], { env: getResticEnv(app) });
+  } catch (err: any) {
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(500, `Failed to initialize repository: ${err?.stderr?.toString().trim() || err?.message || err}`, { expose: true });
+  }
   invalidateBackupCache(appId);
 }
 

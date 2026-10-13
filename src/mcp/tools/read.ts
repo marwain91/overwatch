@@ -1,10 +1,9 @@
 import { z } from 'zod';
 import { listApps } from '../../services/app';
 import { listTenants, getTenantInfo } from '../../services/docker';
-import { requireToolRole, ToolRoleError } from '../audit';
+import { requireToolRole, ToolRoleError, toolErrorMessage } from '../audit';
 import { McpAuthExtra } from '../auth';
 import { SLUG_RE } from '../../utils/validators';
-import { HttpError } from '../../utils/httpErrors';
 
 // Same slug rule REST enforces via validateAppId/validateTenantId.
 export const slugInput = z.string().max(63).regex(SLUG_RE, 'must be a lowercase slug (a-z, 0-9, -)');
@@ -28,9 +27,7 @@ async function guardRead(auth: McpAuthExtra, action: string, fn: () => Promise<T
     return await fn();
   } catch (e) {
     if (e instanceof ToolRoleError) return err(e.message);
-    if (e instanceof HttpError && e.expose) return err(e.message);
-    console.error(`[mcp] ${action} failed:`, e);
-    return err(`Failed to ${action}`);
+    return err(toolErrorMessage(e, `Failed to ${action}`));
   }
 }
 

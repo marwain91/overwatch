@@ -88,3 +88,37 @@ describe('errorHandler', () => {
     expect(res.body).toEqual({ error: 'Internal server error' });
   });
 });
+
+describe('errorHandler: ZodError and DockerCommandError', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('maps a ZodError to 400 with a readable field message', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { z } = await import('zod');
+    const parsed = z.object({ port: z.number() }).safeParse({ port: 'x' });
+    const app = express();
+    app.get('/boom', (_req, _res, next) => next((parsed as any).error));
+    app.use(errorHandler);
+    const res = await request(app).get('/boom');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('port');
+  });
+
+  it('DockerCommandError carries an exposed status by kind', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { DockerCommandError } = await import('../utils/runDocker');
+    const details = { stderr: '', stdout: '', exitCode: 1, command: 'docker', args: [] as string[] };
+    const daemon = new DockerCommandError('Cannot connect to the Docker daemon', 'daemon_unreachable', details);
+    const other = new DockerCommandError('docker start failed (unknown)', 'unknown', details);
+    expect(daemon).toBeInstanceOf(HttpError);
+    expect(daemon.kind).toBe('daemon_unreachable');
+    for (const [err, status] of [[daemon, 503], [other, 502]] as [Error, number][]) {
+      const app = express();
+      app.get('/boom', (_req, _res, next) => next(err));
+      app.use(errorHandler);
+      const res = await request(app).get('/boom');
+      expect(res.status).toBe(status);
+      expect(res.body.error).toBe(err.message);
+    }
+  });
+});

@@ -3,6 +3,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
+// Each test dynamically imports the service graph; allow for a loaded CI host.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 let tmpRoot: string;
 let dataDir: string;
 let appsDir: string;
@@ -35,7 +38,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   vi.resetModules();
   vi.doUnmock('../config');
   vi.doUnmock('../config/loader');

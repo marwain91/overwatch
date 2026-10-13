@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { startTenant, stopTenant, restartTenant } from '../../services/docker';
-import { requireToolRole, writeMcpAudit, ToolRoleError } from '../audit';
+import { requireToolRole, writeMcpAudit, ToolRoleError, toolErrorMessage } from '../audit';
 import { McpAuthExtra } from '../auth';
 import { slugInput } from './read';
 import { HttpError } from '../../utils/httpErrors';
@@ -23,7 +23,7 @@ function makeLifecycleHandler(tool: string, fn: (appId: string, tenantId: string
       return { content: [{ type: 'text', text: `${tool} ok for ${args.appId}/${args.tenantId}` }], structuredContent: { success: true, ...args } };
     } catch (e: any) {
       writeMcpAudit({ email: auth.email, tool, args, status: e instanceof HttpError ? e.status : 500 });
-      return { isError: true, content: [{ type: 'text', text: e?.message || String(e) }] };
+      return { isError: true, content: [{ type: 'text', text: toolErrorMessage(e, `Failed to ${tool}`) }] };
     }
   };
 }
