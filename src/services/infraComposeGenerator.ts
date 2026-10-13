@@ -143,6 +143,9 @@ export function buildOverwatchComposeYml(config: OverwatchConfig): string {
     image: 'ghcr.io/marwain91/overwatch:latest',
     container_name: '${PROJECT_PREFIX}-overwatch',
     restart: 'unless-stopped',
+    // Whole .env passes through: operator-chosen *_env names are read at runtime.
+    // Optional so hosts without the file start; explicit entries below win.
+    env_file: [{ path: '.env', required: false }],
     environment: {
       OVERWATCH_UID: '${OVERWATCH_UID:-1001}',
       OVERWATCH_GID: '${OVERWATCH_GID:-1001}',

@@ -179,3 +179,18 @@ describe('buildInfraComposeYml — database engine', () => {
     expect(ow).not.toContain('MYSQL_ROOT_PASSWORD');
   });
 });
+
+describe('overwatch service env_file', () => {
+  const entry = /env_file:\s*\n\s*- path: \.env\s*\n\s*required: false/;
+
+  it('generator passes the whole .env through as an optional env_file', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({ log_level: 'INFO', tls_termination: 'upstream' }));
+    expect(yml).toMatch(entry);
+    expect(yml).toContain('OVERWATCH_TRUST_PROXY');
+  });
+
+  it('static template has the same env_file entry', () => {
+    const tpl = readFileSync(path.resolve(__dirname, '..', '..', 'templates', 'overwatch', 'docker-compose.yml'), 'utf-8');
+    expect(tpl).toMatch(entry);
+  });
+});
