@@ -1,7 +1,7 @@
 import type { AppDefinition, AppService } from '../models/app';
 import type { MiddlewareSpec, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
-import { isBlockedRawLabelKey } from '../models/traefik';
-import { HttpError } from '../utils/httpErrors';
+import { rawLabelOwnerForAppService, rawLabelOwnerForRouter, rawLabelProblem } from '../models/traefik';
+import { HttpError, ValidationError } from '../utils/httpErrors';
 
 /**
  * Resolve the effective TLS termination mode for a single router.
@@ -156,12 +156,52 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
     service.routing?.raw_labels,
     tenantOverrides?.raw_labels?.[service.name],
   );
+  const owner = rawLabelOwnerForRouter(routerName);
   for (const [k, v] of Object.entries(merged)) {
-    if (isBlockedRawLabelKey(k)) continue;
+    const problem = rawLabelProblem(k, v, owner);
+    if (problem) {
+      // Key only: label values may hold credentials.
+      console.warn(`[traefik] dropped raw label "${k}" on ${routerName}: ${problem}`);
+      continue;
+    }
     push(`${k}=${v}`);
   }
 
   return labels;
+}
+
+function assertRawLabels(
+  where: string,
+  labels: unknown,
+  owner: ReturnType<typeof rawLabelOwnerForRouter>,
+): void {
+  if (!labels || typeof labels !== 'object') return;
+  for (const [k, v] of Object.entries(labels as Record<string, unknown>)) {
+    const problem = rawLabelProblem(k, typeof v === 'string' ? v : '', owner);
+    if (problem) throw new ValidationError(`Raw label "${k}" on ${where} is not allowed: ${problem}`);
+  }
+}
+
+/**
+ * Save-time check for app-level raw labels (service.routing.raw_labels), run by
+ * the API and CLI paths that store an app definition. Takes the unparsed body
+ * because it runs before/alongside schema parsing.
+ */
+export function assertAppRawLabelsOwned(appId: string, services: unknown): void {
+  if (!Array.isArray(services)) return;
+  for (const svc of services) {
+    const name = svc?.name;
+    if (typeof name !== 'string') continue;
+    assertRawLabels(`service "${name}"`, svc?.routing?.raw_labels, rawLabelOwnerForAppService(appId, name));
+  }
+}
+
+/** Save-time check for a tenant's `raw_labels` (service name -> labels). */
+export function assertTenantRawLabelsOwned(appId: string, tenantId: string, rawLabels: unknown): void {
+  if (!rawLabels || typeof rawLabels !== 'object') return;
+  for (const [service, labels] of Object.entries(rawLabels as Record<string, unknown>)) {
+    assertRawLabels(`service "${service}"`, labels, rawLabelOwnerForRouter(`${appId}-${tenantId}-${service}`));
+  }
 }
 
 function resolveServiceMiddlewareNames(

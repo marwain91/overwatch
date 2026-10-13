@@ -80,9 +80,21 @@ Overwatch ships typed schemas for the most common middlewares:
 | `inFlightReq` | `amount` |
 | `chain` | `middlewares[]` (compose other middlewares) |
 
-For anything not modeled, set `raw_labels: { "traefik.…": "value" }` on the service or tenant. The denylist below is enforced by Zod refinement, so all three editing surfaces produce the same error.
+For anything not modeled, set `raw_labels: { "traefik.…": "value" }` on the service or tenant. Raw labels may only address the tenant's own Traefik objects (see below). The reserved-key list is enforced by Zod refinement; ownership is enforced when raw labels are saved through the API or `overwatch apps apply` (HTTP 400 naming the key) and again when the compose file is generated.
 
 Label values (raw labels and typed middleware fields alike) reach the tenant's `docker-compose.yml` verbatim, backslashes and quotes included, so a regex such as `^https://(.*)\.example\.com` arrives at Traefik unchanged. Line breaks are folded to a space, and `$` is still subject to Docker Compose variable interpolation.
+
+### Ownership
+
+For a service `web` of app `myapp` on tenant `acme`, the router is named `myapp-acme-web`. Raw labels (app-level and tenant-level) may only use:
+
+- `traefik.http.routers.myapp-acme-web.*`
+- `traefik.http.services.myapp-acme-web.*`
+- `traefik.http.middlewares.myapp-acme-web-<name>.*` (the prefix Overwatch gives the service's own middlewares)
+
+Everything under `traefik.tcp.` / `traefik.udp.` and every other `traefik.*` key (other routers, services or middlewares, `serverstransports`, ...) is dropped at generation time with a `[traefik] dropped raw label` warning, and rejected with HTTP 400 when saved. App-level raw labels are rendered once per tenant, so the same per-tenant names apply; at save time any `myapp-<tenant>-web` is accepted for service `web`. A router's `service` field may only name its own service. Labels that are not `traefik.*` (for example `com.example.*`) are passed through.
+
+Stored data is not rejected on load: non-conforming labels already on disk are simply not emitted.
 
 ### Denylist
 
@@ -92,7 +104,9 @@ These keys are reserved and rejected at validation time:
 - `traefik.http.routers.*.rule`
 - `traefik.http.routers.*.tls.certresolver`
 - `traefik.http.routers.*.entrypoints`
-- `traefik.http.routers.*.tls`
+- `traefik.http.routers.*.tls` (including `tls.domains`)
+
+Indexed spellings such as `entrypoints[0]` are covered too.
 
 Matching is case-insensitive. At generation time, a raw label key containing characters outside `A-Z a-z 0-9 . _ - [ ]` is dropped, as is any reserved key, so escaped or non-ASCII spellings of a reserved key cannot slip through. `com.overwatch.*` (container ownership) and `com.docker.*` keys are reserved the same way.
 
@@ -137,6 +151,20 @@ middleware_overrides:
 raw_labels:
   web:
     "traefik.http.routers.myapp-acme-web.observability.tracing": "true"
+```
+
+`host_aliases` add extra `Host()` matchers on the tenant's routers, so they are checked when saved (HTTP 400) and again when the compose file is generated (a failing alias is dropped with a warning). An alias must:
+
+- be a valid hostname;
+- not be a host Overwatch serves itself: the `traefik.overwatch.host`, the host of `mcp.public_url`, or the `traefik.dashboard.host`;
+- not equal the domain or alias of any other tenant;
+- when the app's `domain_template` is a wildcard (`*.example.com`), lie inside that pattern or inside a domain listed in the optional `traefik.allowed_alias_domains` (default: empty, so only hosts matching the template are accepted):
+
+```yaml
+# overwatch.yaml
+traefik:
+  allowed_alias_domains:
+    - partner.example.org   # also allows www.partner.example.org
 ```
 
 Override semantics: `middleware_overrides` is a full replacement, not a merge. `raw_labels` are merged on top of the generated and app-level labels (denylist enforced after merge).

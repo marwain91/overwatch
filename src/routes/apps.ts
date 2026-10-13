@@ -8,6 +8,7 @@ import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
 import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
+import { assertAppRawLabelsOwned } from '../services/traefikLabels';
 
 const router = Router();
 
@@ -33,6 +34,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
     return res.status(400).json({ error: `Invalid app definition: ${errors}` });
   }
 
+  assertAppRawLabelsOwned(parseResult.data.id, parseResult.data.services);
   const app = await createApp(parseResult.data);
   res.status(201).json(app);
 }));
@@ -49,7 +51,9 @@ router.get('/:appId', validateAppId, asyncHandler(async (req, res) => {
 // Update app config. Admin-only — update payload can change registry creds,
 // admin_access (token-mint URL template), and backup targets.
 router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
-  const app = await updateApp({ ...req.body, id: (req.params as Record<string, string>).appId });
+  const appId = (req.params as Record<string, string>).appId;
+  assertAppRawLabelsOwned(appId, req.body?.services);
+  const app = await updateApp({ ...req.body, id: appId });
   res.json(app);
 }));
 

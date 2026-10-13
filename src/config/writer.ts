@@ -4,6 +4,7 @@ import * as yaml from 'js-yaml';
 import { findConfigPath, clearConfigCache, getDataDir } from './loader';
 import { OverwatchConfigSchema } from './schema';
 import { withFileLock } from '../services/fileLock';
+import { ValidationError } from '../utils/httpErrors';
 
 const LOCK_KEY = 'overwatch-config';
 
@@ -15,7 +16,7 @@ function assertValid(raw: Record<string, any>): void {
   const parse = OverwatchConfigSchema.safeParse(raw);
   if (!parse.success) {
     const errors = parse.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
-    throw new Error(`Resulting overwatch.yaml would be invalid: ${errors}`);
+    throw new ValidationError(`Resulting overwatch.yaml would be invalid: ${errors}`);
   }
 }
 

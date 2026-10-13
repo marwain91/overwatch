@@ -11,9 +11,11 @@ import {
   type MiddlewareSpec,
 } from '../models/traefik';
 import { getApp, applyApp } from './app';
-import { TraefikAppSchema, type TraefikApp } from '../models/traefik';
-import { readTenantTraefik, writeTenantTraefik } from './tenantTraefik';
+import { TraefikAppSchema, TraefikTenantSchema, type TraefikApp } from '../models/traefik';
+import { readTenantTraefik, writeTenantTraefik, loadAliasContext, assertHostAliasesAllowed } from './tenantTraefik';
 import type { TraefikTenant } from '../models/traefik';
+import { NotFoundError } from '../utils/httpErrors';
+import { assertTenantRawLabelsOwned } from './traefikLabels';
 
 const SECRET_HINTS = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
 
@@ -141,14 +143,14 @@ export async function updateOverwatchRouting(body: unknown) {
 
 export async function getAppTraefik(appId: string): Promise<TraefikApp | undefined> {
   const app = await getApp(appId);
-  if (!app) throw new Error(`App '${appId}' not found`);
+  if (!app) throw new NotFoundError(`App '${appId}' not found`);
   return app.traefik;
 }
 
 export async function updateAppTraefik(appId: string, body: unknown): Promise<TraefikApp> {
   const validated = TraefikAppSchema.parse(body);
   const app = await getApp(appId);
-  if (!app) throw new Error(`App '${appId}' not found`);
+  if (!app) throw new NotFoundError(`App '${appId}' not found`);
   const { createdAt: _c, updatedAt: _u, ...staticPart } = app;
   void _c; void _u;
   await applyApp({ ...staticPart, traefik: validated }, 'api:traefik-update');
@@ -158,7 +160,8 @@ export async function updateAppTraefik(appId: string, body: unknown): Promise<Tr
 // ─── Per-tenant Traefik ─────────────────────────────────────────────────────
 
 export async function getTenantTraefik(appId: string, tenantId: string): Promise<TraefikTenant | undefined> {
-  return readTenantTraefik(appId, tenantId);
+  // Stored aliases are shown as stored, even ones generation would now drop.
+  return readTenantTraefik(appId, tenantId, { raw: true });
 }
 
 export async function updateTenantTraefik(appId: string, tenantId: string, body: unknown): Promise<TraefikTenant | undefined> {
@@ -166,6 +169,12 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
     await writeTenantTraefik(appId, tenantId, undefined);
     return undefined;
   }
-  await writeTenantTraefik(appId, tenantId, body as TraefikTenant);
-  return readTenantTraefik(appId, tenantId);
+  const parsed = TraefikTenantSchema.parse(body);
+  assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);
+  if (parsed.host_aliases && parsed.host_aliases.length > 0) {
+    const normalized = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
+    parsed.host_aliases = normalized;
+  }
+  await writeTenantTraefik(appId, tenantId, parsed);
+  return readTenantTraefik(appId, tenantId, { raw: true });
 }
