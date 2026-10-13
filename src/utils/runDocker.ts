@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { HttpError } from './httpErrors';
 
 export interface RunDockerOptions {
   timeoutMs?: number;
@@ -8,7 +9,9 @@ export interface RunDockerOptions {
 
 export type DockerErrorKind = 'timeout' | 'cli_missing' | 'daemon_unreachable' | 'unknown_container' | 'permission' | 'unknown';
 
-export class DockerCommandError extends Error {
+// Operator-facing: the message is already classified and carries the CLI's own
+// stderr, so it is exposed through the REST handler and MCP tools.
+export class DockerCommandError extends HttpError {
   kind: DockerErrorKind;
   stderr: string;
   stdout: string;
@@ -23,7 +26,8 @@ export class DockerCommandError extends Error {
     command: string;
     args: string[];
   }) {
-    super(msg);
+    super(kind === 'daemon_unreachable' || kind === 'timeout' ? 503 : 502, msg, { expose: true });
+    this.name = 'DockerCommandError';
     this.kind = kind;
     this.stderr = details.stderr;
     this.stdout = details.stdout;

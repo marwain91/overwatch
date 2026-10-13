@@ -15,6 +15,7 @@ vi.mock('../mcp/audit', async (orig) => {
   return { ...actual, writeMcpAudit: vi.fn() };
 });
 
+import { HttpError } from '../utils/httpErrors';
 import { eventBus } from '../services/eventBus';
 import { updateTenantHandler } from '../mcp/tools/update';
 import { writeMcpAudit } from '../mcp/audit';
@@ -57,10 +58,18 @@ describe('update_tenant tool', () => {
   });
 
   it('returns tool error on update failure', async () => {
-    updateTenant.mockRejectedValueOnce(new Error('pull failed'));
+    updateTenant.mockRejectedValueOnce(new HttpError(500, 'pull failed', { expose: true }));
     const r = await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async () => {} });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('pull failed');
+  });
+
+  it('hides the message of an unexpected update failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    updateTenant.mockRejectedValueOnce(new Error('ENOENT: /srv/apps/x/.env'));
+    const r = await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async () => {} });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Failed to update tenant');
   });
 
   it('rejects an invalid image tag with a tool error (update not called)', async () => {

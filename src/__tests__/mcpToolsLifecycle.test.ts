@@ -10,6 +10,7 @@ const { startTenant, stopTenant, restartTenant, writeAuditEntry } = vi.hoisted((
 vi.mock('../services/docker', () => ({ startTenant, stopTenant, restartTenant }));
 vi.mock('../middleware/audit', () => ({ writeAuditEntry: (...a: any[]) => writeAuditEntry(...a) }));
 
+import { HttpError } from '../utils/httpErrors';
 import { startTenantHandler, stopTenantHandler, restartTenantHandler } from '../mcp/tools/lifecycle';
 
 const editor = { email: 'a@b.c', role: 'editor' as const };
@@ -29,10 +30,19 @@ describe('lifecycle tools', () => {
     expect(stopTenant).not.toHaveBeenCalled();
   });
 
-  it('restart surfaces service failure as a tool error', async () => {
-    restartTenant.mockRejectedValueOnce(new Error('compose boom'));
+  it('restart surfaces an exposed operational failure as a tool error', async () => {
+    restartTenant.mockRejectedValueOnce(new HttpError(503, 'Cannot connect to the Docker daemon', { expose: true }));
     const r = await restartTenantHandler({ appId: 'app1', tenantId: 't1' }, editor);
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain('compose boom');
+    expect(r.content[0].text).toContain('Cannot connect to the Docker daemon');
+    expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({ status: 503 }));
+  });
+
+  it('restart hides the message of an unexpected failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    restartTenant.mockRejectedValueOnce(new Error("ENOENT: /srv/apps/x/.env"));
+    const r = await restartTenantHandler({ appId: 'app1', tenantId: 't1' }, editor);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Failed to restart_tenant');
   });
 });

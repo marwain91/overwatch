@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getDataDir } from '../config';
+import { NotFoundError } from '../utils/httpErrors';
 
 const SNAPSHOT_DIR = '.snapshots';
 const FILES_TO_SNAPSHOT = [
@@ -126,7 +127,7 @@ export async function restoreSnapshot(name: string): Promise<void> {
   try {
     await fs.access(src);
   } catch {
-    throw new Error(`Snapshot '${name}' not found at ${src}`);
+    throw new NotFoundError(`Snapshot '${name}' not found at ${src}`);
   }
   const dataDir = getDataDir();
   // Pre-restore: snapshot current state so a bad restore is reversible.

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getDataDir } from '../config';
 import { withFileLock } from './fileLock';
 import { writeJsonAtomic } from '../utils/atomicJson';
+import { ConflictError, NotFoundError } from '../utils/httpErrors';
 
 export type AdminRole = 'viewer' | 'editor' | 'admin';
 
@@ -116,7 +117,7 @@ export async function addAdminUser(email: string, addedBy: string): Promise<Admi
 
     // Check if already exists
     if (users.some(u => u.email.toLowerCase() === normalizedEmail)) {
-      throw new Error('Admin user already exists');
+      throw new ConflictError('Admin user already exists');
     }
 
     const newUser: AdminUser = {
@@ -139,17 +140,17 @@ export async function removeAdminUser(email: string, removedBy: string): Promise
 
     // Can't remove yourself
     if (normalizedEmail === removedBy.toLowerCase()) {
-      throw new Error('Cannot remove yourself from admin users');
+      throw new ConflictError('Cannot remove yourself from admin users');
     }
 
     // Must have at least one admin
     if (users.length <= 1) {
-      throw new Error('Cannot remove the last admin user');
+      throw new ConflictError('Cannot remove the last admin user');
     }
 
     const index = users.findIndex(u => u.email.toLowerCase() === normalizedEmail);
     if (index === -1) {
-      throw new Error('Admin user not found');
+      throw new NotFoundError('Admin user not found');
     }
 
     users.splice(index, 1);

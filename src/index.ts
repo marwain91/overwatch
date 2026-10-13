@@ -4,6 +4,7 @@ import 'dotenv/config';
 import express from 'express';
 import * as fs from 'fs';
 import path from 'path';
+import { errorHandler } from './middleware/errorHandler';
 import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors, clearConfigCache } from './config';
 import { loginToAllRegistries } from './adapters/registry';
 import { listApps } from './services/app';
@@ -163,13 +164,7 @@ async function start() {
     }
   });
 
-  // Global error handler — log full error server-side, return message to client
-  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error(`Error in ${req.method} ${req.path}:`, err);
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || (status < 500 ? 'Bad request' : 'Internal server error');
-    res.status(status).json({ error: message });
-  });
+  app.use(errorHandler);
 
   // Helper: run a startup step with typed error handling.
   // critical=true aborts boot if the step throws (fail-fast). critical=false logs and continues.
