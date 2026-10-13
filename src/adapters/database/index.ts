@@ -45,6 +45,16 @@ export function getDatabaseAdapter(app?: Pick<AppDefinition, 'db_prefix'>): Data
 }
 
 /**
+ * Close every cached adapter's pool (shutdown path). Errors are swallowed so
+ * one failing pool cannot block the rest or delay process exit.
+ */
+export async function closeAllDatabaseAdapters(): Promise<void> {
+  const adapters = [...adapterCache.values()];
+  adapterCache.clear();
+  await Promise.all(adapters.map((a) => a.close().catch(() => {})));
+}
+
+/**
  * Convert Overwatch config to adapter config
  */
 function getAdapterConfigFromOverwatch(): DatabaseAdapterConfig {

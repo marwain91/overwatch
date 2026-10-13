@@ -23,6 +23,7 @@ import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
 import databaseRouter from './routes/database';
 import traefikRouter from './routes/traefik';
+import { closeAllDatabaseAdapters } from './adapters/database';
 import { mountMcp } from './mcp/server';
 import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions, repairBindMountedDataFiles } from './services/envVars';
 import { startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns } from './services/scheduler';
@@ -310,7 +311,10 @@ async function start() {
     server.close(() => {
       // Drain the audit queue before exit — queued entries would otherwise be
       // lost on SIGTERM (fire-and-forget writes were never awaited).
-      flushAuditLog().catch(() => {}).finally(() => {
+      Promise.all([
+        flushAuditLog().catch(() => {}),
+        closeAllDatabaseAdapters().catch(() => {}),
+      ]).finally(() => {
         console.log('All connections closed. Exiting.');
         process.exit(0);
       });
