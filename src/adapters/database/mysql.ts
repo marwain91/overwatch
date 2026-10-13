@@ -25,6 +25,8 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       password: this.config.rootPassword,
       waitForConnections: true,
       connectionLimit: 5,
+      connectTimeout: 10000,
+      queueLimit: 50,
     });
   }
 
@@ -103,13 +105,14 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     // entire dump in memory via execFile (with a 100 MB cap), which broke for
     // any DB whose dump exceeded that — and crashed the Overwatch container
     // for very large dumps even before the cap. spawn + pipe handles arbitrary
-    // sizes. Password is passed via MYSQL_PWD env, never as an argv flag.
+    // sizes. MYSQL_PWD is named in argv but its value comes from the spawned
+    // process env, so the password never shows up in `ps` output.
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', [
-        'exec', '-e', `MYSQL_PWD=${this.config.rootPassword}`,
+        'exec', '-e', 'MYSQL_PWD',
         containerName, 'mysqldump', '-u', this.config.rootUser,
         '--single-transaction', dbName,
-      ]);
+      ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
 
       const out = createWriteStream(outputPath, { mode: 0o600 });
       proc.stdout.pipe(out);
@@ -132,12 +135,12 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Use spawn (no shell) with stdin pipe to avoid password injection
+    // spawn (no shell) with stdin pipe; password goes via env, not argv
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', [
-        'exec', '-i', '-e', `MYSQL_PWD=${this.config.rootPassword}`,
+        'exec', '-i', '-e', 'MYSQL_PWD',
         containerName, 'mysql', '-u', this.config.rootUser, dbName,
-      ]);
+      ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
 
       const input = createReadStream(inputPath);
       input.pipe(proc.stdin);

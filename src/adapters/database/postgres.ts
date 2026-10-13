@@ -25,6 +25,10 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       password: this.config.rootPassword,
       database: 'postgres', // Connect to default db for admin operations
       max: 5,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+      // Admin queries only; dumps/restores run via docker exec, not this pool.
+      statement_timeout: 30000,
     });
     // pg emits 'error' when an idle pooled client dies (DB restart,
     // pg_terminate_backend). With no listener that EventEmitter error is
@@ -79,6 +83,12 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       const safeDb = dbName.replace(/"/g, '""');
       const safeUser = userName.replace(/"/g, '""');
       await client.query(`GRANT ALL PRIVILEGES ON DATABASE "${safeDb}" TO "${safeUser}"`);
+
+      // New databases are connectable by PUBLIC, so any tenant role could open
+      // another tenant's DB. Restrict CONNECT to the owning role; runs for
+      // existing databases too so they are tightened on the next createDatabase.
+      await client.query(`REVOKE CONNECT ON DATABASE "${safeDb}" FROM PUBLIC`);
+      await client.query(`GRANT CONNECT ON DATABASE "${safeDb}" TO "${safeUser}"`);
     } finally {
       client.release();
     }
@@ -139,12 +149,13 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
 
     // Stream pg_dump's stdout directly to disk. See mysql.ts for the same fix —
     // the previous execFile-with-stdout-buffer pattern broke for dumps larger
-    // than the 100 MB cap. Password passed via PGPASSWORD env, never argv.
+    // than the 100 MB cap. PGPASSWORD is named in argv but its value comes from the spawned
+    // process env, so the password never shows up in `ps` output.
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', [
-        'exec', '-e', `PGPASSWORD=${this.config.rootPassword}`,
+        'exec', '-e', 'PGPASSWORD',
         containerName, 'pg_dump', '-U', this.config.rootUser, '-d', dbName,
-      ]);
+      ], { env: { ...process.env, PGPASSWORD: this.config.rootPassword } });
 
       const out = createWriteStream(outputPath, { mode: 0o600 });
       proc.stdout.pipe(out);
@@ -167,12 +178,12 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Use spawn (no shell) with stdin pipe to avoid password injection
+    // spawn (no shell) with stdin pipe; password goes via env, not argv
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', [
-        'exec', '-i', '-e', `PGPASSWORD=${this.config.rootPassword}`,
+        'exec', '-i', '-e', 'PGPASSWORD',
         containerName, 'psql', '-U', this.config.rootUser, '-d', dbName,
-      ]);
+      ], { env: { ...process.env, PGPASSWORD: this.config.rootPassword } });
 
       const input = createReadStream(inputPath);
       input.pipe(proc.stdin);
