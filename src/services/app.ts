@@ -15,6 +15,8 @@ import {
 import { withFileLock } from './fileLock';
 import { clearAdapterCache } from '../adapters/registry';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
+import { loadConfig } from '../config/loader';
+import { isReservedSecretEnv } from '../utils/reservedEnv';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const APPS_D_DIR = 'apps.d';
@@ -75,6 +77,21 @@ async function listStaticFiles(): Promise<string[]> {
   }
 }
 
+const warnedReserved = new Set<string>();
+
+// Load-time only: stored definitions that loaded before this check must keep loading.
+function warnReservedSecretEnv(def: { id: string; admin_access?: { secret_env?: string } }): void {
+  const env = def.admin_access?.secret_env;
+  if (!env) return;
+  let config = null;
+  try { config = loadConfig(); } catch { /* static reserved list still applies */ }
+  const key = `${def.id}:${env}`;
+  if (isReservedSecretEnv(env, config) && !warnedReserved.has(key)) {
+    warnedReserved.add(key);
+    console.warn(`[apps] App '${def.id}' sets admin_access.secret_env to reserved Overwatch secret '${env}'; token minting is refused until it is changed`);
+  }
+}
+
 async function readApps(): Promise<AppDefinition[]> {
   const files = await listStaticFiles();
   const runtime = await readRuntimeStore();
@@ -101,6 +118,7 @@ async function readApps(): Promise<AppDefinition[]> {
       throw new Error(`${filename} failed validation: ${errors}`);
     }
     const staticDef = parsed.data;
+    warnReservedSecretEnv(staticDef);
 
     // File-name sanity: filename id must match the in-file id. Prevents renames
     // from silently producing two copies or mis-keyed runtime entries.
