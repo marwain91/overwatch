@@ -154,7 +154,7 @@ overwatch/
 │   │   └── auditLogs.ts          # Audit log endpoints
 │   ├── middleware/
 │   │   ├── auth.ts               # JWT authentication
-│   │   ├── audit.ts              # Audit logging
+│   │   ├── audit.ts              # Request -> audit entry mapping (writer: services/auditLog.ts)
 │   │   └── rateLimit.ts          # API rate limiting
 │   ├── notifications/
 │   │   ├── types.ts              # Notification channel types

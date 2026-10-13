@@ -14,7 +14,16 @@ import { invalidateBackupCache } from './backupCache';
 import { resolveTenantDbId } from './tenantDb';
 import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
-const execFileAsync = promisify(execFile);
+const rawExecFile = promisify(execFile);
+// Every restic/docker shell-out gets a timeout and a bounded buffer. Without
+// maxBuffer, large `restic snapshots` output used to overflow Node's 1 MB
+// default and surface as an empty list.
+const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
+const EXEC_TIMEOUT_MS = 600_000;
+const RESTIC_LONG_TIMEOUT_MS = 3_600_000; // backup / restore / prune / docker cp of data volumes move real data
+const RESTIC_SNAPSHOTS_TIMEOUT_MS = 120_000;
+const execFileAsync = (cmd: string, args: string[], opts: Record<string, unknown> = {}) =>
+  rawExecFile(cmd, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER, ...opts });
 
 /** Validate that a path is safe for use in docker exec/cp (no shell metacharacters, no traversal) */
 function isValidContainerPath(p: string): boolean {
@@ -223,7 +232,7 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
     if (tenantId) tags.push(`tenant:${tenantId}`);
     const args = ['snapshots', '--json', '--tag', tags.join(',')];
 
-    const { stdout } = await execFileAsync('restic', args, { env: getResticEnv(app) });
+    const { stdout } = await execFileAsync('restic', args, { env: getResticEnv(app), timeout: RESTIC_SNAPSHOTS_TIMEOUT_MS });
     const snapshots = JSON.parse(stdout || '[]') as any[];
 
     return snapshots.map(s => ({
@@ -237,8 +246,10 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
       tenantId: s.tags?.find((t: string) => t.startsWith('tenant:'))?.replace('tenant:', ''),
     })).sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
   } catch (error) {
+    // Rethrow: an empty list here would be cached as "no backups" and hide a
+    // real failure (timeout, output overflow, unreachable repository).
     console.error('Failed to list snapshots:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -339,7 +350,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
           if (checkOutput.trim()) {
             const localDir = path.join(tenantBackupDir, pathConfig.local);
             await fs.mkdir(localDir, { recursive: true });
-            await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`]);
+            await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
           }
         } catch (error: any) {
           const msg = error?.message || String(error);
@@ -364,7 +375,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     // Run restic backup with app and tenant tags (execFile avoids shell injection)
     const { stdout } = await execFileAsync(
       'restic', ['backup', backupDir, '--tag', `app:${appId}`, '--tag', `tenant:${tenantId}`, '--json'],
-      { env: getResticEnv(app) }
+      { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS }
     );
 
     // Parse output to get snapshot ID
@@ -462,7 +473,7 @@ export async function restoreBackup(
     // Restore from restic (execFile avoids shell injection on snapshotId)
     await execFileAsync(
       'restic', ['restore', snapshotId, '--target', restoreDir],
-      { env: getResticEnv(app) }
+      { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS }
     );
 
     // Find the backup data
@@ -559,7 +570,7 @@ export async function restoreBackup(
             continue;
           }
           await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
-          await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`]);
+          await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
         } catch (error: any) {
           console.error(`[Backup] Failed to restore ${pathConfig.container} into ${containerName}: ${error?.message || error}`);
           warnings.push(`${pathConfig.container}: not restored (copy failed; see server logs)`);
@@ -609,7 +620,7 @@ export async function pruneBackups(appId: string, keepDaily: number = 7, keepWee
       '--keep-weekly', String(keepWeekly),
       '--keep-monthly', String(keepMonthly),
       '--prune',
-    ], { env: getResticEnv(app) });
+    ], { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS });
     invalidateBackupCache(appId);
     return { success: true };
   } catch (error: any) {

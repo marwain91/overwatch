@@ -143,7 +143,8 @@ describe('G8 audit queue — persists entries even with concurrent writes', () =
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
     vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'a@b.c' }));
 
-    const { auditLog, flushAuditLog } = await import('../middleware/audit');
+    const { auditLog } = await import('../middleware/audit');
+    const { flushAuditLog } = await import('../services/auditLog');
     const mkReq = (p: string) => ({
       method: 'DELETE', baseUrl: '/api/apps', path: `/${p}`,
       query: {}, body: {}, ip: '1.2.3.4', socket: { remoteAddress: '1.2.3.4' },

@@ -1,97 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { getDataDir } from '../config';
 import { getCurrentUserEmail } from '../utils/jwt';
-
-// Serialised audit writer. Replaces fs.appendFile().catch(() => {}) which
-// lost entries on concurrent writes and on transient errors. A single
-// background flush loop drains the queue in insertion order; callers don't
-// block on I/O but are guaranteed ordering and failure visibility.
-const auditQueue: string[] = [];
-let currentFlush: Promise<void> | null = null;
-let flushErrorLogged = false;
-
-async function drainQueue(): Promise<void> {
-  while (auditQueue.length > 0) {
-    // Take everything currently queued so we batch many entries into one
-    // append syscall; new arrivals during the await re-trigger the loop.
-    const chunk = auditQueue.splice(0, auditQueue.length).join('');
-    try {
-      const file = getAuditLogFile();
-      // Audit log contains admin email + action history. Mode 0600 on create
-      // (umask may loosen to 0644 otherwise); also chmod on each write so
-      // a historically 0644 file on disk gets tightened on next entry.
-      await fs.appendFile(file, chunk, { mode: 0o600 });
-      await fs.chmod(file, 0o600).catch(() => {});
-      flushErrorLogged = false;
-    } catch (err: any) {
-      // Re-queue so we don't lose entries; log once per outage.
-      auditQueue.unshift(chunk);
-      if (!flushErrorLogged) {
-        console.error(`[audit] flush failed: ${err?.message || err}. Will retry.`);
-        flushErrorLogged = true;
-      }
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  }
-}
-
-function startFlush(): void {
-  if (currentFlush) return;
-  currentFlush = drainQueue().finally(() => { currentFlush = null; });
-}
-
-function enqueueAuditEntry(entry: unknown): void {
-  auditQueue.push(JSON.stringify(entry) + '\n');
-  startFlush();
-}
-
-/**
- * Append a pre-built audit entry. For non-HTTP callers (CLI, background jobs)
- * that don't have a Request/Response pair. Caller is responsible for providing
- * all required fields; sanitisation of sensitive keys is still applied.
- */
-export function writeAuditEntry(entry: Omit<AuditEntry, 'timestamp'> & { timestamp?: string }): void {
-  const full: AuditEntry = {
-    timestamp: entry.timestamp ?? new Date().toISOString(),
-    user: entry.user,
-    action: entry.action,
-    method: entry.method,
-    path: entry.path,
-    query: entry.query,
-    body: sanitizeBody(entry.body),
-    status: entry.status,
-    ip: entry.ip,
-    ...(entry.force ? { force: true } : {}),
-  };
-  enqueueAuditEntry(full);
-}
-
-/** Drain the audit queue — intended for graceful shutdown and tests. */
-export async function flushAuditLog(): Promise<void> {
-  while (auditQueue.length > 0 || currentFlush) {
-    if (!currentFlush) startFlush();
-    await currentFlush;
-  }
-}
-
-interface AuditEntry {
-  timestamp: string;
-  user: string;
-  action: string;
-  method: string;
-  path: string;
-  query?: Record<string, unknown>;
-  body?: Record<string, unknown>;
-  force?: boolean;
-  status: number;
-  ip: string;
-}
-
-function getAuditLogFile(): string {
-  return path.join(getDataDir(), 'audit.log');
-}
+import { writeAuditEntry } from '../services/auditLog';
 
 function getUserFromRequest(req: Request): string {
   return getCurrentUserEmail(req) || 'anonymous';
@@ -165,34 +74,10 @@ function describeAction(
   if (seg[1] === 'admin-users') {
     if (!seg[2] && method === 'POST') return `add admin ${body?.email || ''}`;
     if (seg[2] && method === 'DELETE') return `remove admin ${decode(seg[2])}`;
+    if (seg[2] && method === 'PATCH') return `change role of ${decode(seg[2])} to ${body?.role || ''}`;
   }
 
   return `${method} ${fullPath}`;
-}
-
-const SENSITIVE_KEYS = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key'];
-
-function sanitizeValue(val: unknown, depth: number = 0): unknown {
-  if (depth > 5 || val === null || val === undefined) return val;
-  if (Array.isArray(val)) return val.map(v => sanitizeValue(v, depth + 1));
-  if (typeof val === 'object') {
-    const obj = val as Record<string, unknown>;
-    const sanitized: Record<string, unknown> = {};
-    for (const key of Object.keys(obj)) {
-      if (SENSITIVE_KEYS.some(s => key.toLowerCase().includes(s))) {
-        sanitized[key] = '[redacted]';
-      } else {
-        sanitized[key] = sanitizeValue(obj[key], depth + 1);
-      }
-    }
-    return sanitized;
-  }
-  return val;
-}
-
-function sanitizeBody(body: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-  if (!body) return undefined;
-  return sanitizeValue(body) as Record<string, unknown>;
 }
 
 export function auditLog(req: Request, res: Response, next: NextFunction) {
@@ -204,20 +89,17 @@ export function auditLog(req: Request, res: Response, next: NextFunction) {
     const fullPath = req.baseUrl + req.path;
     const query = req.query as Record<string, unknown>;
     const force = query?.force === 'true' || req.body?.force === true;
-    const entry: AuditEntry = {
-      timestamp: new Date().toISOString(),
+    writeAuditEntry({
       user: getUserFromRequest(req),
       action: describeAction(req.method, fullPath, req.body, query),
       method: req.method,
       path: fullPath,
-      query: Object.keys(query || {}).length > 0 ? sanitizeValue(query) as Record<string, unknown> : undefined,
-      body: sanitizeBody(req.body),
-      ...(force ? { force: true } : {}),
+      query: Object.keys(query || {}).length > 0 ? query : undefined,
+      body: req.body,
+      force,
       status: res.statusCode,
       ip: req.ip || req.socket.remoteAddress || 'unknown',
-    };
-
-    enqueueAuditEntry(entry);
+    });
 
     return originalJson(body);
   };

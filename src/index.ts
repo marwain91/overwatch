@@ -30,7 +30,7 @@ import {
   startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns,
   reconcileBackupSchedulers, startSchedulerReconciler, stopSchedulerReconciler,
 } from './services/scheduler';
-import { flushAuditLog } from './middleware/audit';
+import { flushAuditLog } from './services/auditLog';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
 import { startDockerEventListener, stopDockerEventListener } from './services/dockerEvents';
 import { startMetricsCollector, stopMetricsCollector } from './services/metricsCollector';

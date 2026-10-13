@@ -102,3 +102,11 @@ export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promis
     resolveInProc();
   }
 }
+
+/**
+ * Serialise lifecycle operations (create/update/delete/start/stop/restart) on
+ * one tenant. Per-tenant key so unrelated tenants never wait on each other.
+ */
+export function withTenantLock<T>(appId: string, tenantId: string, fn: () => Promise<T>): Promise<T> {
+  return withFileLock(`tenant:${appId}/${tenantId}`, fn);
+}

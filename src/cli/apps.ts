@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { applyApp } from '../services/app';
 import { assertAppRawLabelsOwned } from '../services/traefikLabels';
-import { writeAuditEntry, flushAuditLog } from '../middleware/audit';
+import { writeAuditEntry, flushAuditLog } from '../services/auditLog';
 import { GREEN, YELLOW, RED, BOLD, NC } from './config/utils';
 
 function usage(): void {

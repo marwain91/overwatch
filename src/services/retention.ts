@@ -1,39 +1,26 @@
-import * as fs from 'fs/promises';
 import * as path from 'path';
 import cron, { ScheduledTask } from 'node-cron';
 import { loadConfig, getDataDir } from '../config';
+import { jsonlLogFor } from '../utils/jsonlLog';
+import { pruneAuditLog } from './auditLog';
 
 let scheduledTask: ScheduledTask | null = null;
 
-async function pruneJsonlFile(filePath: string, maxEntries: number): Promise<number> {
-  let content: string;
-  try {
-    content = await fs.readFile(filePath, 'utf-8');
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return 0;
-    throw err;
-  }
+const logPruneFailure = (what: string) => (err: any): number => {
+  console.error(`[Retention] Failed to prune ${what}: ${err?.message || err}`);
+  return 0;
+};
 
-  const lines = content.trim().split('\n').filter(Boolean);
-  if (lines.length <= maxEntries) return 0;
-
-  const pruned = lines.length - maxEntries;
-  const kept = lines.slice(-maxEntries);
-  await fs.writeFile(filePath, kept.join('\n') + '\n');
-  return pruned;
-}
-
-async function runRetention(): Promise<void> {
+// Prune through the same serialized writers the appenders use (tmp + rename,
+// 0600), so entries appended while a prune runs are never lost.
+export async function runRetention(): Promise<void> {
   const config = loadConfig();
   const dataDir = getDataDir();
   const maxAlerts = config.retention?.max_alert_entries ?? 10000;
   const maxAudit = config.retention?.max_audit_entries ?? 10000;
 
-  const alertFile = path.join(dataDir, 'alert-history.jsonl');
-  const auditFile = path.join(dataDir, 'audit.log');
-
-  const alertPruned = await pruneJsonlFile(alertFile, maxAlerts).catch(() => 0);
-  const auditPruned = await pruneJsonlFile(auditFile, maxAudit).catch(() => 0);
+  const alertPruned = await jsonlLogFor(path.join(dataDir, 'alert-history.jsonl'), 'AlertEngine').prune(maxAlerts).catch(logPruneFailure('alert history'));
+  const auditPruned = await pruneAuditLog(maxAudit).catch(logPruneFailure('audit log'));
 
   if (alertPruned > 0 || auditPruned > 0) {
     console.log(`[Retention] Pruned ${alertPruned} alert(s), ${auditPruned} audit log(s)`);

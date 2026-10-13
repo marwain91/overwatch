@@ -43,7 +43,8 @@ describe('src/index.ts route mounting', () => {
     try {
       vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
       vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'admin@example.test' }));
-      const { auditLog, flushAuditLog } = await import('../middleware/audit');
+      const { auditLog } = await import('../middleware/audit');
+      const { flushAuditLog } = await import('../services/auditLog');
 
       const tenants = express.Router({ mergeParams: true });
       tenants.post('/:tenantId/restart', (_req, res) => { res.json({ ok: true }); });
