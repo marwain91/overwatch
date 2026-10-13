@@ -1,6 +1,7 @@
 import type { AppDefinition, AppService } from '../models/app';
 import type { MiddlewareSpec, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
 import { isBlockedRawLabelKey } from '../models/traefik';
+import { HttpError } from '../utils/httpErrors';
 
 /**
  * Resolve the effective TLS termination mode for a single router.
@@ -106,9 +107,12 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
   for (const name of resolvedNames) {
     const spec = lookupMiddleware(name, app, traefik);
     if (!spec) {
-      throw new Error(
+      // Exposed: the operator has to know which middleware to add, and the
+      // message holds only names from the definition.
+      throw new HttpError(500,
         `Middleware "${name}" referenced by ${app.id}/${tenantId}/${service.name} ` +
         `is not defined in app.traefik.middlewares or traefik.middlewares`,
+        { expose: true },
       );
     }
     expandMiddleware(name, spec, app, traefik, expanded);
@@ -201,7 +205,7 @@ function expandMiddleware(
     for (const ref of spec.middlewares) {
       const refSpec = lookupMiddleware(ref, app, traefik);
       if (!refSpec) {
-        throw new Error(`Chain middleware "${name}" references unknown middleware "${ref}"`);
+        throw new HttpError(500, `Chain middleware "${name}" references unknown middleware "${ref}"`, { expose: true });
       }
       expandMiddleware(ref, refSpec, app, traefik, out);
     }

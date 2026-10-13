@@ -138,7 +138,7 @@ From v1.5.4, Overwatch can pull an app's own definition out of a freshly-release
 2. When an operator (or an automation) calls `PATCH /api/apps/<appId>/tenants/<tenantId>` with a new `imageTag`, Overwatch:
    - Pulls the new image.
    - Extracts `/overwatch/app.json` (via throw-away `docker create` + `docker cp`).
-   - If found and different from the current `apps.d/<appId>.json`, upserts via the same logic as `overwatch apps apply`.
+   - If found, keeps only the fields a manifest is allowed to change (see [What a manifest may change](#what-a-manifest-may-change)) and upserts the result into `apps.d/<appId>.json` and the tenant's snapshot, via the same logic as `overwatch apps apply`.
    - Regenerates the tenant's docker-compose.yml from the (possibly updated) app definition.
    - Runs `docker compose up -d --force-recreate --remove-orphans` — `--remove-orphans` stops containers for services the manifest dropped.
 
@@ -146,7 +146,7 @@ From v1.5.4, Overwatch can pull an app's own definition out of a freshly-release
 
 Convention: the manifest lives at `overwatch/app.json` in the app's repo and gets copied into the image at the same absolute path. The repo path mirrors the image path — same location on both sides, one fewer thing to remember.
 
-In the app repo, create `overwatch/app.json` with the full app definition (same shape consumed by `overwatch apps apply`, minus `createdAt` / `updatedAt`), and add this to the primary image's Dockerfile (the one producing the service with `image_suffix: backend`):
+In the app repo, create `overwatch/app.json` with the app definition (same shape consumed by `overwatch apps apply`, minus `createdAt` / `updatedAt`; protected fields can be left out, see below), and add this to the primary image's Dockerfile (the one producing the service with `image_suffix: backend`):
 
 ```dockerfile
 COPY overwatch/app.json /overwatch/app.json
@@ -159,6 +159,33 @@ COPY overwatch /overwatch
 ```
 
 Make sure `overwatch/` isn't excluded by `.dockerignore` (add `!overwatch/` if you have a broad catch-all).
+
+### What a manifest may change
+
+Anyone who can push a tag to the app's registry controls the manifest, and it updates the definition every tenant of the app shares. So the manifest may only describe the app's own shape. Fields that decide who can get in (route middlewares and whether a service is routed at all), where data lives and how containers run stay as an admin set them.
+
+The manifest may change:
+
+- `services`: add, remove and reorder them.
+- Per service: `name`, `required`, `is_init_container`, `image_suffix`, `ports`, `health_check`, `env_mapping`, `depends_on`, and the routing paths: `routing.path_prefix`, `routing.additional_path_prefixes`, `routing.priority` and `routing.strip_prefix`.
+- `env_vars` and `manifest`.
+
+Protected (the manifest's value is ignored):
+
+- `admin_access`, `backup`, `credentials`, `db_prefix` and `traefik` (the app's middleware library and default middlewares).
+- Per service: `user`, `command`, `volumes`, `networks`, `backup`, `routing.middlewares`, `routing.raw_labels` and `routing.tls_termination`.
+- Whether a service is routed (`routing.enabled`): a service that is routed today stays routed, and any other service stays unrouted (see below).
+
+How protected fields are resolved:
+
+- A protected field keeps its current value from the app definition in Overwatch. If the definition has no value for it, the manifest's value is dropped. This also applies to every protected field of a service that the manifest adds, so a new service that needs a volume, a `user`, a `command` or middlewares has to get them from an admin.
+- A service that isn't routed today gets `routing.enabled: false`, whatever the manifest says. That covers a service that is new to the app definition, one without `ports.internal`, an init container, and one with `routing.enabled: false`. The manifest can still add ports or clear `is_init_container`; only the route is withheld. Otherwise a manifest could rename a service, remove it and add it back in a later release, or give a port-less service a port, and serve it without the middlewares an admin keeps on its route.
+- To route such a service, enable it once: set the service's `routing.enabled` to `true` (and add any middlewares) with `overwatch apps apply <file>` or `PUT /api/apps/<appId>`, then update the tenant again. The service is reported as `services.<name>.routing.enabled` only when the manifest would have routed it.
+- If the app definition no longer lists a service that this tenant still runs (a newer image on another tenant removed it), the tenant keeps its own values for that service.
+- `id`, `name`, `domain_template`, `registry` and `default_image_tag` always come from the app definition in Overwatch, as before.
+- A manifest can't point a route at a middleware the app lacks, because route middlewares and the app's middleware library are both protected. If a route does reference a missing middleware (for example after an admin edit), the update fails at the `config` step and rolls back, and the error names the missing middleware.
+- When a manifest sets a protected field to a different value, Overwatch logs `[manifest] ignored protected fields from image <tag>: <paths>` (for example `admin_access, services.backend.volumes`) and adds the list to the `manifest` step of the tenant-update progress. A protected field the manifest leaves out is not reported.
+- To change a protected field, change the app definition in Overwatch: `overwatch apps apply <file>`, `PUT /api/apps/<appId>`, or the admin UI for the fields it exposes (for example backup and admin access in App Settings). An existing tenant picks the change up on its next update to an image that carries a manifest.
 
 ### Non-invasive by default
 
