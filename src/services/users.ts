@@ -110,7 +110,11 @@ export async function getUserRole(email: string): Promise<AdminRole | undefined>
   return u ? normaliseRole(u.role) : undefined;
 }
 
-export async function addAdminUser(email: string, addedBy: string): Promise<AdminUser> {
+function countAdmins(users: AdminUser[]): number {
+  return users.filter(u => normaliseRole(u.role) === 'admin').length;
+}
+
+export async function addAdminUser(email: string, addedBy: string, role: AdminRole = 'viewer'): Promise<AdminUser> {
   return withFileLock('admin-users', async () => {
     const users = await readAdminUsers();
     const normalizedEmail = email.toLowerCase().trim();
@@ -124,6 +128,7 @@ export async function addAdminUser(email: string, addedBy: string): Promise<Admi
       email: normalizedEmail,
       addedAt: new Date().toISOString(),
       addedBy,
+      role,
     };
 
     users.push(newUser);
@@ -143,17 +148,39 @@ export async function removeAdminUser(email: string, removedBy: string): Promise
       throw new ConflictError('Cannot remove yourself from admin users');
     }
 
-    // Must have at least one admin
-    if (users.length <= 1) {
-      throw new ConflictError('Cannot remove the last admin user');
-    }
-
     const index = users.findIndex(u => u.email.toLowerCase() === normalizedEmail);
     if (index === -1) {
       throw new NotFoundError('Admin user not found');
     }
 
+    // Must keep at least one admin (legacy role-less records count as admin)
+    if (normaliseRole(users[index].role) === 'admin' && countAdmins(users) <= 1) {
+      throw new ConflictError('Cannot remove the last admin user');
+    }
+
     users.splice(index, 1);
     await saveAdminUsers(users);
+  });
+}
+
+export async function setAdminUserRole(email: string, role: AdminRole, changedBy: string): Promise<AdminUser> {
+  return withFileLock('admin-users', async () => {
+    const users = await readAdminUsers();
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const user = users.find(u => u.email.toLowerCase() === normalizedEmail);
+    if (!user) {
+      throw new NotFoundError('Admin user not found');
+    }
+
+    if (normaliseRole(user.role) === 'admin' && role !== 'admin' && countAdmins(users) <= 1) {
+      throw new ConflictError('Cannot demote the last admin user');
+    }
+
+    user.role = role;
+    await saveAdminUsers(users);
+    console.log(`[users] ${changedBy} set role of ${normalizedEmail} to ${role}`);
+
+    return user;
   });
 }

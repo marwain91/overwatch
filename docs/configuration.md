@@ -426,6 +426,20 @@ environment:
 
 ---
 
+## Roles (RBAC)
+
+Who may sign in, and what they may do, is stored in `data/admin-users.json` and managed from the Admin Users page, `POST`/`PATCH /api/admin-users`, or the CLI (`overwatch admins add <email> [--role viewer|editor|admin]`, `overwatch admins role <email> <role>`).
+
+| Role | Access |
+|------|--------|
+| `viewer` | Read-only |
+| `editor` | Mutations except destructive operations (delete, force, purge) and user management |
+| `admin` | Everything, including user management |
+
+- New users default to `viewer`. Pass a role explicitly to grant more.
+- Records without a `role` (created before RBAC) are treated as `admin`, and count as admins for the last-admin guard.
+- The last remaining admin cannot be demoted or removed. Users seeded from `ALLOWED_ADMIN_EMAILS` have no stored role and are therefore admins until you change them.
+
 ## Environment Variables
 
 ### Required
