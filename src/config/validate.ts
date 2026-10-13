@@ -1,5 +1,7 @@
 import { OverwatchConfig } from './schema';
 
+const JWT_SECRET_PLACEHOLDER = 'replace-with-at-least-32-random-characters';
+
 interface ValidationError {
   category: string;
   message: string;
@@ -18,6 +20,11 @@ export function validateEnvironment(config: OverwatchConfig): ValidationError[] 
   requireEnv(errors, 'core', 'JWT_SECRET');
   if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
     errors.push({ category: 'core', message: 'JWT_SECRET must be at least 32 characters for adequate security' });
+  }
+  // The .env.example placeholder passes the length check but is public, so
+  // anyone could forge admin sessions against a deployment that kept it.
+  if (process.env.JWT_SECRET === JWT_SECRET_PLACEHOLDER) {
+    errors.push({ category: 'core', message: 'JWT_SECRET is still the .env.example placeholder — generate a random secret (e.g. `openssl rand -hex 32`)' });
   }
   requireEnv(errors, 'core', 'GOOGLE_CLIENT_ID');
 

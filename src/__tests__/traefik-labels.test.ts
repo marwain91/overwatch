@@ -148,6 +148,31 @@ describe('buildTraefikLabels', () => {
     expect(joined).toMatch(/traefik\.enable=true/);
   });
 
+  it('never emits a raw line break, so label values cannot add compose keys', () => {
+    const svc = {
+      ...baseService,
+      routing: {
+        enabled: true,
+        strip_prefix: false,
+        raw_labels: {
+          'traefik.http.middlewares.x.headers.customrequestheaders.X-A': 'v\\"\n    privileged: true\r\n#',
+          'traefik.http.middlewares.y.headers.customrequestheaders.X-B': 'a\u2028b\u0085c',
+        },
+      },
+    };
+    const labels = buildTraefikLabels({
+      app: baseApp(),
+      tenantId: 't1',
+      domain: 't1.app.example.com',
+      service: svc as any,
+      certResolverName: 'cf-prod',
+    });
+    for (const line of labels) {
+      expect(line).not.toMatch(/[\r\n\u0085\u2028\u2029]/);
+    }
+    expect(labels.join('\n')).toMatch(/X-B=a b c"/);
+  });
+
   it('routes through the upstream entrypoint and skips TLS labels when termination=upstream', () => {
     const traefik: TraefikGlobal = {
       log_level: 'INFO',

@@ -160,8 +160,13 @@ export function validateEnvVarKey(key: string): { valid: boolean; error?: string
   if (!/^[A-Z][A-Z0-9_]*$/.test(normalised)) {
     return { valid: false, error: 'Key must match format: starts with uppercase letter, followed by uppercase letters, digits, or underscores' };
   }
-  if (PROTECTED_KEYS.has(normalised) || PROTECTED_KEYS.has(normalised.toUpperCase())) {
+  if (PROTECTED_KEYS.has(normalised)) {
     return { valid: false, error: `Key "${normalised}" is a protected core variable and cannot be used` };
+  }
+  // Callers persist the raw key and shared.env writes it verbatim, so padding
+  // (e.g. "FOO\n") would corrupt the env file and " FOO" would shadow "FOO".
+  if (normalised !== key) {
+    return { valid: false, error: 'Key must not contain leading or trailing whitespace' };
   }
   return { valid: true };
 }
@@ -583,15 +588,6 @@ export async function repairBindMountedDataFiles(dataDirOverride?: string): Prom
 }
 
 /**
- * Regenerate shared.env for all tenants, optionally scoped to a single app.
- *
- * When `onlyAppId` is provided, only that app's tenants are regenerated — this
- * is the right choice for env-var mutations on a specific app, since env vars
- * are per-app and a change in app A must not touch app B's tenant files.
- * Without a filter, this is the boot-time sweep that regenerates every
- * tenant's shared.env across every app.
- */
-/**
  * Reconcile declared env vars from an app's manifest against what's already
  * in env-vars.json for that app. Missing declared keys get inserted with
  * the declared default (or empty) + description + sensitivity so they
@@ -639,6 +635,15 @@ export async function reconcileDeclaredEnvVars(
   return { added, skippedProtected, alreadyPresent };
 }
 
+/**
+ * Regenerate shared.env for all tenants, optionally scoped to a single app.
+ *
+ * When `onlyAppId` is provided, only that app's tenants are regenerated — this
+ * is the right choice for env-var mutations on a specific app, since env vars
+ * are per-app and a change in app A must not touch app B's tenant files.
+ * Without a filter, this is the boot-time sweep that regenerates every
+ * tenant's shared.env across every app.
+ */
 export async function regenerateAllSharedEnvFiles(onlyAppId?: string): Promise<number> {
   const appsDir = getAppsDir();
   let count = 0;

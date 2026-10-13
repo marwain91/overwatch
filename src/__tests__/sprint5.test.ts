@@ -52,6 +52,11 @@ describe('M6 PROTECTED_KEYS check — case/whitespace cannot bypass', () => {
   it('accepts normal, non-protected keys', () => {
     expect(validateEnvVarKey('MY_CUSTOM_VAR').valid).toBe(true);
   });
+
+  it('rejects padded keys, which would be written into shared.env verbatim', () => {
+    expect(validateEnvVarKey('FOO\n').valid).toBe(false);
+    expect(validateEnvVarKey(' FOO').valid).toBe(false);
+  });
 });
 
 describe('H1 backup env allowlist — does not leak JWT_SECRET', () => {

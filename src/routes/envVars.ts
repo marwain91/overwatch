@@ -35,10 +35,11 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
     return res.status(400).json({ error: 'Key is required' });
   }
 
+  const existing = (await listEnvVars(appId)).find(v => v.key === key);
+
   // When value is omitted, keep the existing value (for sensitive field edits)
   let effectiveValue: string;
   if (value === undefined || value === null || value === '') {
-    const existing = (await listEnvVars(appId)).find(v => v.key === key);
     if (existing) {
       effectiveValue = existing.value;
     } else {
@@ -48,7 +49,9 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
     effectiveValue = String(value);
   }
 
-  const envVar = await setEnvVar(appId, key, effectiveValue, sensitive ?? false, description);
+  // An omitted flag keeps the stored one: defaulting to false would unmask an
+  // existing secret in GET /env-vars on any edit that doesn't re-send it.
+  const envVar = await setEnvVar(appId, key, effectiveValue, sensitive ?? existing?.sensitive ?? false, description);
   const tenantsAffected = await regenerateAllSharedEnvFiles(appId);
 
   res.json({

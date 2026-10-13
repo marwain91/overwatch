@@ -171,7 +171,8 @@ function TenantCard({
   const handleAccess = () => {
     setMenuOpen(false);
     accessToken.mutate(tenant.tenantId, {
-      onSuccess: (data) => window.open(data.accessUrl, '_blank'),
+      // noopener: the tenant app must not get a window.opener handle on the admin tab.
+      onSuccess: (data) => window.open(data.accessUrl, '_blank', 'noopener,noreferrer'),
       onError: (err) => toast.error(err.message),
     });
   };

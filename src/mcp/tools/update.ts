@@ -3,6 +3,7 @@ import { updateTenant, validateImageTag } from '../../services/tenant';
 import { eventBus } from '../../services/eventBus';
 import { requireToolRole, writeMcpAudit, ToolRoleError } from '../audit';
 import { McpAuthExtra } from '../auth';
+import { slugInput } from './read';
 import type { TenantUpdateProgress } from '../../websocket/types';
 
 type ToolResult = { isError?: boolean; content: { type: 'text'; text: string }[]; structuredContent?: any };
@@ -17,8 +18,8 @@ export interface UpdateToolContext {
 }
 
 export const updateTenantInput = z.object({
-  appId: z.string(),
-  tenantId: z.string(),
+  appId: slugInput,
+  tenantId: slugInput,
   imageTag: z.string(),
 });
 

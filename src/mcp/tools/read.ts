@@ -3,6 +3,10 @@ import { listApps } from '../../services/app';
 import { listTenants, getTenantInfo } from '../../services/docker';
 import { requireToolRole, ToolRoleError } from '../audit';
 import { McpAuthExtra } from '../auth';
+import { SLUG_RE } from '../../utils/validators';
+
+// Same slug rule REST enforces via validateAppId/validateTenantId.
+export const slugInput = z.string().max(63).regex(SLUG_RE, 'must be a lowercase slug (a-z, 0-9, -)');
 
 type ToolResult = { isError?: boolean; content: { type: 'text'; text: string }[]; structuredContent?: any };
 
@@ -37,7 +41,7 @@ export async function listAppsHandler(_args: unknown, auth: McpAuthExtra): Promi
   });
 }
 
-export const listTenantsInput = z.object({ appId: z.string().optional() });
+export const listTenantsInput = z.object({ appId: slugInput.optional() });
 export async function listTenantsHandler(args: z.infer<typeof listTenantsInput>, auth: McpAuthExtra): Promise<ToolResult> {
   return guardRead(auth, 'list tenants', async () => {
     const all = await listTenants();
@@ -46,7 +50,7 @@ export async function listTenantsHandler(args: z.infer<typeof listTenantsInput>,
   });
 }
 
-export const getTenantInput = z.object({ appId: z.string(), tenantId: z.string() });
+export const getTenantInput = z.object({ appId: slugInput, tenantId: slugInput });
 export async function getTenantHandler(args: z.infer<typeof getTenantInput>, auth: McpAuthExtra): Promise<ToolResult> {
   return guardRead(auth, 'get tenant', async () => {
     const info = await getTenantInfo(args.appId, args.tenantId);

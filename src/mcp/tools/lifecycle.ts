@@ -2,10 +2,11 @@ import { z } from 'zod';
 import { startTenant, stopTenant, restartTenant } from '../../services/docker';
 import { requireToolRole, writeMcpAudit, ToolRoleError } from '../audit';
 import { McpAuthExtra } from '../auth';
+import { slugInput } from './read';
 
 type ToolResult = { isError?: boolean; content: { type: 'text'; text: string }[]; structuredContent?: any };
 
-export const lifecycleInput = z.object({ appId: z.string(), tenantId: z.string() });
+export const lifecycleInput = z.object({ appId: slugInput, tenantId: slugInput });
 
 function makeLifecycleHandler(tool: string, fn: (appId: string, tenantId: string) => Promise<void>) {
   return async (args: z.infer<typeof lifecycleInput>, auth: McpAuthExtra): Promise<ToolResult> => {

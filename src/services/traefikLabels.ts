@@ -52,7 +52,11 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
 
   const routerName = `${app.id}-${tenantId}-${service.name}`;
   const labels: string[] = [];
-  const push = (s: string) => labels.push(`      - "${s.replace(/"/g, '\\"')}"`);
+  // Raw line breaks are folded to a space — what YAML already does to a break
+  // inside a double-quoted scalar — so editor-supplied values (raw_labels,
+  // middleware fields) can never start a new line of docker-compose.yml.
+  // YAML parsers also treat NEL/LS/PS as line breaks.
+  const push = (s: string) => labels.push(`      - "${s.replace(/[\r\n\u0085\u2028\u2029]+/g, ' ').replace(/"/g, '\\"')}"`);
 
   push('traefik.enable=true');
 

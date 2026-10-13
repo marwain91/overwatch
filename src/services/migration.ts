@@ -7,6 +7,7 @@ import { LegacyOverwatchConfigSchema, LegacyOverwatchConfig, OverwatchConfig } f
 import { AppDefinition } from '../models/app';
 import { generateComposeFile } from './composeGenerator';
 import { writeJsonAtomic } from '../utils/atomicJson';
+import { writeSecretFile } from '../utils/security';
 
 const MIGRATION_MARKER = '.migration-v2-complete';
 
@@ -236,7 +237,8 @@ export async function runMigration(): Promise<void> {
           envContent = `COMPOSE_PROJECT_NAME=${appId}-${tenantId}\n${envContent}`;
         }
 
-        await fs.writeFile(envPath, envContent);
+        // Tenant .env holds the DB password: 0600 + atomic, as tenant.ts writes it.
+        await writeSecretFile(envPath, envContent);
 
         // Regenerate docker-compose.yml with new container naming
         const domainMatch = envContent.match(/^TENANT_DOMAIN=(.+)$/m);
