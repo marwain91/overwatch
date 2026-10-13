@@ -6,6 +6,7 @@ let eventStream: NodeJS.ReadableStream | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 const PATTERN_MAX_AGE_MS = 60_000;
+const MAX_BUFFER_BYTES = 1024 * 1024;
 const MANAGED_LABEL = 'com.overwatch.managed';
 
 let namePattern: RegExp | null = null;
@@ -17,9 +18,14 @@ let patternRefresh: Promise<void> | null = null;
 async function refreshPattern(): Promise<void> {
   if (!patternRefresh) {
     patternRefresh = (async () => {
-      const apps = await listApps();
-      namePattern = getManagedContainerNamePattern(apps.map(a => a.id));
-      patternBuiltAt = Date.now();
+      try {
+        const apps = await listApps();
+        namePattern = getManagedContainerNamePattern(apps.map(a => a.id));
+      } finally {
+        // Also on failure: back off for the normal interval instead of
+        // retrying listApps() on every unlabeled event.
+        patternBuiltAt = Date.now();
+      }
     })().finally(() => { patternRefresh = null; });
   }
   return patternRefresh;
@@ -75,11 +81,24 @@ async function startListening(): Promise<void> {
     // end mid-event, so buffer the tail until its newline arrives. Lines are
     // handled in order through a chain (the pattern refresh is async).
     let buffer = '';
+    let discarding = false; // skipping the rest of an oversized line
     let queue: Promise<void> = Promise.resolve();
     stream.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
+      let text = chunk.toString();
+      if (discarding) {
+        const nl = text.indexOf('\n');
+        if (nl === -1) return;
+        text = text.slice(nl + 1);
+        discarding = false;
+      }
+      buffer += text;
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
+      if (buffer.length > MAX_BUFFER_BYTES) {
+        console.error('[DockerEvents] Event line exceeded 1 MB without a newline; discarding it');
+        buffer = '';
+        discarding = true;
+      }
       for (const line of lines) {
         if (!line.trim()) continue;
         queue = queue.then(() => handleLine(line)).catch(() => {});

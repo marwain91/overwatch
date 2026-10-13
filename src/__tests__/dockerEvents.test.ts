@@ -135,3 +135,27 @@ describe('docker event acceptance', () => {
     mod.stopDockerEventListener();
   });
 });
+
+describe('docker event stream limits', () => {
+  it('drops an oversized line without a newline and keeps parsing later events', async () => {
+    const { mod, streams, seen, off } = await setup();
+    streams[0].write('x'.repeat(1024 * 1024 + 10));
+    streams[0].write('y'.repeat(100)); // still the same runaway line
+    streams[0].write('tail\n' + ev('finalio-t1-web') + '\n');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen.map(e => e.containerName)).toEqual(['finalio-t1-web']);
+    off();
+    mod.stopDockerEventListener();
+  });
+
+  it('does not re-list apps for every unlabeled event after a failed refresh', async () => {
+    const { mod, streams, listApps, off } = await setup();
+    await vi.advanceTimersByTimeAsync(61_000);
+    listApps.mockRejectedValue(new Error('boom'));
+    for (let i = 0; i < 5; i++) streams[0].write(ev('finalio-t1-web') + '\n');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listApps).toHaveBeenCalledTimes(2); // initial + one failed refresh
+    off();
+    mod.stopDockerEventListener();
+  });
+});

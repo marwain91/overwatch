@@ -34,10 +34,20 @@ describe('metrics collector retention', () => {
     }));
     vi.doMock('../services/app', () => ({ listApps: async () => [{ id: 'app', services: [] }] }));
 
+    const { eventBus } = await import('../services/eventBus');
+    const snapshots: any[] = [];
+    const existence: string[][] = [];
+    eventBus.on('metrics:snapshot', (d) => snapshots.push(d));
+    eventBus.on('containers:existence', (d) => existence.push(d));
     const mod = await import('../services/metricsCollector');
     mod.startMetricsCollector(15);
     await vi.advanceTimersByTimeAsync(0);
     expect(mod.getMetricsHistory('app-t1-web')).toHaveLength(1);
+
+    // The snapshot is relayed to every WebSocket client: no host-wide container list on it.
+    expect(snapshots.length).toBeGreaterThan(0);
+    for (const snap of snapshots) expect(snap).not.toHaveProperty('existingNames');
+    expect(existence.at(-1)).toContain('app-t1-web');
 
     stopped = [{ Id: 'aaaaaaaaaaaa1', Names: ['/app-t1-web'] }];
     running = [];

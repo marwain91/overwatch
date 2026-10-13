@@ -193,11 +193,10 @@ async function collectMetrics(): Promise<void> {
       }
     }
 
-    eventBus.emit('metrics:snapshot', {
-      containers: allMetrics,
-      tenants: tenantMetrics,
-      existingNames: existingNames ? Array.from(existingNames) : undefined,
-    });
+    // Internal only: the WebSocket relay forwards a fixed event list, and this
+    // names every container on the host, which viewers must not see.
+    if (existingNames) eventBus.emit('containers:existence', Array.from(existingNames));
+    eventBus.emit('metrics:snapshot', { containers: allMetrics, tenants: tenantMetrics });
   } catch (error: any) {
     console.error('[MetricsCollector] Collection error:', error.message);
   } finally {

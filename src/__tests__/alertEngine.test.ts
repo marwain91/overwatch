@@ -123,10 +123,10 @@ describe('alert engine lifecycle', () => {
   it('removes its eventBus listeners on stop and restarts cleanly without double firing', async () => {
     vi.useFakeTimers();
     const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
-    const before = ['metrics:snapshot', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n));
+    const before = ['metrics:snapshot', 'containers:existence', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n));
     startAlertEngine();
     stopAlertEngine();
-    expect(['metrics:snapshot', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n))).toEqual(before);
+    expect(['metrics:snapshot', 'containers:existence', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n))).toEqual(before);
 
     const fired: any[] = [];
     eventBus.on('alert:fired', (a) => fired.push(a));
@@ -142,6 +142,12 @@ describe('alert engine lifecycle', () => {
   });
 });
 
+// Mirrors the collector: existence goes on an internal event, not the snapshot.
+function emitSnap(bus: any, containers: unknown[], existing?: string[]) {
+  if (existing) bus.emit('containers:existence', existing);
+  bus.emit('metrics:snapshot', { containers });
+}
+
 describe('alert engine stale container eviction', () => {
   const hot = { name: 'app-t1-web', tenantId: 't1', cpuPercent: 99, memPercent: 1 };
 
@@ -154,9 +160,9 @@ describe('alert engine stale container eviction', () => {
     loaded.eventBus.on('alert:fired', (a) => fired.push(a));
     loaded.eventBus.on('alert:resolved', (a) => resolved.push(a));
     loaded.startAlertEngine();
-    loaded.eventBus.emit('metrics:snapshot', { containers: [hot], existingNames: existing });
+    emitSnap(loaded.eventBus, [hot], existing);
     vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
-    loaded.eventBus.emit('metrics:snapshot', { containers: [hot], existingNames: existing });
+    emitSnap(loaded.eventBus, [hot], existing);
     return { ...loaded, fired, resolved };
   }
 
@@ -165,16 +171,16 @@ describe('alert engine stale container eviction', () => {
     try {
       expect(fired).toHaveLength(1);
       vi.setSystemTime(new Date('2026-01-01T00:05:00Z'));
-      eventBus.emit('metrics:snapshot', { containers: [], existingNames: [] });
+      emitSnap(eventBus, [], []);
       expect(resolved).toHaveLength(0);
 
       vi.setSystemTime(new Date('2026-01-01T00:12:03Z'));
-      eventBus.emit('metrics:snapshot', { containers: [], existingNames: [] });
+      emitSnap(eventBus, [], []);
       expect(resolved.map(r => r.ruleId)).toEqual(['warn-80']);
 
       // state is gone: coming back hot restarts its duration (no immediate fire)
       vi.setSystemTime(new Date('2026-01-01T00:20:00Z'));
-      eventBus.emit('metrics:snapshot', { containers: [hot], existingNames: ['app-t1-web'] });
+      emitSnap(eventBus, [hot], ['app-t1-web']);
       expect(fired).toHaveLength(1);
     } finally {
       stopAlertEngine();
@@ -190,7 +196,7 @@ describe('alert engine stale container eviction', () => {
 
       for (const t of ['00:05:00', '00:12:00', '00:30:00']) {
         vi.setSystemTime(new Date(`2026-01-01T${t}Z`));
-        eventBus.emit('metrics:snapshot', { containers: [], existingNames: ['app-t1-web'] });
+        emitSnap(eventBus, [], ['app-t1-web']);
       }
       expect(resolved.filter(r => r.ruleId === 'down')).toHaveLength(0);
 
@@ -208,7 +214,7 @@ describe('alert engine stale container eviction', () => {
       await vi.advanceTimersByTimeAsync(61_000);
       expect(fired.filter(a => a.ruleId === 'down')).toHaveLength(1);
       vi.setSystemTime(new Date('2026-01-01T00:12:00Z'));
-      eventBus.emit('metrics:snapshot', { containers: [], existingNames: [] });
+      emitSnap(eventBus, [], []);
       expect(resolved.filter(r => r.ruleId === 'down')).toHaveLength(1);
     } finally {
       stopAlertEngine();
