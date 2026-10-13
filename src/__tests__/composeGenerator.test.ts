@@ -338,7 +338,7 @@ describe('generateComposeFile treats every value as data', () => {
         name: 'web', required: true, ports: { internal: 3000 },
         routing: {
           enabled: true, strip_prefix: false, middlewares: ['rx'],
-          raw_labels: { 'traefik.http.middlewares.q.headers.customrequestheaders.X-Q': quoted },
+          raw_labels: { 'traefik.http.middlewares.shop-t1-web-q.headers.customrequestheaders.X-Q': quoted },
         },
       }],
       { traefik: { middlewares: { rx: { type: 'redirectRegex', regex, replacement: 'https://example.com/landing' } } } },
@@ -346,7 +346,7 @@ describe('generateComposeFile treats every value as data', () => {
 
     const labels: string[] = doc.services.web.labels;
     expect(labels).toContain(`traefik.http.middlewares.shop-t1-web-rx.redirectregex.regex=${regex}`);
-    expect(labels).toContain(`traefik.http.middlewares.q.headers.customrequestheaders.X-Q=${quoted}`);
+    expect(labels).toContain(`traefik.http.middlewares.shop-t1-web-q.headers.customrequestheaders.X-Q=${quoted}`);
     expect(Object.keys(doc.services.web)).toEqual(
       ['image', 'container_name', 'restart', 'env_file', 'networks', 'labels'],
     );

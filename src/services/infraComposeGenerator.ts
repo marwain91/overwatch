@@ -1,7 +1,7 @@
 import * as yaml from 'js-yaml';
 import type { OverwatchConfig } from '../config/schema';
 import type { Entrypoint, TraefikGlobal, TraefikOverwatch } from '../models/traefik';
-import { isBlockedRawLabelKey } from '../models/traefik';
+import { isBlockedRawLabelKey, rawLabelOwnerForRouter } from '../models/traefik';
 import { sanitizeTraefikValue } from './traefikLabels';
 
 /**
@@ -216,8 +216,11 @@ function buildOverwatchLabels(ow: TraefikOverwatch, traefik: TraefikGlobal): str
   }
   out.push('traefik.http.services.admin.loadbalancer.server.port=3002');
 
+  // The admin router and service are both called `admin`; its middlewares are
+  // operator-named, so any middleware label passes.
+  const adminOwner = { ...rawLabelOwnerForRouter('admin'), isOwnMiddleware: () => true };
   for (const [k, v] of Object.entries(ow.raw_labels ?? {})) {
-    if (isBlockedRawLabelKey(k)) continue;
+    if (isBlockedRawLabelKey(k, adminOwner, v)) continue;
     out.push(`${k}=${v}`);
   }
   return out;

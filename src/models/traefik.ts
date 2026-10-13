@@ -130,9 +130,9 @@ export const MIDDLEWARE_TYPES = [
 //  - routers.*.entrypoints / tls: managed by global config
 const RAW_LABEL_DENYLIST: RegExp[] = [
   /^traefik\.enable$/,
-  /^traefik\.http\.routers\.[^.]+\.rule$/,
+  /^traefik\.http\.routers\.[^.]+\.rule(\[\d+\])?$/,
   /^traefik\.http\.routers\.[^.]+\.tls\.certresolver$/i,
-  /^traefik\.http\.routers\.[^.]+\.entrypoints$/,
+  /^traefik\.http\.routers\.[^.]+\.entrypoints(\[\d+\])?$/,
   /^traefik\.http\.routers\.[^.]+\.tls$/,
 ];
 
@@ -148,21 +148,120 @@ const RAW_LABEL_KEY_RE = /^[A-Za-z0-9._\-[\]]+$/;
 const RESERVED_RAW_LABEL_PREFIXES = ['com.overwatch.', 'com.docker.'];
 
 /**
- * Emit-time filter for raw label keys. Stricter than the schema check because
- * the denylist must see the key exactly as compose and Traefik will:
+ * Which Traefik objects a raw label may address. Traefik objects share one
+ * namespace per provider, so a label naming another tenant's router, service
+ * or middleware would reconfigure that tenant. Names are compared lower-case,
+ * as Traefik matches label keys case-insensitively.
+ */
+export interface RawLabelOwner {
+  /** The router (and, by convention, service) names the labels may address. */
+  isOwnRouter: (name: string) => boolean;
+  isOwnMiddleware: (name: string) => boolean;
+}
+
+// Slugs may contain hyphens but never `_`, so a middleware named
+// `<router>-<token>` with a hyphen-free token cannot belong to a different
+// router whose name merely extends this one (tenant `t1-web-x` vs `t1`).
+const MIDDLEWARE_SUFFIX_RE = /^[a-z0-9_]+$/;
+function hasSingleTokenSuffix(name: string, prefix: string): boolean {
+  return name.startsWith(prefix) && MIDDLEWARE_SUFFIX_RE.test(name.slice(prefix.length));
+}
+
+/** Owner of one concrete router `${appId}-${tenantId}-${service}`; its middlewares are prefixed with that name. */
+export function rawLabelOwnerForRouter(routerName: string): RawLabelOwner {
+  const own = routerName.toLowerCase();
+  return {
+    isOwnRouter: n => n === own,
+    isOwnMiddleware: n => hasSingleTokenSuffix(n, `${own}-`),
+  };
+}
+
+/**
+ * Owner for app-level raw labels, which are rendered once per tenant: the
+ * tenant is not known when the app is saved, so any `${appId}-<tenant>-${service}`
+ * matches here. Generation re-checks against the concrete tenant.
+ */
+export function rawLabelOwnerForAppService(appId: string, service: string): RawLabelOwner {
+  const head = `${appId.toLowerCase()}-`;
+  const tail = `-${service.toLowerCase()}`;
+  const ownRouter = (n: string) => n.length > head.length + tail.length && n.startsWith(head) && n.endsWith(tail);
+  return {
+    isOwnRouter: ownRouter,
+    isOwnMiddleware: n => {
+      if (!n.startsWith(head)) return false;
+      const i = n.lastIndexOf('-');
+      // `<app>-<tenant>-<service>-<token>`: strip the token, the rest must be a router name.
+      return i > head.length && MIDDLEWARE_SUFFIX_RE.test(n.slice(i + 1)) && ownRouter(n.slice(0, i));
+    },
+  };
+}
+
+// Router fields Overwatch computes itself. `service` is checked separately
+// (it may only name the router's own service); `tls.domains` would request
+// certificates for hosts the tenant does not own.
+const RESERVED_ROUTER_FIELDS = /^(rule|entrypoints|tls|tls\.certresolver|tls\.domains(\..*)?)$/;
+
+/**
+ * Why a raw label may not be emitted/stored, or undefined when it is fine.
+ * Stricter than the schema check because the rules must see the key exactly as
+ * compose and Traefik will:
  * - Only plain ASCII key characters pass. `=` would end the key early when
- *   compose splits "key=value" (`...rule=Host(x)#` becomes `...rule`); `\`
- *   starts a YAML escape in the double-quoted label line (`rul\x65` -> `rule`);
+ *   compose splits "key=value" (`...rule=Host(x)#` becomes `...rule`);
  *   whitespace and non-ASCII letters differ between this check and Traefik,
  *   whose case-insensitive match (Go EqualFold) treats U+017F "ſ" as "s".
  * - With ASCII only, lower-casing matches Traefik's case-insensitive keys.
+ * - Only `traefik.http.{routers,services,middlewares}.<name>.*` for names the
+ *   `owner` owns; tcp/udp and every other `traefik.*` key is refused. Without an
+ *   `owner` the name check is skipped (the reserved-field rules still apply).
  * Kept out of the schema refinement on purpose: that schema is parsed at
  * boot, so tightening it there would turn a stored key into a boot failure.
  */
-export function isBlockedRawLabelKey(key: string): boolean {
-  if (!RAW_LABEL_KEY_RE.test(key)) return true;
+export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwner): string | undefined {
+  if (!RAW_LABEL_KEY_RE.test(key)) {
+    return 'key may only contain letters, digits and . _ - [ ]';
+  }
   const lower = key.toLowerCase();
-  return isDenylistedLabelKey(lower) || RESERVED_RAW_LABEL_PREFIXES.some(p => lower.startsWith(p));
+  if (RESERVED_RAW_LABEL_PREFIXES.some(p => lower.startsWith(p))) {
+    return 'com.overwatch.* and com.docker.* labels are reserved';
+  }
+  if (isDenylistedLabelKey(lower)) return 'reserved by Overwatch (use the typed fields instead)';
+  if (lower !== 'traefik' && !lower.startsWith('traefik.')) return undefined;
+
+  const [, proto, kind, name, ...rest] = lower.split('.');
+  if (proto === 'tcp' || proto === 'udp') return 'tcp/udp routing labels are not allowed';
+  if (proto !== 'http' || !name || rest.length === 0 || !['routers', 'services', 'middlewares'].includes(kind)) {
+    return 'only traefik.http.routers|services|middlewares.<own name>.* labels are allowed';
+  }
+  if (owner) {
+    const own = kind === 'middlewares' ? owner.isOwnMiddleware(name) : owner.isOwnRouter(name);
+    if (!own) return `"${name}" is not one of this tenant's own ${kind}`;
+  }
+  const field = rest.join('.').replace(/\[\d+\]/g, '');
+  if (kind === 'services') {
+    // weighted/mirroring/failover can name any service (another tenant's
+    // `<router>@docker`), a backend url points the host at any address, and
+    // serverstransport can reference a foreign transport: allow only the plain
+    // loadbalancer options.
+    if (!field.startsWith('loadbalancer.')) {
+      return 'only loadbalancer.* options are allowed on a service (weighted, mirroring and failover can reach other tenants\' services)';
+    }
+    if (/^loadbalancer\.servers?\.url$/.test(field)) {
+      return 'a backend url would route the tenant host to an arbitrary address';
+    }
+    if (field === 'loadbalancer.serverstransport') return 'serverstransport may reference a transport owned by someone else';
+  }
+  if (kind === 'routers') {
+    if (RESERVED_ROUTER_FIELDS.test(field)) return 'reserved by Overwatch (use the typed fields instead)';
+    if (field === 'service') {
+      const target = value.trim().toLowerCase().replace(/@docker$/, '');
+      if (!owner || !owner.isOwnRouter(target)) return 'a router may only point at its own service';
+    }
+  }
+  return undefined;
+}
+
+export function isBlockedRawLabelKey(key: string, owner?: RawLabelOwner, value = ''): boolean {
+  return rawLabelProblem(key, value, owner) !== undefined;
 }
 
 const denylistRefinement = (labels: Record<string, string>, ctx: z.RefinementCtx) => {
@@ -280,6 +379,7 @@ export const TraefikGlobalSchema = z.object({
   overwatch: TraefikOverwatchSchema.optional().describe('Routing for the Overwatch admin server itself'),
   tls_termination: TlsTerminationSchema.optional().describe('Where TLS terminates. "traefik" (default): Traefik manages certs. "upstream": an upstream proxy terminates TLS; Traefik routes plain HTTP. Per-service and per-tenant overrides win.'),
   upstream_entrypoint: z.string().optional().describe('Name of the entrypoint Traefik listens on when behind an upstream SSL terminator (default: "web")'),
+  allowed_alias_domains: z.array(z.string()).optional().describe('Domains (and their subdomains) tenants may use as host_aliases when the app\'s domain_template is a wildcard. Default: only hosts matching the template.'),
 }).superRefine((cfg, ctx) => {
   // Cert resolver names must be unique within the list.
   if (cfg.cert_resolvers) {
