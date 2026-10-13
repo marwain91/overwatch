@@ -118,7 +118,20 @@ describe('errorHandler: ZodError and DockerCommandError', () => {
       app.use(errorHandler);
       const res = await request(app).get('/boom');
       expect(res.status).toBe(status);
-      expect(res.body.error).toBe(err.message);
+      expect(res.body.error).toBe(status === 503 ? 'Cannot connect to the Docker daemon' : 'Docker command failed');
     }
+  });
+
+  it('DockerCommandError does not echo stderr to clients', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { DockerCommandError } = await import('../utils/runDocker');
+    const err = new DockerCommandError('docker start x failed (unknown): open /srv/apps/secret/.env', 'unknown',
+      { stderr: 'open /srv/apps/secret/.env', stdout: '', exitCode: 1, command: 'docker', args: [] });
+    expect(err.message).toContain('/srv/apps');
+    const app = express();
+    app.get('/boom', (_req, _res, next) => next(err));
+    app.use(errorHandler);
+    const res = await request(app).get('/boom');
+    expect(JSON.stringify(res.body)).not.toContain('/srv/apps');
   });
 });

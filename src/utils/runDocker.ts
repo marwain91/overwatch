@@ -9,8 +9,17 @@ export interface RunDockerOptions {
 
 export type DockerErrorKind = 'timeout' | 'cli_missing' | 'daemon_unreachable' | 'unknown_container' | 'permission' | 'unknown';
 
-// Operator-facing: the message is already classified and carries the CLI's own
-// stderr, so it is exposed through the REST handler and MCP tools.
+// The message keeps the CLI's stderr for server-side logs; clients only get the
+// fixed per-kind text, since stderr can carry paths and daemon details.
+const DOCKER_CLIENT_MESSAGE: Record<DockerErrorKind, string> = {
+  timeout: 'Docker command timed out',
+  cli_missing: 'Docker CLI is not available',
+  daemon_unreachable: 'Cannot connect to the Docker daemon',
+  unknown_container: 'Docker container not found',
+  permission: 'Docker permission denied',
+  unknown: 'Docker command failed',
+};
+
 export class DockerCommandError extends HttpError {
   kind: DockerErrorKind;
   stderr: string;
@@ -26,7 +35,7 @@ export class DockerCommandError extends HttpError {
     command: string;
     args: string[];
   }) {
-    super(kind === 'daemon_unreachable' || kind === 'timeout' ? 503 : 502, msg, { expose: true });
+    super(kind === 'daemon_unreachable' || kind === 'timeout' ? 503 : 502, msg, { expose: true, clientMessage: DOCKER_CLIENT_MESSAGE[kind] });
     this.name = 'DockerCommandError';
     this.kind = kind;
     this.stderr = details.stderr;

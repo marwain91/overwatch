@@ -10,12 +10,15 @@
 export class HttpError extends Error {
   readonly status: number;
   readonly expose: boolean;
+  /** What a client may see when `expose` is set; defaults to `message`. Lets an error keep a detailed message for logs. */
+  readonly clientMessage: string;
 
-  constructor(status: number, message: string, options: { expose?: boolean } = {}) {
+  constructor(status: number, message: string, options: { expose?: boolean; clientMessage?: string } = {}) {
     super(message);
     this.name = new.target.name;
     this.status = status;
     this.expose = options.expose ?? status < 500;
+    this.clientMessage = options.clientMessage ?? message;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
