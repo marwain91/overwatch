@@ -39,6 +39,11 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
   if (sensitive !== undefined && sensitive !== null && typeof sensitive !== 'boolean') {
     return res.status(400).json({ error: 'sensitive must be a boolean' });
   }
+  // env-vars.json is schema-validated on every read, so a wrongly typed field
+  // saved here would break env vars for every app until fixed by hand.
+  if (description !== undefined && description !== null && typeof description !== 'string') {
+    return res.status(400).json({ error: 'description must be a string' });
+  }
 
   const existing = (await listEnvVars(appId)).find(v => v.key === key);
 
@@ -61,7 +66,7 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
 
   // An omitted flag keeps the stored one: defaulting to false would unmask an
   // existing secret in GET /env-vars on any edit that doesn't re-send it.
-  const envVar = await setEnvVar(appId, key, effectiveValue, sensitive ?? existing?.sensitive ?? false, description);
+  const envVar = await setEnvVar(appId, key, effectiveValue, sensitive ?? existing?.sensitive ?? false, description ?? undefined);
   const tenantsAffected = await regenerateAllSharedEnvFiles(appId);
 
   res.json({
@@ -99,6 +104,11 @@ router.post('/tenants/:tenantId/overrides', validateTenantId, requireRole('edito
 
   if (!key || value === undefined || value === null) {
     return res.status(400).json({ error: 'Key and value are required' });
+  }
+  // tenant-env-overrides.json is schema-validated on every read; a non-boolean
+  // flag saved here would break overrides for every app.
+  if (sensitive !== undefined && sensitive !== null && typeof sensitive !== 'boolean') {
+    return res.status(400).json({ error: 'sensitive must be a boolean' });
   }
 
   await setTenantOverride(appId, tenantId, key, String(value), sensitive ?? false);

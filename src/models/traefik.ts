@@ -143,6 +143,10 @@ export function isDenylistedLabelKey(key: string): boolean {
 // Every character a real Traefik label key uses (`[n]` indexes list fields).
 const RAW_LABEL_KEY_RE = /^[A-Za-z0-9._\-[\]]+$/;
 
+// Owned by Overwatch (container ownership, which monitoring trusts) and by
+// compose itself; a raw label must not be able to restate them.
+const RESERVED_RAW_LABEL_PREFIXES = ['com.overwatch.', 'com.docker.'];
+
 /**
  * Emit-time filter for raw label keys. Stricter than the schema check because
  * the denylist must see the key exactly as compose and Traefik will:
@@ -156,7 +160,9 @@ const RAW_LABEL_KEY_RE = /^[A-Za-z0-9._\-[\]]+$/;
  * boot, so tightening it there would turn a stored key into a boot failure.
  */
 export function isBlockedRawLabelKey(key: string): boolean {
-  return !RAW_LABEL_KEY_RE.test(key) || isDenylistedLabelKey(key.toLowerCase());
+  if (!RAW_LABEL_KEY_RE.test(key)) return true;
+  const lower = key.toLowerCase();
+  return isDenylistedLabelKey(lower) || RESERVED_RAW_LABEL_PREFIXES.some(p => lower.startsWith(p));
 }
 
 const denylistRefinement = (labels: Record<string, string>, ctx: z.RefinementCtx) => {

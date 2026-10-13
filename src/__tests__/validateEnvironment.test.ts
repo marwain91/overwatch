@@ -25,6 +25,12 @@ describe('validateEnvironment — JWT_SECRET', () => {
     expect(errors.some(e => e.category === 'core' && /placeholder/.test(e.message))).toBe(true);
   });
 
+  it('rejects the docs/development.md example secret too', () => {
+    process.env.JWT_SECRET = 'dev-secret-at-least-32-characters';
+    const errors = validateEnvironment(config);
+    expect(errors.some(e => e.category === 'core' && /placeholder/.test(e.message))).toBe(true);
+  });
+
   it('accepts a random secret', () => {
     process.env.JWT_SECRET = 'f3a9c1d27b8e4065a1c2d3e4f5061728';
     expect(validateEnvironment(config)).toEqual([]);

@@ -20,7 +20,7 @@ afterEach(() => {
   vi.doUnmock('../utils/jwt');
 });
 
-async function getChannelsAs(email: string, role: 'viewer' | 'admin') {
+async function getChannelsAs(email: string, role: 'viewer' | 'admin' | undefined) {
   vi.doMock('../services/alertEngine', () => ({
     getAlertHistory: vi.fn(),
     getNotificationChannelsData: vi.fn(async () => [CHANNEL]),
@@ -39,13 +39,18 @@ async function getChannelsAs(email: string, role: 'viewer' | 'admin') {
 }
 
 describe('GET /api/monitoring/notifications', () => {
-  it('redacts webhook URL paths and header values for viewers', async () => {
+  it('redacts webhook URL host, path and header values for viewers', async () => {
     const res = await getChannelsAs('viewer@example.test', 'viewer');
     const [channel] = res.body;
     expect(channel.name).toBe('Ops Slack');
-    expect(channel.config.url).toBe('https://hooks.slack.com/••••••••');
+    expect(channel.config.url).toBe('https://••••••••');
     expect(channel.config.headers).toEqual({ Authorization: '••••••••' });
     expect(JSON.stringify(res.body)).not.toMatch(/SECRETPATH|top-secret/);
+  });
+
+  it('redacts for a caller that is not an admin user at all (no fail-open)', async () => {
+    const res = await getChannelsAs('gone@example.test', undefined);
+    expect(JSON.stringify(res.body)).not.toMatch(/SECRETPATH|top-secret|hooks\.slack\.com/);
   });
 
   it('returns the full channel config to admins (needed to edit it)', async () => {

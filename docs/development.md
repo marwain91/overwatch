@@ -14,7 +14,7 @@ docker run -p 3010:3002 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v $(pwd)/overwatch.yaml:/app/overwatch.yaml:ro \
   -v $(pwd)/data:/app/data \
-  -e JWT_SECRET=dev-secret-at-least-32-characters \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e GOOGLE_CLIENT_ID=your-client-id \
   --name overwatch-dev \
   overwatch
@@ -59,7 +59,7 @@ docker run -p 3002:3002 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v $(pwd)/overwatch.yaml:/app/overwatch.yaml:ro \
   -v $(pwd)/data:/app/data \
-  -e JWT_SECRET=dev-secret-at-least-32-characters \
+  -e JWT_SECRET="$(openssl rand -hex 32)" \
   -e GOOGLE_CLIENT_ID=your-client-id \
   overwatch
 ```

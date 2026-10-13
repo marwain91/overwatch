@@ -64,6 +64,23 @@ describe('POST /api/apps/:appId/env-vars', () => {
     expect(setEnvVar).not.toHaveBeenCalled();
   });
 
+  it('rejects wrongly typed fields that would corrupt the env-var stores', async () => {
+    const setEnvVar = vi.fn();
+    const app = await makeApp(setEnvVar);
+
+    await request(app).post('/api/apps/demo/env-vars').send({ key: 'NEW_VAR', value: 'v', description: 42 }).expect(400);
+    await request(app).post('/api/apps/demo/env-vars/tenants/t1/overrides').send({ key: 'NEW_VAR', value: 'v', sensitive: 'yes' }).expect(400);
+    expect(setEnvVar).not.toHaveBeenCalled();
+  });
+
+  it('stores a null description as absent (the store schema rejects null)', async () => {
+    const setEnvVar = vi.fn(async (_appId: string, key: string, value: string, sensitive: boolean) => ({ key, value, sensitive }));
+    const app = await makeApp(setEnvVar);
+
+    await request(app).post('/api/apps/demo/env-vars').send({ key: 'NEW_VAR', value: 'v', description: null }).expect(200);
+    expect(setEnvVar).toHaveBeenCalledWith('demo', 'NEW_VAR', 'v', false, undefined);
+  });
+
   it('still honours an explicit sensitive flag', async () => {
     const setEnvVar = vi.fn(async (_appId: string, key: string, value: string, sensitive: boolean) => ({ key, value, sensitive }));
     const app = await makeApp(setEnvVar);

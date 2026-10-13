@@ -14,7 +14,7 @@ import { SLUG_RE, CONTAINER_NAME_RE, UUID_RE } from '../utils/validators';
 import { queryString, queryInt } from '../utils/query';
 import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
-import { getUserRole, can } from '../services/users';
+import { getUserRole } from '../services/users';
 
 const router = Router();
 
@@ -123,10 +123,13 @@ router.get('/alerts/rules', asyncHandler(async (req, res) => {
 
 const MASK = '••••••••';
 
-/** Keep only the origin: Slack/Discord-style webhook URLs carry their secret in the path. */
+/**
+ * Keep only the scheme: Slack/Discord-style webhook URLs carry their secret in
+ * the path, and some services (e.g. per-endpoint subdomains) in the host.
+ */
 function redactWebhookUrl(url: string): string {
   try {
-    return `${new URL(url).origin}/${MASK}`;
+    return `${new URL(url).protocol}//${MASK}`;
   } catch {
     return MASK;
   }
@@ -139,7 +142,9 @@ router.get('/notifications', asyncHandler(async (req, res) => {
   const channels = await getNotificationChannelsData();
   const email = getCurrentUserEmail(req);
   const role = email ? await getUserRole(email) : undefined;
-  if (can(role, 'admin')) {
+  // Explicit check: can(undefined, ...) treats a missing role as legacy admin,
+  // which would fail open for a caller that isn't an admin user at all.
+  if (role === 'admin') {
     res.json(channels);
     return;
   }

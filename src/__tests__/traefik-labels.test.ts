@@ -160,6 +160,8 @@ describe('buildTraefikLabels', () => {
           'traefik.http.routers.evil.rule=Host(`admin.example.com`)#': 'x',
           'traefik.http.router\u017f.evil.rule': 'Host(`admin.example.com`)',
           'traefik.http.routers.evil.rule ': 'Host(`admin.example.com`)',
+          'com.overwatch.app-id': 'admin.example.com',
+          'COM.DOCKER.compose.project': 'admin.example.com',
           'traefik.http.middlewares.ok.headers.customrequestheaders.X-Re': '^https://(.*)\\.example\\.com',
         },
       },
