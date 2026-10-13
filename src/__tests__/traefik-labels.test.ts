@@ -34,8 +34,9 @@ describe('buildTraefikLabels', () => {
       service: baseService as any,
       certResolverName: 'cf-prod',
     });
+    // Plain `key=value` strings; composeGenerator does the YAML.
+    expect(labels[0]).toBe('traefik.enable=true');
     const joined = labels.join('\n');
-    expect(joined).toMatch(/traefik\.enable=true/);
     expect(joined).toMatch(/traefik\.http\.routers\.myapp-t1-web\.rule=Host\(`t1\.app\.example\.com`\)/);
     expect(joined).toMatch(/traefik\.http\.routers\.myapp-t1-web\.tls=true/);
     expect(joined).toMatch(/traefik\.http\.routers\.myapp-t1-web\.tls\.certresolver=cf-prod/);
@@ -175,11 +176,11 @@ describe('buildTraefikLabels', () => {
     });
     const joined = labels.join('\n');
     expect(joined).not.toMatch(/admin\.example\.com/);
-    // Backslashes in values (regexes) are still passed through untouched.
-    expect(joined).toContain('customrequestheaders.X-Re=^https://(.*)\\.example\\.com');
+    // Backslashes in values (regexes) are passed through untouched.
+    expect(labels).toContain('traefik.http.middlewares.ok.headers.customrequestheaders.X-Re=^https://(.*)\\.example\\.com');
   });
 
-  it('never emits a raw line break, so label values cannot add compose keys', () => {
+  it('folds raw line breaks in label values to a space and keeps quotes verbatim', () => {
     const svc = {
       ...baseService,
       routing: {
@@ -201,7 +202,8 @@ describe('buildTraefikLabels', () => {
     for (const line of labels) {
       expect(line).not.toMatch(/[\r\n\u0085\u2028\u2029]/);
     }
-    expect(labels.join('\n')).toMatch(/X-B=a b c"/);
+    expect(labels).toContain('traefik.http.middlewares.x.headers.customrequestheaders.X-A=v\\"     privileged: true #');
+    expect(labels).toContain('traefik.http.middlewares.y.headers.customrequestheaders.X-B=a b c');
   });
 
   it('routes through the upstream entrypoint and skips TLS labels when termination=upstream', () => {

@@ -37,8 +37,9 @@ export interface BuildLabelsContext {
 }
 
 /**
- * Build the array of Traefik label lines for a single service. Each entry is
- * a fully formatted YAML array element ('      - "traefik.foo=bar"').
+ * Build the Traefik labels for a single service as `key=value` strings. The
+ * compose generator serialises them, so values are emitted verbatim
+ * (backslashes and quotes included).
  *
  * Returns an empty array when the service shouldn't be exposed (init container
  * without ports, or routing.enabled=false).
@@ -52,11 +53,10 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
 
   const routerName = `${app.id}-${tenantId}-${service.name}`;
   const labels: string[] = [];
-  // Raw line breaks are folded to a space — what YAML already does to a break
-  // inside a double-quoted scalar — so editor-supplied values (raw_labels,
-  // middleware fields) can never start a new line of docker-compose.yml.
-  // YAML parsers also treat NEL/LS/PS as line breaks.
-  const push = (s: string) => labels.push(`      - "${s.replace(/[\r\n\u0085\u2028\u2029]+/g, ' ').replace(/"/g, '\\"')}"`);
+  // Raw line breaks (YAML also counts NEL/LS/PS) in editor-supplied values
+  // (raw_labels, middleware fields) are folded to a space, as they were when
+  // the compose file was built from strings, so a label stays one line.
+  const push = (label: string) => labels.push(label.replace(/[\r\n\u0085\u2028\u2029]+/g, ' '));
 
   push('traefik.enable=true');
 

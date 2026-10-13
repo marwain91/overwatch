@@ -82,6 +82,8 @@ Overwatch ships typed schemas for the most common middlewares:
 
 For anything not modeled, set `raw_labels: { "traefik.…": "value" }` on the service or tenant. The denylist below is enforced by Zod refinement, so all three editing surfaces produce the same error.
 
+Label values (raw labels and typed middleware fields alike) reach the tenant's `docker-compose.yml` verbatim, backslashes and quotes included, so a regex such as `^https://(.*)\.example\.com` arrives at Traefik unchanged. Line breaks are folded to a space, and `$` is still subject to Docker Compose variable interpolation.
+
 ### Denylist
 
 These keys are reserved and rejected at validation time:
