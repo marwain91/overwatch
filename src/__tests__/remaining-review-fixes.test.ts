@@ -205,6 +205,7 @@ describe('tenant lifecycle rollback', () => {
     const appsDir = path.join(tmpRoot, 'apps');
     const db = {
       initialize: vi.fn(async () => undefined),
+      databaseExists: vi.fn(async () => false),
       createDatabase: vi.fn(async () => { throw new Error('db create failed'); }),
       dropDatabase: vi.fn(async () => undefined),
     };

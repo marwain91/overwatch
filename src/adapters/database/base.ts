@@ -1,4 +1,4 @@
-import { DatabaseAdapter, DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from './types';
+import { DatabaseAdapter, DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
 import { assertSafeIdentifier } from '../../utils/security';
 
 /**
@@ -67,8 +67,9 @@ export abstract class BaseDatabaseAdapter implements DatabaseAdapter {
     return this.config.containerName;
   }
 
-  abstract createDatabase(tenantId: string, password: string): Promise<void>;
-  abstract dropDatabase(tenantId: string): Promise<void>;
+  abstract createDatabase(tenantId: string, password: string): Promise<CreateDatabaseResult>;
+  abstract databaseExists(tenantId: string): Promise<boolean>;
+  abstract dropDatabase(tenantId: string, options?: { keepUser?: boolean }): Promise<void>;
   abstract listDatabases(): Promise<string[]>;
   abstract dumpDatabase(tenantId: string, outputPath: string): Promise<void>;
   abstract restoreDatabase(tenantId: string, inputPath: string): Promise<void>;

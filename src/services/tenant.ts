@@ -173,6 +173,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   let tenantDirCreated = false;
   let dbCreated = false;
+  let userCreated = false;
   let composeWritten = false;
 
   try {
@@ -202,8 +203,13 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     // Initialize database adapter and create database.
     // Adapter prepends the app's effective db_prefix (empty prefix → no prepend).
     await db.initialize();
-    await db.createDatabase(dbTenantId, dbPassword);
-    dbCreated = true;
+    // Never adopt a database that already exists: a later rollback would drop it.
+    if (await db.databaseExists(dbTenantId)) {
+      throw new ConflictError(`A database for tenant '${tenantId}' already exists on the database server`);
+    }
+    const dbResult = await db.createDatabase(dbTenantId, dbPassword);
+    dbCreated = dbResult.created;
+    userCreated = dbResult.userCreated;
 
     // Generate .env file
     const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
@@ -251,9 +257,12 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
       await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
     }
     if (dbCreated) {
-      await db.dropDatabase(dbTenantId).catch(() => {});
+      await db.dropDatabase(dbTenantId, { keepUser: !userCreated }).catch(() => {});
     }
     if (!tenantDirCreated && error instanceof Error && error.message.includes(`Tenant '${tenantId}' already exists`)) {
+      throw error;
+    }
+    if (error instanceof ConflictError) {
       throw error;
     }
     const reason = extractComposeErrorMessage(error);
