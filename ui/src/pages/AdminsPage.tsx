@@ -1,43 +1,42 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { api } from '../lib/api';
 import { Modal } from '../components/Modal';
-import type { AdminUser } from '../lib/types';
+import { useAdminUsers, useAddAdminUser, useSetAdminUserRole, useDeleteAdminUser } from '../hooks/useAdminUsers';
+import type { AdminRole } from '../lib/types';
+
+const ROLES: { value: AdminRole; hint: string }[] = [
+  { value: 'viewer', hint: 'Read-only access' },
+  { value: 'editor', hint: 'Can change tenants and settings, but not delete' },
+  { value: 'admin', hint: 'Full access, including deletes and user management' },
+];
 
 export function AdminsPage() {
-  const qc = useQueryClient();
-  const { data: admins, isLoading } = useQuery({
-    queryKey: ['admin-users'],
-    queryFn: () => api.get<AdminUser[]>('/admin-users'),
-  });
-
-  const addAdmin = useMutation({
-    mutationFn: (email: string) => api.post('/admin-users', { email }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['admin-users'] });
-    },
-  });
-
-  const deleteAdmin = useMutation({
-    mutationFn: (email: string) => api.delete(`/admin-users/${encodeURIComponent(email)}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['admin-users'] });
-    },
-  });
+  const { data: admins, isLoading } = useAdminUsers();
+  const addAdmin = useAddAdminUser();
+  const setRole = useSetAdminUserRole();
+  const deleteAdmin = useDeleteAdminUser();
 
   const [showAdd, setShowAdd] = useState(false);
   const [showDelete, setShowDelete] = useState<string | null>(null);
   const [email, setEmail] = useState('');
+  const [role, setNewRole] = useState<AdminRole>('viewer');
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
-    addAdmin.mutate(email, {
+    addAdmin.mutate({ email, role }, {
       onSuccess: () => {
-        toast.success(`Admin ${email} added`);
+        toast.success(`User ${email} added as ${role}`);
         setShowAdd(false);
         setEmail('');
+        setNewRole('viewer');
       },
+      onError: (err) => toast.error(err.message),
+    });
+  };
+
+  const handleRoleChange = (userEmail: string, newRole: AdminRole) => {
+    setRole.mutate({ email: userEmail, role: newRole }, {
+      onSuccess: () => toast.success(`${userEmail} is now ${newRole}`),
       onError: (err) => toast.error(err.message),
     });
   };
@@ -58,10 +57,10 @@ export function AdminsPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-content-primary">Admin Users</h1>
-          <p className="mt-1 text-sm text-content-muted">Manage who can access this admin panel.</p>
+          <p className="mt-1 text-sm text-content-muted">Manage who can access this admin panel and what they can do.</p>
         </div>
         <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
-          + Add Admin
+          + Add User
         </button>
       </div>
 
@@ -77,9 +76,20 @@ export function AdminsPage() {
                   Added {new Date(admin.addedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by {admin.addedBy}
                 </p>
               </div>
-              <button className="btn btn-danger btn-xs" onClick={() => setShowDelete(admin.email)}>
-                Remove
-              </button>
+              <div className="flex items-center gap-2">
+                <select
+                  className="input w-auto py-1 text-xs"
+                  aria-label={`Role for ${admin.email}`}
+                  value={admin.role}
+                  disabled={setRole.isPending}
+                  onChange={(e) => handleRoleChange(admin.email, e.target.value as AdminRole)}
+                >
+                  {ROLES.map((r) => <option key={r.value} value={r.value}>{r.value}</option>)}
+                </select>
+                <button className="btn btn-danger btn-xs" onClick={() => setShowDelete(admin.email)}>
+                  Remove
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -91,7 +101,7 @@ export function AdminsPage() {
 
       {/* Add Admin Modal */}
       {showAdd && (
-        <Modal title="Add Admin User" size="sm" onClose={() => setShowAdd(false)}>
+        <Modal title="Add User" size="sm" onClose={() => setShowAdd(false)}>
           <form onSubmit={handleAdd} className="space-y-4">
             <div>
               <label className="label">Email Address</label>
@@ -105,10 +115,17 @@ export function AdminsPage() {
               />
               <p className="mt-1 text-xs text-content-faint">This user will be able to sign in with Google.</p>
             </div>
+            <div>
+              <label className="label">Role</label>
+              <select className="input" value={role} onChange={(e) => setNewRole(e.target.value as AdminRole)}>
+                {ROLES.map((r) => <option key={r.value} value={r.value}>{r.value}</option>)}
+              </select>
+              <p className="mt-1 text-xs text-content-faint">{ROLES.find((r) => r.value === role)?.hint}</p>
+            </div>
             <div className="flex justify-end gap-2">
               <button type="button" className="btn btn-secondary" onClick={() => setShowAdd(false)}>Cancel</button>
               <button type="submit" className="btn btn-primary" disabled={addAdmin.isPending}>
-                {addAdmin.isPending ? 'Adding...' : 'Add Admin'}
+                {addAdmin.isPending ? 'Adding...' : 'Add User'}
               </button>
             </div>
           </form>

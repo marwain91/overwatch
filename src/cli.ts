@@ -38,7 +38,7 @@ function showMainHelp(): void {
   console.log('    restart                 Restart all services');
   console.log('    recreate                Force-recreate Overwatch containers');
   console.log('    status                  Show service status');
-  console.log('    admins                  List, add, or remove admin users');
+  console.log('    admins                  List, add, remove, or change roles of admin users');
   console.log('    apps <sub>              Manage app definitions (apply from file)');
   console.log('    infra deploy            Render + deploy shared infra (Traefik, MariaDB)');
   console.log('    migrate status|up       Inspect / run pending data migrations');

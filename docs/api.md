@@ -187,9 +187,10 @@ All env var endpoints are scoped to an app: `/api/apps/:appId/env-vars`.
 
 | Method | Endpoint | Role | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/admin-users` | `auth` | List admin users |
-| `POST` | `/api/admin-users` | `admin` | Add admin user |
-| `DELETE` | `/api/admin-users/:email` | `admin`, `confirm` | Remove admin user; URL-encode the email path segment |
+| `GET` | `/api/admin-users` | `auth` | List users; each entry carries its effective `role` (records without a stored role report `admin`) |
+| `POST` | `/api/admin-users` | `admin` | Add user. Body: `{ "email", "role"? }` where `role` is `viewer`, `editor` or `admin` (default `viewer`) |
+| `PATCH` | `/api/admin-users/:email` | `admin` | Change a user's role. Body: `{ "role" }`. Returns `409` when it would demote the last admin; URL-encode the email path segment |
+| `DELETE` | `/api/admin-users/:email` | `admin`, `confirm` | Remove user (`409` for yourself or the last admin); URL-encode the email path segment |
 
 ## Audit Logs
 

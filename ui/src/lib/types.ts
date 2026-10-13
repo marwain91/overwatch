@@ -247,11 +247,14 @@ export interface AuditEntry {
 }
 
 // Admin
+export type AdminRole = 'viewer' | 'editor' | 'admin';
+
 export interface AdminUser {
   email: string;
   addedAt: string;
   addedBy: string;
-  role?: 'viewer' | 'editor' | 'admin';
+  // The API always returns the effective role (legacy records report 'admin').
+  role: AdminRole;
 }
 
 // Status
