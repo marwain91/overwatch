@@ -20,7 +20,7 @@ const rawExecFile = promisify(execFile);
 // default and surface as an empty list.
 const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
 const EXEC_TIMEOUT_MS = 600_000;
-const RESTIC_LONG_TIMEOUT_MS = 3_600_000; // backup / restore / prune move real data
+const RESTIC_LONG_TIMEOUT_MS = 3_600_000; // backup / restore / prune / docker cp of data volumes move real data
 const RESTIC_SNAPSHOTS_TIMEOUT_MS = 120_000;
 const execFileAsync = (cmd: string, args: string[], opts: Record<string, unknown> = {}) =>
   rawExecFile(cmd, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER, ...opts });
@@ -350,7 +350,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
           if (checkOutput.trim()) {
             const localDir = path.join(tenantBackupDir, pathConfig.local);
             await fs.mkdir(localDir, { recursive: true });
-            await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`]);
+            await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
           }
         } catch (error: any) {
           const msg = error?.message || String(error);
@@ -570,7 +570,7 @@ export async function restoreBackup(
             continue;
           }
           await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
-          await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`]);
+          await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
         } catch (error: any) {
           console.error(`[Backup] Failed to restore ${pathConfig.container} into ${containerName}: ${error?.message || error}`);
           warnings.push(`${pathConfig.container}: not restored (copy failed; see server logs)`);

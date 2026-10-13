@@ -6,6 +6,11 @@ import { pruneAuditLog } from './auditLog';
 
 let scheduledTask: ScheduledTask | null = null;
 
+const logPruneFailure = (what: string) => (err: any): number => {
+  console.error(`[Retention] Failed to prune ${what}: ${err?.message || err}`);
+  return 0;
+};
+
 // Prune through the same serialized writers the appenders use (tmp + rename,
 // 0600), so entries appended while a prune runs are never lost.
 export async function runRetention(): Promise<void> {
@@ -14,8 +19,8 @@ export async function runRetention(): Promise<void> {
   const maxAlerts = config.retention?.max_alert_entries ?? 10000;
   const maxAudit = config.retention?.max_audit_entries ?? 10000;
 
-  const alertPruned = await jsonlLogFor(path.join(dataDir, 'alert-history.jsonl'), 'AlertEngine').prune(maxAlerts).catch(() => 0);
-  const auditPruned = await pruneAuditLog(maxAudit).catch(() => 0);
+  const alertPruned = await jsonlLogFor(path.join(dataDir, 'alert-history.jsonl'), 'AlertEngine').prune(maxAlerts).catch(logPruneFailure('alert history'));
+  const auditPruned = await pruneAuditLog(maxAudit).catch(logPruneFailure('audit log'));
 
   if (alertPruned > 0 || auditPruned > 0) {
     console.log(`[Retention] Pruned ${alertPruned} alert(s), ${auditPruned} audit log(s)`);

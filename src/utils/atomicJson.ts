@@ -16,7 +16,7 @@ export async function writeJsonAtomic(
   value: unknown,
   opts: { mode?: number; spaces?: number } = {}
 ): Promise<void> {
-  await writeFileAtomic(filePath, JSON.stringify(value, null, opts.spaces ?? 2), { mode: opts.mode });
+  await writeFileAtomic(filePath, JSON.stringify(value, null, opts.spaces ?? 2), { mode: opts.mode ?? 0o644 });
 }
 
 /**
@@ -29,7 +29,8 @@ export async function writeFileAtomic(
   content: string,
   opts: { mode?: number } = {}
 ): Promise<void> {
-  const mode = opts.mode ?? 0o644;
+  // Without an explicit mode an existing target keeps its own; new files get 0644.
+  const mode = opts.mode ?? (await fs.stat(filePath).then(st => st.mode & 0o777, () => 0o644));
   const dir = path.dirname(filePath);
   const tmp = path.join(
     dir,

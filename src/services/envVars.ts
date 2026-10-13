@@ -703,15 +703,20 @@ export async function regenerateAllSharedEnvFiles(onlyAppId?: string): Promise<n
       tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
     } catch (err: any) {
       if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return; // No tenants dir for this app
-      throw err;
+      console.error(`[env-vars] cannot list tenants of ${appId}: ${err?.message || err}`);
+      failures.push({ appId, tenantId: '*' });
+      return;
     }
     for (const tenantEntry of tenantDirs) {
       if (!tenantEntry.isDirectory()) continue;
       const tenantId = tenantEntry.name;
       try {
         await fs.access(path.join(tenantsDir, tenantId, '.env'));
-      } catch {
-        continue; // Not a tenant directory
+      } catch (err: any) {
+        if (err.code === 'ENOENT') continue; // Not a tenant directory
+        console.error(`[env-vars] cannot read .env of ${appId}/${tenantId}: ${err?.message || err}`);
+        failures.push({ appId, tenantId });
+        continue;
       }
       try {
         await generateSharedEnvFile(appId, tenantId);

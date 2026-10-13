@@ -49,6 +49,7 @@ vi.mock('../services/docker', () => ({
 
 // Behaviour switches for the docker/restic mock
 const behaviour = { lsError: null as null | string, cpError: null as null | string, restoreDir: '', loopData: false, noData: false };
+const cpTimeouts: Array<number | undefined> = [];
 let metadata: any = {};
 let backedUpMetadata: any;
 
@@ -87,6 +88,7 @@ vi.mock('child_process', () => ({
         return done(null, { stdout: 'file.txt\n', stderr: '' });
       }
       if (cmd === 'docker' && args[0] === 'cp') {
+        cpTimeouts.push(opts?.timeout);
         if (behaviour.cpError) return fail(behaviour.cpError);
         return done(null, { stdout: '', stderr: '' });
       }
@@ -118,6 +120,14 @@ describe('backup/restore integrity', () => {
     await writeEnv('t1', 'DB_NAME=acme_proj_t1\n');
   });
   afterEach(async () => { await fs.rm(appsDir, { recursive: true, force: true }); });
+
+  it('gives docker cp of data volumes the long timeout on backup and restore', async () => {
+    cpTimeouts.length = 0;
+    await createBackup('gadgets', 't1');
+    await restoreBackup('gadgets', 'abcd1234', 't1');
+    expect(cpTimeouts.length).toBeGreaterThanOrEqual(2);
+    for (const t of cpTimeouts) expect(t).toBeGreaterThanOrEqual(3_600_000);
+  });
 
   it('dumps the migrated tenant DB_NAME, not appId_tenantId', async () => {
     await createBackup('gadgets', 't1');

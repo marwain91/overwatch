@@ -24,6 +24,14 @@ describe('writeFileAtomic', () => {
     expect((await fs.stat(f)).mode & 0o777).toBe(0o644);
   });
 
+  it('keeps the existing file mode when none is given', async () => {
+    const f = path.join(dir, 'c.yml');
+    await fs.writeFile(f, 'old', { mode: 0o640 });
+    await fs.chmod(f, 0o640);
+    await writeFileAtomic(f, 'new');
+    expect((await fs.stat(f)).mode & 0o777).toBe(0o640);
+  });
+
   it('cleans up its temp file when the rename fails', async () => {
     const target = path.join(dir, 'is-a-dir');
     await fs.mkdir(target);

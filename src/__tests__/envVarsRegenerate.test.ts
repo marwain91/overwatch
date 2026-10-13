@@ -57,4 +57,17 @@ describe('regenerateAllSharedEnvFiles', () => {
       await expect(fs.access(path.join(appsDir, 'demo', 'tenants', id, 'shared.env'))).resolves.toBeUndefined();
     }
   });
+
+  it('collects a tenants-dir read failure for one app and still sweeps the others', async () => {
+    await tenant('good', 'a');
+    await fs.mkdir(path.join(appsDir, 'broken'), { recursive: true });
+    await fs.chmod(path.join(appsDir, 'broken'), 0o000);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { regenerateAllSharedEnvFiles } = await import('../services/envVars');
+    const err: any = await regenerateAllSharedEnvFiles().catch(e => e);
+    await fs.chmod(path.join(appsDir, 'broken'), 0o755);
+    if (process.getuid?.() === 0) return; // root ignores modes
+    expect(err.failures.map((f: any) => f.appId)).toEqual(['broken']);
+    await expect(fs.access(path.join(appsDir, 'good', 'tenants', 'a', 'shared.env'))).resolves.toBeUndefined();
+  });
 });
