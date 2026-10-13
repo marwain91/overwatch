@@ -1,11 +1,11 @@
 import inquirer from 'inquirer';
-import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { findConfigPath, loadConfig, clearConfigCache, isUsingLegacyCertResolvers } from '../../config/loader';
-import { OverwatchConfigSchema } from '../../config/schema';
+import { findConfigPath, loadConfig, isUsingLegacyCertResolvers } from '../../config/loader';
+import { updateOverwatchConfig } from '../../config/writer';
+import { maskTraefikSecrets, upsertCertResolver, deleteCertResolver } from '../../services/traefikConfig';
 import type { CertResolver, TraefikGlobal } from '../../models/traefik';
 import { listApps } from '../../services/app';
 import { getAppsDir } from '../../config';
@@ -61,21 +61,7 @@ async function view(): Promise<void> {
     }
     return;
   }
-  console.log(yaml.dump(maskedView(cfg.traefik), { lineWidth: 100 }));
-}
-
-function maskedView(t: TraefikGlobal): TraefikGlobal {
-  const copy: TraefikGlobal = JSON.parse(JSON.stringify(t));
-  for (const r of copy.cert_resolvers ?? []) {
-    if (r.challenge === 'dns' && r.env) {
-      for (const k of Object.keys(r.env)) {
-        if (/(_TOKEN|_KEY|_SECRET|_PASSWORD)$/.test(k)) {
-          r.env[k] = '••••••••';
-        }
-      }
-    }
-  }
-  return copy;
+  console.log(yaml.dump(maskTraefikSecrets(cfg.traefik), { lineWidth: 100 }));
 }
 
 // ─── resolver ──────────────────────────────────────────────────────────────
@@ -167,13 +153,7 @@ async function resolverAdd(args: string[]): Promise<void> {
     } as CertResolver;
   }
 
-  await mutateConfig(raw => {
-    raw.traefik = raw.traefik ?? {};
-    raw.traefik.cert_resolvers = raw.traefik.cert_resolvers ?? [];
-    const idx = raw.traefik.cert_resolvers.findIndex((r: CertResolver) => r.name === name);
-    if (idx >= 0) raw.traefik.cert_resolvers[idx] = resolverObj;
-    else raw.traefik.cert_resolvers.push(resolverObj);
-  });
+  await upsertCertResolver(name, resolverObj);
 
   success(`Cert resolver "${name}" added. Run \`overwatch config traefik reload\` to apply.`);
 }
@@ -183,10 +163,7 @@ async function resolverRemove(name: string | undefined): Promise<void> {
     fail('Usage: overwatch config traefik resolver remove <name>');
     process.exit(1);
   }
-  await mutateConfig(raw => {
-    if (!raw.traefik?.cert_resolvers) return;
-    raw.traefik.cert_resolvers = raw.traefik.cert_resolvers.filter((r: CertResolver) => r.name !== name);
-  });
+  await deleteCertResolver(name);
   success(`Cert resolver "${name}" removed. Run \`overwatch config traefik reload\` to apply.`);
 }
 
@@ -313,18 +290,5 @@ async function reload(): Promise<void> {
 // ─── shared helper ──────────────────────────────────────────────────────────
 
 async function mutateConfig(mutate: (raw: any) => void): Promise<void> {
-  const configPath = findConfigPath();
-  const content = await fs.readFile(configPath, 'utf-8');
-  const raw = (yaml.load(content) as any) ?? {};
-  mutate(raw);
-  // Validate before writing.
-  const parse = OverwatchConfigSchema.safeParse(raw);
-  if (!parse.success) {
-    const errors = parse.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('\n  - ');
-    throw new Error(`Resulting overwatch.yaml is invalid:\n  - ${errors}`);
-  }
-  const tmp = `${configPath}.tmp-${process.pid}`;
-  await fs.writeFile(tmp, yaml.dump(raw, { lineWidth: 120, noRefs: true }), { mode: 0o644 });
-  await fs.rename(tmp, configPath);
-  clearConfigCache();
+  await updateOverwatchConfig(mutate);
 }

@@ -3,6 +3,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { findConfigPath } from '../config/loader';
+import { writeOverwatchConfig } from '../config/writer';
 import { LegacyOverwatchConfigSchema, LegacyOverwatchConfig, OverwatchConfig } from '../config/schema';
 import { AppDefinition } from '../models/app';
 import { generateComposeFile } from './composeGenerator';
@@ -315,7 +316,7 @@ export async function runMigration(): Promise<void> {
     console.log(`[Migration] Backed up old config to ${backupPath}`);
 
     // Write slimmed config
-    await fs.writeFile(configPath, yaml.dump(slimConfig, { lineWidth: -1 }));
+    await writeOverwatchConfig(slimConfig);
     console.log('[Migration] Updated overwatch.yaml (removed registry, services, backup, admin_access)');
   } catch (err: any) {
     console.warn(`[Migration] Could not update overwatch.yaml (${err.code || err.message}).`);
