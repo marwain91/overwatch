@@ -188,6 +188,25 @@ export function validateEnvVarValue(value: string): { valid: boolean; error?: st
   return { valid: true };
 }
 
+/**
+ * Render a value for a compose env file (`.env` / `shared.env`). Compose
+ * interpolates `$VAR` / `${VAR}` in unquoted and double-quoted values, which
+ * would blank or rewrite a password or URL holding `$`. Single quotes are read
+ * literally; a value that also holds `'` falls back to double quotes with
+ * `\`, `"` and `$` backslash-escaped. Values without `$` stay unquoted, as
+ * before. The same rules apply to the project-level `.env` compose reads.
+ */
+export function formatEnvValue(value: string | number): string {
+  const v = String(value);
+  if (!v.includes('$')) return v;
+  if (!v.includes("'")) return `'${v}'`;
+  return `"${v.replace(/[\\"$]/g, c => `\\${c}`)}"`;
+}
+
+export function formatEnvLine(key: string, value: string | number): string {
+  return `${key}=${formatEnvValue(value)}`;
+}
+
 // ─── Global env vars CRUD (per app) ─────────────────────────────────────────
 
 export async function listEnvVars(appId: string): Promise<EnvVar[]> {
@@ -416,7 +435,7 @@ export async function generateSharedEnvFile(appId: string, tenantId: string): Pr
   ];
 
   for (const v of effective) {
-    lines.push(`${v.key}=${v.value}`);
+    lines.push(formatEnvLine(v.key, v.value));
   }
 
   lines.push(''); // trailing newline

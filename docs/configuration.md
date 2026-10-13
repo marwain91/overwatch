@@ -370,7 +370,9 @@ Maps environment variable names inside the container to their resolved values. V
 |------|--------|----------|
 | Auto-resolved | `"DB_HOST": "DB_HOST"` | Known variable names are resolved at compose generation time to literal values from config/context |
 | `${VAR}` fallback | `"CUSTOM_KEY": "CUSTOM_KEY"` | Unknown variable names produce `${VAR}` for Docker Compose interpolation from `.env` |
-| Static | `"DB_HOST": { "static": "custom-db" }` | Always emits the literal value as-is |
+| Static | `"DB_HOST": { "static": "custom-db" }` | Always emits the literal value as-is (a `$` in it is escaped, so `${X}` is not interpolated) |
+
+Compose runs with a curated environment (`PATH`, `HOME`, `DOCKER_*`, `COMPOSE_*`), not Overwatch's own, so a `${VAR}` source resolves only from the tenant's `.env`. Registry credential helpers configured in the host docker config are not supported for tenant pulls; use `docker login` state (as the built-in adapters do).
 
 **Auto-resolvable variable names:**
 

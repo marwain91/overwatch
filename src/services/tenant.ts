@@ -7,7 +7,7 @@ import { loadConfig, getAppsDir } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
-import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
+import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue } from './envVars';
 import { getApp, applyApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
@@ -21,10 +21,14 @@ import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from 
 import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { SLUG_RE } from '../utils/validators';
 import { resolveTenantDbId } from './tenantDb';
+import { getDockerEnv } from '../utils/runDocker';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const execFileAsync = promisify(execFile);
+// Compose resolves ${VAR} against its own environment, so docker runs with the
+// curated one rather than Overwatch's (which holds operator secrets).
+const execDocker = (args: string[]) => execFileAsync('docker', args, { env: getDockerEnv() });
 
 export interface CreateTenantInput {
   appId: string;
@@ -241,7 +245,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
 
     // Create external volumes and start tenant
     await ensureExternalVolumes(composePath);
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d']);
   } catch (error) {
     // Rollback in reverse order of creation. If compose was written and `up` was
     // attempted, containers may exist even when the original command failed —
@@ -251,7 +255,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     let initFailures = '';
     if (composeWritten) {
       initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
-      await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
+      await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
     }
     if (tenantDirCreated) {
       await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
@@ -302,7 +306,7 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   // Caller can retry once the compose issue is resolved.
   let composeDownOk = true;
   try {
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
   } catch (err: any) {
     composeDownOk = false;
     if (!keepData) {
@@ -527,7 +531,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // not found') leaves the tenant exactly as it was.
   emit('pull', 'started');
   try {
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'pull']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull']);
     await ensureExternalVolumes(composePath);
     emit('pull', 'completed');
   } catch (error: any) {
@@ -543,7 +547,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // file (e.g. a service removed via an upstream manifest update).
   emit('restart', 'started');
   try {
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans']);
     emit('restart', 'completed');
     await pruneReplacedImages(oldImages, tenantPath, composePath, appId, tenantId);
     emit('done', 'completed');
@@ -557,7 +561,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     const initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
     const detail = initFailures ? `${composeError}\n\n${initFailures}` : composeError;
     await restoreTenantUpdateStateBestEffort('restart failure');
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']).catch((rollbackErr: any) => {
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']).catch((rollbackErr: any) => {
       console.error(`[tenant:update] Failed to restart restored compose for ${appId}/${tenantId}: ${rollbackErr?.message || rollbackErr}`);
     });
     emit('restart', 'failed', detail);
@@ -573,8 +577,8 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
  * extends, includes) keep working.
  */
 async function listComposeImages(tenantPath: string, composePath: string): Promise<string[]> {
-  const { stdout } = await execFileAsync(
-    'docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'config', '--images'],
+  const { stdout } = await execDocker(
+    ['compose', '--project-directory', tenantPath, '-f', composePath, 'config', '--images'],
   );
   return stdout.split('\n').map(line => line.trim()).filter(Boolean);
 }
@@ -597,7 +601,7 @@ async function pruneReplacedImages(
     const newImages = new Set(await listComposeImages(tenantPath, composePath));
     for (const img of oldImages) {
       if (newImages.has(img)) continue;
-      await execFileAsync('docker', ['rmi', img]).catch((err: any) => {
+      await execDocker(['rmi', img]).catch((err: any) => {
         const detail = (err?.stderr ?? '').toString().trim() || err?.message || String(err);
         console.log(`[tenant:update] skip rmi ${img} for ${appId}/${tenantId}: ${detail}`);
       });
@@ -654,33 +658,33 @@ function generateEnvContent(
 COMPOSE_PROJECT_NAME=${app.id}-${tenantId}
 
 # App Identification
-APP_ID=${app.id}
+APP_ID=${formatEnvValue(app.id)}
 
 # Tenant Identification
-TENANT_ID=${tenantId}
-TENANT_DOMAIN=${domain}
+TENANT_ID=${formatEnvValue(tenantId)}
+TENANT_DOMAIN=${formatEnvValue(domain)}
 
 # Container Image Configuration
-IMAGE_REGISTRY=${imageRegistry}
-IMAGE_TAG=${imageTag}
+IMAGE_REGISTRY=${formatEnvValue(imageRegistry)}
+IMAGE_TAG=${formatEnvValue(imageTag)}
 
 # Project Configuration
-PROJECT_PREFIX=${config.project.prefix}
+PROJECT_PREFIX=${formatEnvValue(config.project.prefix)}
 
 # Database Configuration
-DB_HOST=${config.database.host}
-DB_PORT=${config.database.port}
-DB_NAME=${dbName}
-DB_USER=${dbName}
-DB_PASSWORD=${dbPassword}
+DB_HOST=${formatEnvValue(config.database.host)}
+DB_PORT=${formatEnvValue(config.database.port)}
+DB_NAME=${formatEnvValue(dbName)}
+DB_USER=${formatEnvValue(dbName)}
+DB_PASSWORD=${formatEnvValue(dbPassword)}
 
 # Application Security
-JWT_SECRET=${jwtSecret}
+JWT_SECRET=${formatEnvValue(jwtSecret)}
 
 # Network Configuration
-SHARED_NETWORK=${sharedNetwork}
+SHARED_NETWORK=${formatEnvValue(sharedNetwork)}
 
 # TLS Configuration
-CERT_RESOLVER=${certResolver}
+CERT_RESOLVER=${formatEnvValue(certResolver)}
 `;
 }

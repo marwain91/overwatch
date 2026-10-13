@@ -1,6 +1,7 @@
 import Docker from 'dockerode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
 import { loadConfig, getAppsDir } from '../config';
 import { listApps } from './app';
 import type { AppDefinition } from '../models/app';
@@ -278,12 +279,19 @@ export async function getTenantInfo(appId: string, tenantId: string): Promise<{ 
   }
 }
 
+/** Names of the top-level volumes a compose file declares `external: true`. */
+function externalVolumeNames(composeText: string): string[] {
+  const doc = yaml.load(composeText) as { volumes?: Record<string, { external?: unknown } | null> } | null;
+  const volumes = doc && typeof doc === 'object' ? doc.volumes : undefined;
+  if (!volumes || typeof volumes !== 'object') return [];
+  return Object.entries(volumes)
+    .filter(([, def]) => def && typeof def === 'object' && def.external === true)
+    .map(([name]) => name);
+}
+
 export async function ensureExternalVolumes(composePath: string): Promise<void> {
   const content = await fs.readFile(composePath, 'utf-8');
-  const volumeRegex = /^  ([^\s:]+):\s*\n\s+external:\s*true/gm;
-  let match;
-  while ((match = volumeRegex.exec(content)) !== null) {
-    const volumeName = match[1];
+  for (const volumeName of externalVolumeNames(content)) {
     try {
       await runDocker('docker', ['volume', 'inspect', volumeName], { timeoutMs: 15_000 });
     } catch {

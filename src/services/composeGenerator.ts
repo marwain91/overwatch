@@ -65,11 +65,13 @@ export function generateComposeFile(options: GenerateOptions): string {
   // For legacy installs (no traefik.cert_resolvers), the resolver helper still works against
   // the synthesized shim; the resulting name is what the legacy tenant.yml template carries.
   let certResolverName: string;
+  let certResolverIsRef = false;
   try {
     certResolverName = resolveCertResolver(domain, config.traefik, tenantTraefik?.cert_resolver).name;
   } catch (err) {
     // Fallback for misconfigured legacy installs — old behavior used the env var.
     certResolverName = '${CERT_RESOLVER}';
+    certResolverIsRef = true;
   }
   const externalNetwork = config.networking?.external_network || `${prefix}-network`;
   const internalNetworkTemplate = config.networking?.internal_network_template || `${prefix}-\${tenantId}-internal`;
@@ -116,7 +118,7 @@ export function generateComposeFile(options: GenerateOptions): string {
         certResolverName,
         traefik: config.traefik,
         tenantOverrides: tenantTraefik,
-      }),
+      }).map(l => escapeLabel(l, certResolverIsRef)),
     ];
 
     // Keys are written in this order; js-yaml omits the `undefined` ones.
@@ -150,6 +152,30 @@ export function generateComposeFile(options: GenerateOptions): string {
   // js-yaml's default compat mode also quotes YAML 1.1 look-alikes ("no",
   // "1000:1000"), so any compose YAML parser reads them back as strings.
   return yaml.dump(compose, { lineWidth: -1, noRefs: true, quotingType: '"' });
+}
+
+/** `$` → `$$`: compose reads `$$` as a literal `$` and interpolates a bare `$`. */
+function escapeDollar(value: string): string {
+  return value.replace(/\$/g, '$$$$');
+}
+
+/**
+ * Escape a `key=value` label so the value reaches Traefik literally (an
+ * `$apr1$` htpasswd hash or a `$1` regex replacement would otherwise be
+ * interpolated away). basicauth users written with an already-doubled `$$`
+ * (the old manual workaround) are collapsed first so they keep working;
+ * `$$` is never valid inside an htpasswd hash.
+ */
+function escapeLabel(label: string, keepCertResolverRef: boolean): string {
+  const eq = label.indexOf('=');
+  if (eq < 0) return escapeDollar(label);
+  const key = label.slice(0, eq);
+  let value = label.slice(eq + 1);
+  if (key.endsWith('.basicauth.users')) value = value.replace(/\$\$/g, '$');
+  let escaped = escapeDollar(value);
+  // The legacy fallback resolver is deliberately a reference into the tenant .env.
+  if (keepCertResolverRef) escaped = escaped.split('$${CERT_RESOLVER}').join('${CERT_RESOLVER}');
+  return `${key}=${escaped}`;
 }
 
 /**
@@ -207,25 +233,29 @@ function buildServiceVolumes(service: AppService, appId: string, tenantId: strin
   return volumes.length > 0 ? volumes : undefined;
 }
 
-/** Top-level named volume declarations, first declaration of a name wins. */
+/**
+ * Top-level named volume declarations, first declaration of a name wins.
+ * Backup volumes follow buildServiceVolumes: a service gets one for each backup
+ * path it does not already mount itself, so each one it mounts is declared.
+ */
 function buildVolumeDeclarations(app: AppDefinition, tenantId: string): Array<[string, ComposeVolume]> {
   const declarations: Array<[string, ComposeVolume]> = [];
   const isDeclared = (name: string) => declarations.some(([declared]) => declared === name);
-  const declaredPaths = new Set<string>();
   for (const service of app.services) {
+    const mountedPaths = new Set<string>();
     for (const vol of service.volumes ?? []) {
       const name = resolveVolumeName(vol, app.id, tenantId);
+      mountedPaths.add(vol.container_path);
       if (isDeclared(name)) continue;
       declarations.push([name, vol.external === true ? { external: true } : { name }]);
-      if (vol.container_path) declaredPaths.add(vol.container_path);
     }
     if (service.backup?.enabled && service.backup.paths) {
       for (const p of service.backup.paths) {
-        if (declaredPaths.has(p.container)) continue;
+        if (mountedPaths.has(p.container)) continue;
+        mountedPaths.add(p.container);
         const name = `${service.name}-${p.local}`;
         if (isDeclared(name)) continue;
         declarations.push([name, { name }]);
-        declaredPaths.add(p.container);
       }
     }
   }
@@ -299,11 +329,13 @@ function resolveEnvValue(
   value: string | { static: string },
   ctx: ResolveContext,
 ): string {
+  // Literal values are escaped so compose does not interpolate a `$` in them;
+  // only a named source is deliberately left as a `${NAME}` reference.
   if (typeof value === 'object' && 'static' in value) {
-    return value.static;
+    return escapeDollar(value.static);
   }
   const auto = getAutoResolvedValue(value, ctx);
-  if (auto !== undefined) return auto;
+  if (auto !== undefined) return escapeDollar(auto);
   return `\${${value}}`;
 }
 
