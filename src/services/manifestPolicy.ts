@@ -32,9 +32,9 @@ export interface ManifestPolicyResult {
 /**
  * Apply an image manifest to the current app definition, keeping protected
  * fields at their current value (or dropping them when there is none: a new
- * app or a service the manifest adds). Identity and registry fields are not
- * handled here; callers overlay those from the global definition.
- * Inputs are not modified.
+ * app or a service the manifest adds). A service new to an existing app also
+ * starts unrouted. Identity and registry fields are not handled here; callers
+ * overlay those from the global definition. Inputs are not modified.
  */
 export function applyManifestPolicy(
   current: AppDefinitionStatic | null,
@@ -46,7 +46,7 @@ export function applyManifestPolicy(
     keepCurrent(next, manifest, current ?? undefined, field, field, ignored);
   }
   next.services = manifest.services.map(service =>
-    applyServicePolicy(service, current?.services.find(s => s.name === service.name), ignored));
+    applyServicePolicy(service, current?.services.find(s => s.name === service.name), current !== null, ignored));
   return { next: next as AppDefinitionStatic, ignored };
 }
 
@@ -69,33 +69,44 @@ export function manifestPolicyBaseline(
   };
 }
 
-function applyServicePolicy(service: AppService, current: AppService | undefined, ignored: string[]): AppService {
+function applyServicePolicy(
+  service: AppService,
+  current: AppService | undefined,
+  appExists: boolean,
+  ignored: string[],
+): AppService {
   const path = `services.${service.name}`;
   const next: Fields = { ...service };
   for (const field of PROTECTED_SERVICE_FIELDS) {
     keepCurrent(next, service, current, field, `${path}.${field}`, ignored);
   }
-  const routing = applyRoutingPolicy(service.routing, current, `${path}.routing`, ignored);
+  const routing = applyRoutingPolicy(service, current, appExists, `${path}.routing`, ignored);
   if (routing) next.routing = routing;
   return next as AppService;
 }
 
 function applyRoutingPolicy(
-  routing: AppServiceRouting | undefined,
+  service: AppService,
   currentService: AppService | undefined,
+  appExists: boolean,
   path: string,
   ignored: string[],
 ): AppServiceRouting | undefined {
+  const routing = service.routing;
   const current = currentService?.routing;
   // Start from the defaults when the block is left out, so the admin's
   // routing fields have somewhere to survive.
   const next: Fields = { ...(routing ?? ROUTING_DEFAULTS) };
   if (currentService) {
-    // An image must not expose or hide a service that already exists. A new
-    // service keeps the manifest's value: dropping an explicit `false` would
-    // expose something the image meant to keep internal.
+    // An image must not expose or hide a service that already exists.
     const currentEnabled = { enabled: current?.enabled ?? ROUTING_DEFAULTS.enabled };
     keepCurrent(next, routing, currentEnabled, 'enabled', `${path}.enabled`, ignored);
+  } else if (appExists) {
+    // A service new to an existing app starts unrouted. Otherwise renaming a
+    // service, or removing and re-adding it, would shed its protected
+    // middlewares and serve it without them. An admin enables the route.
+    if (wouldBeRouted(service)) ignored.push(`${path}.enabled`);
+    next.enabled = false;
   }
   for (const field of PROTECTED_ROUTING_FIELDS) {
     keepCurrent(next, routing, current, field, `${path}.${field}`, ignored);
@@ -103,6 +114,11 @@ function applyRoutingPolicy(
   // Nothing beyond the defaults: keep the manifest's "no routing block".
   if (!routing && isDeepStrictEqual(next, ROUTING_DEFAULTS)) return undefined;
   return next as AppServiceRouting;
+}
+
+/** Mirrors buildTraefikLabels: init containers and port-less services get no router. */
+function wouldBeRouted(service: AppService): boolean {
+  return !service.is_init_container && !!service.ports?.internal && service.routing?.enabled !== false;
 }
 
 /**

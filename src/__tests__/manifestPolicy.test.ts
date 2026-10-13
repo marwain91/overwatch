@@ -82,7 +82,7 @@ describe('applyManifestPolicy', () => {
       backend.routing.priority = 50;
       backend.routing.strip_prefix = true;
       migrator.is_init_container = false;
-      // Reorder, drop frontend, add a service without protected fields.
+      // Reorder, drop frontend, add a port-less service without protected fields.
       m.services = [migrator, backend, { name: 'worker', image_suffix: 'worker', env_mapping: { QUEUE: 'QUEUE_URL' } }];
       m.env_vars = [{ key: 'OPENAI_API_KEY', sensitive: true }];
       m.manifest = { image_suffix: 'api', path: '/etc/overwatch/app.json' };
@@ -90,7 +90,13 @@ describe('applyManifestPolicy', () => {
 
     const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
 
-    expect(next).toEqual(manifest);
+    // The new service starts unrouted; it has no ports, so nothing was lost
+    // and nothing is reported.
+    expect(next).toEqual({
+      ...manifest,
+      services: manifest.services.map(s =>
+        s.name === 'worker' ? { ...s, routing: { enabled: false, strip_prefix: false } } : s),
+    });
     expect(ignored).toEqual([]);
   });
 
@@ -251,7 +257,7 @@ describe('applyManifestPolicy', () => {
       is_init_container: false,
       ports: { internal: 9000 },
       env_mapping: { QUEUE: 'QUEUE_URL' },
-      routing: { enabled: true, strip_prefix: false, path_prefix: '/jobs' },
+      routing: { enabled: false, strip_prefix: false, path_prefix: '/jobs' },
     });
     expect(ignored).toEqual([
       'services.worker.user',
@@ -259,13 +265,14 @@ describe('applyManifestPolicy', () => {
       'services.worker.volumes',
       'services.worker.networks',
       'services.worker.backup',
+      'services.worker.routing.enabled',
       'services.worker.routing.middlewares',
       'services.worker.routing.raw_labels',
       'services.worker.routing.tls_termination',
     ]);
   });
 
-  it('takes routing.enabled of a new service from the manifest', () => {
+  it('does not report a new service the manifest already leaves unrouted', () => {
     const manifest = manifestFrom(m => {
       m.services.push({ name: 'internal-api', image_suffix: 'backend', ports: { internal: 7000 }, routing: { enabled: false } });
     });
@@ -274,6 +281,49 @@ describe('applyManifestPolicy', () => {
 
     expect(service(next, 'internal-api').routing).toEqual({ enabled: false, strip_prefix: false });
     expect(ignored).toEqual([]);
+  });
+
+  describe('a service that loses its middlewares by becoming "new"', () => {
+    const admin = {
+      name: 'admin',
+      image_suffix: 'admin',
+      ports: { internal: 8080 },
+      routing: { path_prefix: '/admin', middlewares: ['api-auth'] },
+    };
+    const withAdmin = def({ ...CURRENT_INPUT, services: [...CURRENT_INPUT.services, admin] });
+
+    it('ends up unrouted when the manifest renames it (admin -> admin2)', () => {
+      const manifest = def({
+        ...CURRENT_INPUT,
+        services: [...CURRENT_INPUT.services, { ...admin, name: 'admin2', routing: { path_prefix: '/admin' } }],
+      });
+
+      const { next, ignored } = applyManifestPolicy(withAdmin, manifest);
+
+      expect(next.services.map(s => s.name)).not.toContain('admin');
+      expect(service(next, 'admin2').routing).toEqual({ enabled: false, strip_prefix: false, path_prefix: '/admin' });
+      expect(ignored).toEqual(['services.admin2.routing.enabled']);
+    });
+
+    it('ends up unrouted when one manifest removes it and a later one adds it back', () => {
+      const removed = applyManifestPolicy(withAdmin, def({ ...CURRENT_INPUT })).next;
+      const readded = def({
+        ...CURRENT_INPUT,
+        services: [...CURRENT_INPUT.services, { ...admin, routing: { path_prefix: '/admin' } }],
+      });
+
+      const { next, ignored } = applyManifestPolicy(removed, readded);
+
+      expect(service(next, 'admin').routing).toEqual({ enabled: false, strip_prefix: false, path_prefix: '/admin' });
+      expect(ignored).toEqual(['services.admin.routing.enabled']);
+    });
+
+    it('keeps the manifest routing for a new app with no current definition', () => {
+      const { next, ignored } = applyManifestPolicy(null, withAdmin);
+
+      expect(service(next, 'admin').routing).toEqual({ enabled: true, strip_prefix: false, path_prefix: '/admin' });
+      expect(ignored).not.toContain('services.admin.routing.enabled');
+    });
   });
 
   it('drops every protected field for a new app with no current definition', () => {

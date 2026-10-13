@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as util from 'util';
+import type { HttpError } from '../utils/httpErrors';
 
 /** execFile mock whose promisified form resolves `{stdout, stderr}` like Node's. */
 function withPromisify(
@@ -65,24 +66,25 @@ function shopStatic() {
   } as any;
 }
 
+const ORIGINAL_ENV = 'APP_ID=shop\nTENANT_ID=tenant-one\nTENANT_DOMAIN=tenant-one.shop.test\nIMAGE_TAG=1.0.0\n';
+const ORIGINAL_COMPOSE = 'services:\n  backend:\n    image: old\n';
+
 /**
  * Run updateTenant for tenant-one of `shop` against `imageManifest`, with the
- * global definition and the tenant snapshot both equal to shopStatic().
+ * global definition and the tenant snapshot both equal to `appStatic`.
+ * The error updateTenant throws, if any, is returned rather than rethrown.
  */
-async function runUpdate(imageManifest: any) {
+async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
   const appsDir = path.join(tmpRoot, 'apps');
   const tenantPath = path.join(appsDir, 'shop', 'tenants', 'tenant-one');
   await fs.mkdir(tenantPath, { recursive: true });
   const composePath = path.join(tenantPath, 'docker-compose.yml');
-  await fs.writeFile(
-    path.join(tenantPath, '.env'),
-    'APP_ID=shop\nTENANT_ID=tenant-one\nTENANT_DOMAIN=tenant-one.shop.test\nIMAGE_TAG=1.0.0\n',
-    { mode: 0o600 },
-  );
+  const envPath = path.join(tenantPath, '.env');
+  await fs.writeFile(envPath, ORIGINAL_ENV, { mode: 0o600 });
   await fs.writeFile(path.join(tenantPath, 'shared.env'), 'SHARED=1\n', { mode: 0o600 });
-  await fs.writeFile(composePath, 'services:\n  backend:\n    image: old\n');
+  await fs.writeFile(composePath, ORIGINAL_COMPOSE);
 
-  const globalApp = { ...shopStatic(), ...TIMESTAMPS };
+  const globalApp = { ...appStatic, ...TIMESTAMPS };
   // Stateful snapshot so the regenerated compose reflects what was written.
   let tenantSnapshot: any = globalApp;
   const writeTenantAppDef = vi.fn(async (_appId: string, _tenantId: string, staticDef: any) => {
@@ -133,14 +135,25 @@ async function runUpdate(imageManifest: any) {
   const progress: any[] = [];
   const onProgress = (p: any) => progress.push(p);
   eventBus.on('tenant:update:progress', onProgress);
+  let error: unknown;
   try {
     const { updateTenant } = await import('../services/tenant');
     await updateTenant('shop', 'tenant-one', '1.2.0');
+  } catch (err) {
+    error = err;
   } finally {
     eventBus.off('tenant:update:progress', onProgress);
   }
 
-  return { applyApp, writeTenantAppDef, warn, progress, compose: await fs.readFile(composePath, 'utf-8') };
+  return {
+    error,
+    applyApp,
+    writeTenantAppDef,
+    warn,
+    progress,
+    compose: await fs.readFile(composePath, 'utf-8'),
+    env: await fs.readFile(envPath, 'utf-8'),
+  };
 }
 
 describe('updateTenant manifest allowlist', () => {
@@ -152,8 +165,9 @@ describe('updateTenant manifest allowlist', () => {
     imageManifest.services[0].health_check = { type: 'http', path: '/healthz' };
     imageManifest.env_vars = [{ key: 'SMTP_HOST', description: 'SMTP relay' }];
 
-    const { applyApp, writeTenantAppDef, warn, progress, compose } = await runUpdate(imageManifest);
+    const { error, applyApp, writeTenantAppDef, warn, progress, compose } = await runUpdate(imageManifest);
 
+    expect(error).toBeUndefined();
     expect(applyApp).toHaveBeenCalledTimes(1);
     const applied = applyApp.mock.calls[0][0];
     expect(applied.admin_access.secret_env).toBe('AUTH_SERVICE_SECRET');
@@ -182,8 +196,9 @@ describe('updateTenant manifest allowlist', () => {
     imageManifest.traefik = { middlewares: { 'open-cors': { type: 'headers', custom_response_headers: { 'Access-Control-Allow-Origin': '*' } } } };
     imageManifest.services[0].routing = { path_prefix: '/api', middlewares: ['open-cors'] };
 
-    const { applyApp, progress, compose } = await runUpdate(imageManifest);
+    const { error, applyApp, progress, compose } = await runUpdate(imageManifest);
 
+    expect(error).toBeUndefined();
     const applied = applyApp.mock.calls[0][0];
     expect(applied).not.toHaveProperty('traefik');
     expect(applied.services[0].routing).toEqual({ enabled: true, strip_prefix: false, path_prefix: '/api' });
@@ -195,5 +210,39 @@ describe('updateTenant manifest allowlist', () => {
       detail: expect.stringContaining('ignored protected fields: traefik, services.backend.routing.middlewares'),
     }));
     expect(progress).toContainEqual(expect.objectContaining({ step: 'done', status: 'completed' }));
+  });
+
+  it('fails at the config step, rolls back and names a middleware the library lacks', async () => {
+    // An admin edit left the route pointing at a middleware the app library
+    // does not define; the image only changes an allowed field.
+    const appStatic = shopStatic();
+    appStatic.services[0].routing = { path_prefix: '/api', middlewares: ['api-auth'] };
+    const imageManifest = shopStatic();
+    imageManifest.services[0].routing = { path_prefix: '/api', middlewares: ['api-auth'] };
+    imageManifest.services[0].health_check = { type: 'http', path: '/healthz' };
+
+    const { error, applyApp, writeTenantAppDef, progress, compose, env } = await runUpdate(imageManifest, appStatic);
+
+    // Same module registry as the tenant service, so instanceof holds.
+    const { HttpError: HttpErrorClass } = await import('../utils/httpErrors');
+    expect(error).toBeInstanceOf(HttpErrorClass);
+    expect((error as HttpError).status).toBe(500);
+    expect((error as HttpError).expose).toBe(true);
+    expect((error as HttpError).clientMessage).toBe(
+      'Middleware "api-auth" referenced by shop/tenant-one/backend is not defined in app.traefik.middlewares or traefik.middlewares',
+    );
+    expect(progress).toContainEqual(expect.objectContaining({
+      step: 'config',
+      status: 'failed',
+      detail: expect.stringContaining('Middleware "api-auth"'),
+    }));
+    expect(progress.some(p => p.step === 'pull')).toBe(false);
+
+    // The manifest was applied, then both definitions and the tenant files were restored.
+    expect(applyApp.mock.calls[0][0].services[0].health_check).toEqual(expect.objectContaining({ path: '/healthz' }));
+    expect(writeTenantAppDef).toHaveBeenLastCalledWith('shop', 'tenant-one', appStatic);
+    expect(applyApp).toHaveBeenLastCalledWith(appStatic, 'rollback:shop/tenant-one');
+    expect(env).toBe(ORIGINAL_ENV);
+    expect(compose).toBe(ORIGINAL_COMPOSE);
   });
 });

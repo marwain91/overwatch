@@ -162,24 +162,24 @@ Make sure `overwatch/` isn't excluded by `.dockerignore` (add `!overwatch/` if y
 
 ### What a manifest may change
 
-Anyone who can push a tag to the app's registry controls the manifest, and it updates the definition every tenant of the app shares. So the manifest may only describe the app's own shape. Fields that decide who can get in (including route middlewares and whether an existing service is exposed), where data lives and how containers run stay as an admin set them.
+Anyone who can push a tag to the app's registry controls the manifest, and it updates the definition every tenant of the app shares. So the manifest may only describe the app's own shape. Fields that decide who can get in (route middlewares and whether a service is routed at all), where data lives and how containers run stay as an admin set them.
 
 The manifest may change:
 
 - `services`: add, remove and reorder them.
 - Per service: `name`, `required`, `is_init_container`, `image_suffix`, `ports`, `health_check`, `env_mapping`, `depends_on`, and the routing paths: `routing.path_prefix`, `routing.additional_path_prefixes`, `routing.priority` and `routing.strip_prefix`.
-- `routing.enabled` of a service the manifest adds.
 - `env_vars` and `manifest`.
 
 Protected (the manifest's value is ignored):
 
 - `admin_access`, `backup`, `credentials`, `db_prefix` and `traefik` (the app's middleware library and default middlewares).
 - Per service: `user`, `command`, `volumes`, `networks`, `backup`, `routing.middlewares`, `routing.raw_labels` and `routing.tls_termination`.
-- `routing.enabled` of a service that already exists: an image can't expose or hide it.
+- `routing.enabled`: an image can't expose or hide a service that already exists, and a service that is new to the app starts unrouted (see below).
 
 How protected fields are resolved:
 
-- A protected field keeps its current value from the app definition in Overwatch. If the definition has no value for it, the manifest's value is dropped. This also applies to every protected field of a service that the manifest adds, so a new service that needs a volume, a `user` or a `command` has to get it from an admin.
+- A protected field keeps its current value from the app definition in Overwatch. If the definition has no value for it, the manifest's value is dropped. This also applies to every protected field of a service that the manifest adds, so a new service that needs a volume, a `user`, a `command` or middlewares has to get them from an admin.
+- A service that is new to the app definition starts with its route disabled (`routing.enabled: false`), whatever the manifest says. Otherwise a manifest could rename a service, or remove it and add it back in a later release, and serve it without the middlewares an admin put on its route. When a release adds an HTTP service, enable its route once: set the service's `routing.enabled` to `true` (and add any middlewares) with `overwatch apps apply <file>` or `PUT /api/apps/<appId>`, then update the tenant again. A new service without ports, or one the manifest already leaves unrouted, is not reported.
 - If the app definition no longer lists a service that this tenant still runs (a newer image on another tenant removed it), the tenant keeps its own values for that service.
 - `id`, `name`, `domain_template`, `registry` and `default_image_tag` always come from the app definition in Overwatch, as before.
 - A manifest can't point a route at a middleware the app lacks, because route middlewares and the app's middleware library are both protected. If a route does reference a missing middleware (for example after an admin edit), the update fails at the `config` step and rolls back, and the error names the missing middleware.
