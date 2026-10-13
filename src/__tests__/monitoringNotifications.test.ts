@@ -58,3 +58,35 @@ describe('GET /api/monitoring/notifications', () => {
     expect(res.body).toEqual([CHANNEL]);
   });
 });
+
+describe('POST /api/monitoring/notifications/:id/test', () => {
+  async function post(sendTestNotification: () => Promise<void>) {
+    vi.doMock('../services/alertEngine', () => ({
+      getAlertHistory: vi.fn(),
+      getNotificationChannelsData: vi.fn(async () => [CHANNEL]),
+      saveNotificationChannels: vi.fn(),
+      sendTestNotification,
+    }));
+    vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'admin@example.test' }));
+    vi.doMock('../services/users', async () => ({
+      ...(await vi.importActual<typeof import('../services/users')>('../services/users')),
+      getUserRole: vi.fn(async () => 'admin'),
+    }));
+    const { default: router } = await import('../routes/monitoring');
+    const app = express();
+    app.use('/api/monitoring', router);
+    return request(app).post(`/api/monitoring/notifications/${CHANNEL.id}/test`);
+  }
+
+  it('reports a failed delivery as a 502 with the reason', async () => {
+    const res = await post(async () => { throw new Error('Webhook returned 503'); });
+    expect(res.status).toBe(502);
+    expect(res.body.error).toContain('Webhook returned 503');
+  });
+
+  it('reports success when delivery works', async () => {
+    const res = await post(async () => undefined);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+  });
+});

@@ -7,6 +7,7 @@ import type { OverwatchConfig } from '../config';
 import { sendWebhook } from '../notifications/webhook';
 import { NotificationChannel, AlertHistoryEntry } from '../notifications/types';
 import { writeSecretFile } from '../utils/security';
+import { readJsonStrict } from '../utils/atomicJson';
 
 type AlertRule = NonNullable<OverwatchConfig['alert_rules']>[number];
 
@@ -18,13 +19,19 @@ interface ActiveAlert {
 
 const cooldowns = new Map<string, number>(); // ruleId+scope -> lastFiredAt timestamp
 const activeAlerts = new Map<string, ActiveAlert>(); // ruleId+scope -> alert info
-const containerDownTimers = new Map<string, number>(); // containerName -> downSince timestamp
+const containerDownTimers = new Map<string, ReturnType<typeof setTimeout>>(); // ruleId:containerName -> pending down timeout
 // Keyed per rule so two rules of the same type (e.g. 80% warn / 95% critical)
 // don't reset each other's timer on every snapshot.
 const cpuThresholdTimers = new Map<string, number>(); // ruleId:containerName -> exceededSince timestamp
 const memThresholdTimers = new Map<string, number>(); // ruleId:containerName -> exceededSince timestamp
 
+// Containers that vanish (removed, renamed) would otherwise leave per-container
+// state behind forever.
+const STALE_CONTAINER_MS = 10 * 60 * 1000;
+const lastSeen = new Map<string, number>(); // containerName -> last metrics/event/health activity
+
 let started = false;
+let unsubscribe: Array<() => void> = [];
 
 function parseDuration(duration: string): number {
   const match = duration.match(/^(\d+)([smh]?)$/);
@@ -53,11 +60,25 @@ async function appendAlertHistory(entry: AlertHistoryEntry): Promise<void> {
   });
 }
 
+/** Missing file is "no channels"; anything unreadable throws so writers cannot clobber it. */
+async function readChannelsStrict(): Promise<NotificationChannel[]> {
+  try {
+    const parsed = await readJsonStrict<unknown>(getNotificationChannelsFile());
+    if (!Array.isArray(parsed)) {
+      throw new Error(`${path.basename(getNotificationChannelsFile())} is not a JSON array. Refusing to auto-reset.`);
+    }
+    return parsed as NotificationChannel[];
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
 async function loadNotificationChannels(): Promise<NotificationChannel[]> {
   try {
-    const content = await fs.readFile(getNotificationChannelsFile(), 'utf-8');
-    return JSON.parse(content);
-  } catch {
+    return await readChannelsStrict();
+  } catch (err: any) {
+    console.error(`[AlertEngine] Cannot read notification channels: ${err?.message || err}`);
     return [];
   }
 }
@@ -68,7 +89,9 @@ async function dispatchNotifications(alert: AlertHistoryEntry): Promise<void> {
 
   for (const channel of enabledChannels) {
     if (channel.type === 'webhook') {
-      sendWebhook(channel, alert).catch(() => {});
+      sendWebhook(channel, alert).catch((err) => {
+        console.error(`[AlertEngine] Failed to deliver alert to ${channel.name}: ${err?.message || err}`);
+      });
     }
   }
 }
@@ -142,6 +165,24 @@ function getRules(): AlertRule[] {
   return config.alert_rules ?? [];
 }
 
+function evictStaleContainers(rules: AlertRule[], now: number): void {
+  for (const [name, seenAt] of lastSeen) {
+    if (now - seenAt < STALE_CONTAINER_MS) continue;
+    for (const rule of rules) {
+      const key = `${rule.id}:${name}`;
+      resolveAlert(rule, name); // no-op unless an alert is active
+      cpuThresholdTimers.delete(key);
+      memThresholdTimers.delete(key);
+      cooldowns.delete(key);
+      activeAlerts.delete(key);
+      const down = containerDownTimers.get(key);
+      if (down) clearTimeout(down);
+      containerDownTimers.delete(key);
+    }
+    lastSeen.delete(name);
+  }
+}
+
 export function startAlertEngine(): void {
   if (started) return;
   started = true;
@@ -152,10 +193,16 @@ export function startAlertEngine(): void {
     return;
   }
 
+  const subscribe = (event: string, handler: (data: any) => void) => {
+    eventBus.on(event, handler);
+    unsubscribe.push(() => eventBus.off(event, handler));
+  };
+
   // Subscribe to metrics for threshold alerts
-  eventBus.on('metrics:snapshot', (data: any) => {
+  subscribe('metrics:snapshot', (data: any) => {
     const now = Date.now();
 
+    for (const container of data.containers || []) lastSeen.set(container.name, now);
     for (const rule of rules) {
       if (rule.condition.type === 'cpu_threshold') {
         const threshold = rule.condition.threshold || 90;
@@ -199,23 +246,40 @@ export function startAlertEngine(): void {
         }
       }
     }
+
+  });
+
+  // Existing-but-stopped containers are not "absent": their down alert stays
+  // until a start event. Only containers missing from the full listing age out.
+  subscribe('containers:existence', (names: string[]) => {
+    const now = Date.now();
+    for (const name of names) lastSeen.set(name, now);
+    evictStaleContainers(rules, now);
   });
 
   // Subscribe to container events for container_down alerts
-  eventBus.on('container:event', (data: any) => {
+  subscribe('container:event', (data: any) => {
+    lastSeen.set(data.containerName, Date.now());
     for (const rule of rules) {
       if (rule.condition.type === 'container_down') {
         const durationMs = parseDuration(rule.condition.duration || '5m');
+        const key = `${rule.id}:${data.containerName}`;
 
         if (data.action === 'die' || data.action === 'stop') {
-          containerDownTimers.set(data.containerName, Date.now());
-          setTimeout(() => {
-            if (containerDownTimers.has(data.containerName)) {
+          // die + stop both arrive for one outage: keep the first timer so the
+          // down duration counts from when the container actually went down.
+          if (containerDownTimers.has(key)) continue;
+          const timer = setTimeout(() => {
+            if (containerDownTimers.delete(key)) {
               fireAlert(rule, data.containerName, `Container ${data.containerName} has been down for ${rule.condition.duration || '5m'}`, undefined, data.containerName);
             }
-          }, durationMs).unref();
+          }, durationMs);
+          timer.unref();
+          containerDownTimers.set(key, timer);
         } else if (data.action === 'start') {
-          containerDownTimers.delete(data.containerName);
+          const timer = containerDownTimers.get(key);
+          if (timer) clearTimeout(timer);
+          containerDownTimers.delete(key);
           resolveAlert(rule, data.containerName);
         }
       }
@@ -223,7 +287,9 @@ export function startAlertEngine(): void {
   });
 
   // Subscribe to health changes for health_check_failed alerts
-  eventBus.on('health:change', (data: any) => {
+  subscribe('health:change', (data: any) => {
+    // 'unknown' is the health checker evicting the container; don't resurrect its state.
+    if (data.newState !== 'unknown') lastSeen.set(data.containerName, Date.now());
     for (const rule of rules) {
       if (rule.condition.type === 'health_check_failed') {
         const maxFailures = rule.condition.consecutive_failures || 3;
@@ -242,11 +308,15 @@ export function startAlertEngine(): void {
 
 export function stopAlertEngine(): void {
   started = false;
+  for (const off of unsubscribe) off();
+  unsubscribe = [];
+  for (const timer of containerDownTimers.values()) clearTimeout(timer);
+  containerDownTimers.clear();
   cooldowns.clear();
   activeAlerts.clear();
-  containerDownTimers.clear();
   cpuThresholdTimers.clear();
   memThresholdTimers.clear();
+  lastSeen.clear();
 }
 
 export async function getAlertHistory(limit: number = 50): Promise<AlertHistoryEntry[]> {
@@ -271,6 +341,9 @@ export async function getNotificationChannelsData(): Promise<NotificationChannel
 export async function saveNotificationChannels(channels: NotificationChannel[]): Promise<void> {
   const dir = getDataDir();
   await fs.mkdir(dir, { recursive: true });
+  // Throws if the existing file is corrupt: overwriting would destroy the only
+  // copy of the admin's channels (and their secrets) for an admin to repair.
+  await readChannelsStrict();
   await writeSecretFile(getNotificationChannelsFile(), JSON.stringify(channels, null, 2));
 }
 

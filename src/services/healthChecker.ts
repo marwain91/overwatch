@@ -19,6 +19,7 @@ interface HealthState {
 const healthStates = new Map<string, HealthState>();
 let scheduledTask: ScheduledTask | null = null;
 let checking = false;
+const STALE_CONTAINER_MS = 10 * 60 * 1000;
 
 async function checkHTTP(host: string, port: number, path: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -131,6 +132,33 @@ async function runHealthChecks(): Promise<void> {
           lastCheck: new Date().toISOString(),
         });
       }
+    }
+
+    // Containers no longer checked go back to unknown (transition emitted);
+    // ones that no longer exist are forgotten. Stopped-but-existing containers
+    // keep an unknown entry. Skipped if the existence listing fails.
+    const existing = await docker.listContainers({ all: true }).then(
+      all => new Set(all.flatMap(c => c.Names.map(n => n.replace(/^\//, '')))),
+      () => null,
+    );
+    const now = Date.now();
+    for (const [name, state] of existing ? healthStates : []) {
+      if (state.lastCheck && now - Date.parse(state.lastCheck) < STALE_CONTAINER_MS) continue;
+      if (state.state !== 'unknown') {
+        eventBus.emit('health:change', {
+          containerName: name,
+          appId: state.appId,
+          tenantId: state.tenantId,
+          service: state.service,
+          previousState: state.state,
+          newState: 'unknown',
+          consecutiveFailures: 0,
+          lastCheck: new Date().toISOString(),
+        });
+        state.state = 'unknown';
+        state.consecutiveFailures = 0;
+      }
+      if (!existing!.has(name)) healthStates.delete(name);
     }
   } catch (error: any) {
     console.error('[HealthChecker] Error:', error.message);
