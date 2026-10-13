@@ -84,6 +84,16 @@ function getNetworkStats(stats: any): { rx: number; tx: number } {
   return { rx, tx };
 }
 
+/** Names of every container that exists (running or not); null when the listing fails. */
+async function listExistingNames(): Promise<Set<string> | null> {
+  try {
+    const all = await docker.listContainers({ all: true });
+    return new Set(all.flatMap(c => c.Names.map(n => n.replace(/^\//, ''))));
+  } catch {
+    return null;
+  }
+}
+
 async function collectMetrics(): Promise<void> {
   if (collecting) return;
   collecting = true;
@@ -169,14 +179,25 @@ async function collectMetrics(): Promise<void> {
       totalCpu: Math.round(t.totalCpu * 100) / 100,
     }));
 
-    // Containers that stopped or were removed would otherwise keep a ring buffer forever.
+    // Containers that no longer exist would otherwise keep a ring buffer forever.
+    // Stopped-but-existing containers keep theirs; if the existence listing
+    // fails, nothing is evicted this round.
     const now = Date.now();
-    for (const [name, history] of metricsHistory) {
-      const latest = history.latest();
-      if (!latest || now - Date.parse(latest.timestamp) >= STALE_CONTAINER_MS) metricsHistory.delete(name);
+    const existingNames = await listExistingNames();
+    if (existingNames) {
+      for (const [name, history] of metricsHistory) {
+        const latest = history.latest();
+        if (!latest || (!existingNames.has(name) && now - Date.parse(latest.timestamp) >= STALE_CONTAINER_MS)) {
+          metricsHistory.delete(name);
+        }
+      }
     }
 
-    eventBus.emit('metrics:snapshot', { containers: allMetrics, tenants: tenantMetrics });
+    eventBus.emit('metrics:snapshot', {
+      containers: allMetrics,
+      tenants: tenantMetrics,
+      existingNames: existingNames ? Array.from(existingNames) : undefined,
+    });
   } catch (error: any) {
     console.error('[MetricsCollector] Collection error:', error.message);
   } finally {

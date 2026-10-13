@@ -203,6 +203,10 @@ export function startAlertEngine(): void {
     const now = Date.now();
 
     for (const container of data.containers || []) lastSeen.set(container.name, now);
+    // Existing-but-stopped containers are not "absent": their down alert stays
+    // until a start event. Only containers missing from the full listing age out.
+    const existingNames: string[] | undefined = Array.isArray(data.existingNames) ? data.existingNames : undefined;
+    for (const name of existingNames ?? []) lastSeen.set(name, now);
 
     for (const rule of rules) {
       if (rule.condition.type === 'cpu_threshold') {
@@ -248,7 +252,7 @@ export function startAlertEngine(): void {
       }
     }
 
-    evictStaleContainers(rules, now);
+    if (existingNames) evictStaleContainers(rules, now);
   });
 
   // Subscribe to container events for container_down alerts

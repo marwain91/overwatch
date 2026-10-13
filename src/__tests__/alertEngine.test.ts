@@ -143,35 +143,84 @@ describe('alert engine lifecycle', () => {
 });
 
 describe('alert engine stale container eviction', () => {
-  it('resolves active alerts and drops state for containers absent for 10 minutes', async () => {
+  const hot = { name: 'app-t1-web', tenantId: 't1', cpuPercent: 99, memPercent: 1 };
+
+  async function fireHot(existing: string[]) {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
-    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([cpuRule('warn-80', 80)]);
+    const loaded = await loadEngine([cpuRule('warn-80', 80), downRule]);
     const fired: any[] = [];
     const resolved: any[] = [];
-    eventBus.on('alert:fired', (a) => fired.push(a));
-    eventBus.on('alert:resolved', (a) => resolved.push(a));
-    startAlertEngine();
-    try {
-      const hot = { containers: [{ name: 'app-t1-web', tenantId: 't1', cpuPercent: 99, memPercent: 1 }] };
-      eventBus.emit('metrics:snapshot', hot);
-      vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
-      eventBus.emit('metrics:snapshot', hot);
-      expect(fired).toHaveLength(1);
+    loaded.eventBus.on('alert:fired', (a) => fired.push(a));
+    loaded.eventBus.on('alert:resolved', (a) => resolved.push(a));
+    loaded.startAlertEngine();
+    loaded.eventBus.emit('metrics:snapshot', { containers: [hot], existingNames: existing });
+    vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
+    loaded.eventBus.emit('metrics:snapshot', { containers: [hot], existingNames: existing });
+    return { ...loaded, fired, resolved };
+  }
 
+  it('resolves active alerts and drops state for containers missing from the full listing for 10 minutes', async () => {
+    const { eventBus, stopAlertEngine, fired, resolved } = await fireHot(['app-t1-web']);
+    try {
+      expect(fired).toHaveLength(1);
       vi.setSystemTime(new Date('2026-01-01T00:05:00Z'));
-      eventBus.emit('metrics:snapshot', { containers: [] });
-      expect(resolved).toHaveLength(0); // absent for < 10 minutes
+      eventBus.emit('metrics:snapshot', { containers: [], existingNames: [] });
+      expect(resolved).toHaveLength(0);
 
       vi.setSystemTime(new Date('2026-01-01T00:12:03Z'));
-      eventBus.emit('metrics:snapshot', { containers: [] });
-      expect(resolved).toHaveLength(1);
-      expect(resolved[0].ruleId).toBe('warn-80');
+      eventBus.emit('metrics:snapshot', { containers: [], existingNames: [] });
+      expect(resolved.map(r => r.ruleId)).toEqual(['warn-80']);
 
-      // state is gone: the container coming back hot restarts its duration (no immediate fire)
+      // state is gone: coming back hot restarts its duration (no immediate fire)
       vi.setSystemTime(new Date('2026-01-01T00:20:00Z'));
-      eventBus.emit('metrics:snapshot', hot);
+      eventBus.emit('metrics:snapshot', { containers: [hot], existingNames: ['app-t1-web'] });
       expect(fired).toHaveLength(1);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('keeps the container_down alert of a stopped-but-existing container past 10 minutes', async () => {
+    const { eventBus, stopAlertEngine, fired, resolved } = await fireHot(['app-t1-web']);
+    try {
+      eventBus.emit('container:event', { action: 'die', containerName: 'app-t1-web' });
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(fired.filter(a => a.ruleId === 'down')).toHaveLength(1);
+
+      for (const t of ['00:05:00', '00:12:00', '00:30:00']) {
+        vi.setSystemTime(new Date(`2026-01-01T${t}Z`));
+        eventBus.emit('metrics:snapshot', { containers: [], existingNames: ['app-t1-web'] });
+      }
+      expect(resolved.filter(r => r.ruleId === 'down')).toHaveLength(0);
+
+      eventBus.emit('container:event', { action: 'start', containerName: 'app-t1-web' });
+      expect(resolved.filter(r => r.ruleId === 'down')).toHaveLength(1);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('resolves the down alert of a removed container after 10 minutes and evicts its state', async () => {
+    const { eventBus, stopAlertEngine, fired, resolved } = await fireHot(['app-t1-web']);
+    try {
+      eventBus.emit('container:event', { action: 'die', containerName: 'app-t1-web' });
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(fired.filter(a => a.ruleId === 'down')).toHaveLength(1);
+      vi.setSystemTime(new Date('2026-01-01T00:12:00Z'));
+      eventBus.emit('metrics:snapshot', { containers: [], existingNames: [] });
+      expect(resolved.filter(r => r.ruleId === 'down')).toHaveLength(1);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('never evicts when the snapshot carries no existence listing', async () => {
+    const { eventBus, stopAlertEngine, resolved } = await fireHot(['app-t1-web']);
+    try {
+      vi.setSystemTime(new Date('2026-01-01T01:00:00Z'));
+      eventBus.emit('metrics:snapshot', { containers: [] });
+      expect(resolved).toHaveLength(0);
     } finally {
       stopAlertEngine();
     }
