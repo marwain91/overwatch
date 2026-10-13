@@ -469,7 +469,8 @@ Who may sign in, and what they may do, is stored in `data/admin-users.json` and 
 | `AWS_ACCESS_KEY_ID` | AWS access key (ECR) |
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key (ECR) |
 | `AWS_REGION` | AWS region (ECR) |
-| `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL` | `1` to allow registries/APIs on private networks (RFC1918, loopback). Off by default. |
+| `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL` | `1` to allow registries/APIs on private networks (RFC1918, loopback). Off by default. Every resolved A/AAAA address must be public, and redirects are never followed. |
+| `OVERWATCH_ALLOW_PRIVATE_WEBHOOK` | `1` to allow notification webhooks to target private networks (on-prem collector). Off by default; checked when a channel is saved and again at send time. Redirects are never followed and a user `Host` header is ignored. |
 
 ### Backup (optional, from app config)
 

@@ -26,6 +26,19 @@ function auditWriter() {
 
 const SENSITIVE_KEYS = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key'];
 
+function isPlainObject(v: unknown): boolean {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function originOnly(url: string): string {
+  try {
+    const { origin } = new URL(url);
+    return origin === 'null' ? '[redacted]' : origin;
+  } catch {
+    return '[redacted]';
+  }
+}
+
 export function sanitizeValue(val: unknown, depth: number = 0): unknown {
   if (depth > 5 || val === null || val === undefined) return val;
   if (Array.isArray(val)) return val.map(v => sanitizeValue(v, depth + 1));
@@ -35,6 +48,13 @@ export function sanitizeValue(val: unknown, depth: number = 0): unknown {
     for (const key of Object.keys(obj)) {
       if (SENSITIVE_KEYS.some(s => key.toLowerCase().includes(s))) {
         sanitized[key] = '[redacted]';
+      } else if (key === 'headers' && isPlainObject(obj[key])) {
+        // Webhook header values routinely carry credentials under arbitrary names.
+        sanitized[key] = Object.fromEntries(Object.keys(obj[key] as object).map(k => [k, '[redacted]']));
+      } else if (key === 'config' && isPlainObject(obj[key]) && typeof (obj[key] as any).url === 'string') {
+        // Notification-channel config: webhook URLs embed secrets in path/query (Slack, Teams, ...).
+        const config = sanitizeValue(obj[key], depth + 1) as Record<string, unknown>;
+        sanitized[key] = { ...config, url: originOnly((obj[key] as any).url) };
       } else {
         sanitized[key] = sanitizeValue(obj[key], depth + 1);
       }
