@@ -12,6 +12,7 @@ import { getApp, applyApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
+import { applyManifestPolicy, manifestPolicyBaseline } from './manifestPolicy';
 import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
 import { describeFailedInitContainers } from './initContainerDiagnostics';
 import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
@@ -464,17 +465,27 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
       }
       const globalForManifest = await getApp(appId);
       const normalizedManifest = overlayRuntimeIdentityAndInfrastructure(parsed.data, globalForManifest);
-      await writeTenantAppDef(appId, tenantId, normalizedManifest);
-      const result = await applyApp(normalizedManifest, `manifest:${resolveManifestImageRef(app, newTag)}`);
+      // The image may only change allowlisted fields; protected ones keep the
+      // admin's value. The snapshot and the global definition get the same result.
+      const { next: allowedManifest, ignored } = applyManifestPolicy(
+        manifestPolicyBaseline(globalForManifest ? toStaticAppDefinition(globalForManifest) : null, originalTenantAppStatic),
+        normalizedManifest,
+      );
+      const ignoredNote = ignored.length > 0 ? `; ignored protected fields: ${ignored.join(', ')}` : '';
+      if (ignored.length > 0) {
+        console.warn(`[manifest] ignored protected fields from image ${newTag}: ${ignored.join(', ')} (app '${appId}', tenant '${tenantId}')`);
+      }
+      await writeTenantAppDef(appId, tenantId, allowedManifest);
+      const result = await applyApp(allowedManifest, `manifest:${resolveManifestImageRef(app, newTag)}`);
       manifestApplied = true;
       if (result.result === 'updated') {
         console.log(`[manifest] Updated app '${appId}' from image ${newTag} for tenant '${tenantId}' (changed: ${result.changedKeys.join(', ')})`);
-        emit('manifest', 'completed', `updated (changed: ${result.changedKeys.join(', ') || 'none'})`);
+        emit('manifest', 'completed', `updated (changed: ${result.changedKeys.join(', ') || 'none'})${ignoredNote}`);
       } else if (result.result === 'created') {
         console.log(`[manifest] Created app '${appId}' from image ${newTag} for tenant '${tenantId}'`);
-        emit('manifest', 'completed', 'created');
+        emit('manifest', 'completed', `created${ignoredNote}`);
       } else {
-        emit('manifest', 'completed', 'noop (manifest matches current definition)');
+        emit('manifest', 'completed', `noop (manifest matches current definition)${ignoredNote}`);
       }
       const reloaded = await readTenantAppDef(appId, tenantId);
       // Re-apply the overlay: manifest sync can overwrite the registry block
