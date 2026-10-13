@@ -163,6 +163,7 @@ describe('container ownership labels and scoped operations', () => {
     const getContainerLogs = vi.fn(async () => 'secret logs');
     vi.doMock('../services/docker', () => ({
       listContainers: vi.fn(async () => []),
+      findManagedContainer: vi.fn(async () => null),
       getContainerLogs,
       restartContainer: vi.fn(),
       listTenants: vi.fn(async () => []),
@@ -183,6 +184,7 @@ describe('container ownership labels and scoped operations', () => {
     const restartContainer = vi.fn(async () => undefined);
     vi.doMock('../services/docker', () => ({
       listContainers: vi.fn(async () => []),
+      findManagedContainer: vi.fn(async () => null),
       getContainerLogs: vi.fn(),
       restartContainer,
       listTenants: vi.fn(async () => []),
