@@ -15,6 +15,7 @@ import {
 import { withFileLock } from './fileLock';
 import { clearAdapterCache } from '../adapters/registry';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
+import { ConflictError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const APPS_D_DIR = 'apps.d';
 const RUNTIME_FILE = 'apps.runtime.json';
@@ -187,7 +188,7 @@ export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
   return withFileLock('apps', async () => {
     const existing = await readApps();
     if (existing.find(a => a.id === input.id)) {
-      throw new Error(`App '${input.id}' already exists`);
+      throw new ConflictError(`App '${input.id}' already exists`);
     }
 
     const now = new Date().toISOString();
@@ -195,7 +196,7 @@ export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
     const parsed = AppDefinitionSchema.safeParse(app);
     if (!parsed.success) {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-      throw new Error(`Invalid app definition: ${errors}`);
+      throw new ValidationError(`Invalid app definition: ${errors}`);
     }
 
     await writeStatic(parsed.data);
@@ -209,7 +210,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
     const apps = await readApps();
     const index = apps.findIndex(a => a.id === input.id);
     if (index === -1) {
-      throw new Error(`App '${input.id}' not found`);
+      throw new NotFoundError(`App '${input.id}' not found`);
     }
 
     const now = new Date().toISOString();
@@ -217,7 +218,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
     const parsed = AppDefinitionSchema.safeParse(updated);
     if (!parsed.success) {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-      throw new Error(`Invalid app definition: ${errors}`);
+      throw new ValidationError(`Invalid app definition: ${errors}`);
     }
 
     await writeStatic(parsed.data);
@@ -244,13 +245,13 @@ export async function applyApp(
     const parsed = AppDefinitionStaticSchema.safeParse(input);
     if (!parsed.success) {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-      throw new Error(`App definition failed validation: ${errors}`);
+      throw new ValidationError(`App definition failed validation: ${errors}`);
     }
     const next = parsed.data;
 
     const trashed = await readTrashed();
     if (trashed.some(t => t.app.id === next.id)) {
-      throw new Error(
+      throw new ConflictError(
         `App '${next.id}' is in trash. Restore with 'overwatch apps restore ${next.id}' ` +
         `or permanently remove with 'overwatch apps purge ${next.id}' before applying.`,
       );
@@ -375,7 +376,7 @@ export async function deleteApp(id: string, force: boolean = false, deletedBy: s
     const apps = await readApps();
     const victim = apps.find(a => a.id === id);
     if (!victim) {
-      throw new Error(`App '${id}' not found`);
+      throw new NotFoundError(`App '${id}' not found`);
     }
 
     const { getAppsDir } = await import('../config/loader');
@@ -389,7 +390,7 @@ export async function deleteApp(id: string, force: boolean = false, deletedBy: s
     }
 
     if (tenantCount > 0 && !force) {
-      throw new Error(`App '${id}' has ${tenantCount} tenant(s). Delete all tenants first or use force=true.`);
+      throw new ConflictError(`App '${id}' has ${tenantCount} tenant(s). Delete all tenants first or use force=true.`);
     }
 
     // Soft-delete (to apps.trashed.json) only when tenants exist — preserves
@@ -417,11 +418,11 @@ export async function restoreApp(id: string): Promise<AppDefinition> {
     const trashed = await readTrashed();
     const tIdx = trashed.findIndex(t => t.app.id === id);
     if (tIdx === -1) {
-      throw new Error(`No trashed app with id '${id}' to restore`);
+      throw new NotFoundError(`No trashed app with id '${id}' to restore`);
     }
     const apps = await readApps();
     if (apps.some(a => a.id === id)) {
-      throw new Error(`Cannot restore '${id}': an app with that id already exists`);
+      throw new ConflictError(`Cannot restore '${id}': an app with that id already exists`);
     }
     const restored = trashed[tIdx].app;
     await writeStatic(restored);
@@ -442,7 +443,7 @@ export async function purgeApp(id: string): Promise<void> {
     const trashed = await readTrashed();
     const tIdx = trashed.findIndex(t => t.app.id === id);
     if (tIdx === -1) {
-      throw new Error(`No trashed app with id '${id}' to purge`);
+      throw new NotFoundError(`No trashed app with id '${id}' to purge`);
     }
     trashed.splice(tIdx, 1);
     await saveTrashed(trashed);

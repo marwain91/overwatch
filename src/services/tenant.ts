@@ -21,6 +21,7 @@ import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { SLUG_RE } from '../utils/validators';
 import { parseEnv } from '../utils/env';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
+import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const execFileAsync = promisify(execFile);
 
@@ -140,31 +141,31 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   // and breaks taint flow into path.join for static analysis.
   const appIdMatch = input.appId.match(SLUG_RE);
   if (!appIdMatch) {
-    throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
+    throw new ValidationError('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
   }
   const appId = appIdMatch[0];
   const tenantIdMatch = input.tenantId.match(SLUG_RE);
   if (!tenantIdMatch) {
-    throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
+    throw new ValidationError('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
   const tenantId = tenantIdMatch[0];
   const domainValidation = validateTenantDomain(domain);
   if (!domainValidation.valid) {
-    throw new Error(domainValidation.error);
+    throw new ValidationError(domainValidation.error || 'Invalid domain');
   }
 
   // Load app definition first — adapter is scoped to the app's effective db_prefix
   const app = await getApp(appId);
   if (!app) {
-    throw new Error(`App '${appId}' not found`);
+    throw new NotFoundError(`App '${appId}' not found`);
   }
-  const db = getDatabaseAdapter(app);
 
   const tag = imageTag || app.default_image_tag || 'latest';
   const tagValidation = validateImageTag(tag);
   if (!tagValidation.valid) {
-    throw new Error(tagValidation.error);
+    throw new ValidationError(tagValidation.error || 'Invalid image tag');
   }
+  const db = getDatabaseAdapter(app);
   const tenantPath = getTenantPath(appId, tenantId);
   const tenantsDir = path.join(getAppsDir(), appId, 'tenants');
   const dbTenantId = `${appId}_${tenantId}`;
@@ -181,7 +182,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
       tenantDirCreated = true;
     } catch (err: any) {
       if (err.code === 'EEXIST') {
-        throw new Error(`Tenant '${tenantId}' already exists in app '${appId}'`);
+        throw new ConflictError(`Tenant '${tenantId}' already exists in app '${appId}'`);
       }
       throw err;
     }
@@ -255,7 +256,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
       throw error;
     }
     const reason = extractComposeErrorMessage(error);
-    throw new Error(`Failed to create tenant: ${reason}${initFailures ? `\n\n${initFailures}` : ''}`);
+    throw new HttpError(500, `Failed to create tenant: ${reason}${initFailures ? `\n\n${initFailures}` : ''}`, { expose: true });
   }
 
   return {
@@ -277,7 +278,7 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   try {
     await fs.access(tenantPath);
   } catch {
-    throw new Error(`Tenant '${tenantId}' not found in app '${appId}'`);
+    throw new NotFoundError(`Tenant '${tenantId}' not found in app '${appId}'`);
   }
 
   // Verify path hasn't been manipulated via symlinks
@@ -313,8 +314,10 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   } catch (err: any) {
     composeDownOk = false;
     if (!keepData) {
-      throw new Error(
-        `Failed to stop tenant containers: ${err?.message || err}. Refusing to drop database — fix and retry.`
+      throw new HttpError(
+        500,
+        `Failed to stop tenant containers: ${err?.message || err}. Refusing to drop database — fix and retry.`,
+        { expose: true },
       );
     }
     // With keepData=true, containers may already be gone; continue.
@@ -342,17 +345,17 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // this breaks taint flow visibly for static analysis and protects CLI callers.
   const appIdMatch = rawAppId.match(SLUG_RE);
   if (!appIdMatch) {
-    throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
+    throw new ValidationError('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
   }
   const appId = appIdMatch[0];
   const tenantIdMatch = rawTenantId.match(SLUG_RE);
   if (!tenantIdMatch) {
-    throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
+    throw new ValidationError('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
   const tenantId = tenantIdMatch[0];
   const tagValidation = validateImageTag(newTag);
   if (!tagValidation.valid) {
-    throw new Error(tagValidation.error);
+    throw new ValidationError(tagValidation.error || 'Invalid image tag');
   }
 
   const config = loadConfig();
@@ -373,7 +376,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   try {
     await fs.access(envPath);
   } catch {
-    throw new Error(`Tenant '${tenantId}' not found in app '${appId}'`);
+    throw new NotFoundError(`Tenant '${tenantId}' not found in app '${appId}'`);
   }
 
   // Verify path hasn't been manipulated via symlinks
@@ -384,7 +387,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // a snapshot (boot seeds these, but this keeps the path resilient).
   let app = await readTenantAppDef(appId, tenantId);
   if (!app) {
-    throw new Error(`App '${appId}' not found`);
+    throw new NotFoundError(`App '${appId}' not found`);
   }
   // Overlay infrastructure-level fields (`registry`, `default_image_tag`)
   // from the global definition. The frozen snapshot owns service-level
@@ -457,7 +460,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
       const parsed = AppDefinitionStaticSchema.safeParse(manifest);
       if (!parsed.success) {
         const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-        throw new Error(`Image manifest failed validation: ${errors}`);
+        throw new HttpError(500, `Image manifest failed validation: ${errors}`, { expose: true });
       }
       const globalForManifest = await getApp(appId);
       const normalizedManifest = overlayRuntimeIdentityAndInfrastructure(parsed.data, globalForManifest);
@@ -530,7 +533,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     const detail = extractComposeErrorMessage(error);
     emit('pull', 'failed', detail);
     emit('failed', 'failed', detail);
-    throw new Error(detail);
+    throw new HttpError(500, detail, { expose: true });
   }
 
   // Restart containers with new images. --remove-orphans sweeps containers
@@ -557,7 +560,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     });
     emit('restart', 'failed', detail);
     emit('failed', 'failed', detail);
-    throw new Error(detail);
+    throw new HttpError(500, detail, { expose: true });
   }
 }
 

@@ -3,6 +3,7 @@ import { startTenant, stopTenant, restartTenant } from '../../services/docker';
 import { requireToolRole, writeMcpAudit, ToolRoleError } from '../audit';
 import { McpAuthExtra } from '../auth';
 import { slugInput } from './read';
+import { HttpError } from '../../utils/httpErrors';
 
 type ToolResult = { isError?: boolean; content: { type: 'text'; text: string }[]; structuredContent?: any };
 
@@ -21,7 +22,7 @@ function makeLifecycleHandler(tool: string, fn: (appId: string, tenantId: string
       writeMcpAudit({ email: auth.email, tool, args, status: 200 });
       return { content: [{ type: 'text', text: `${tool} ok for ${args.appId}/${args.tenantId}` }], structuredContent: { success: true, ...args } };
     } catch (e: any) {
-      writeMcpAudit({ email: auth.email, tool, args, status: 500 });
+      writeMcpAudit({ email: auth.email, tool, args, status: e instanceof HttpError ? e.status : 500 });
       return { isError: true, content: [{ type: 'text', text: e?.message || String(e) }] };
     }
   };

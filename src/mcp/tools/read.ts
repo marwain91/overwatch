@@ -4,6 +4,7 @@ import { listTenants, getTenantInfo } from '../../services/docker';
 import { requireToolRole, ToolRoleError } from '../audit';
 import { McpAuthExtra } from '../auth';
 import { SLUG_RE } from '../../utils/validators';
+import { HttpError } from '../../utils/httpErrors';
 
 // Same slug rule REST enforces via validateAppId/validateTenantId.
 export const slugInput = z.string().max(63).regex(SLUG_RE, 'must be a lowercase slug (a-z, 0-9, -)');
@@ -18,7 +19,7 @@ function err(message: string): ToolResult {
 }
 
 // Wrap a read handler: enforce the viewer gate and convert thrown errors into
-// MCP tool error results. Role denials surface their (safe) message; any other
+// MCP tool error results. Role denials and exposed HttpErrors surface their (safe) message; any other
 // unexpected error returns a generic message (the raw error — which may carry a
 // filesystem path — is logged server-side, never returned to the client).
 async function guardRead(auth: McpAuthExtra, action: string, fn: () => Promise<ToolResult>): Promise<ToolResult> {
@@ -27,6 +28,7 @@ async function guardRead(auth: McpAuthExtra, action: string, fn: () => Promise<T
     return await fn();
   } catch (e) {
     if (e instanceof ToolRoleError) return err(e.message);
+    if (e instanceof HttpError && e.expose) return err(e.message);
     console.error(`[mcp] ${action} failed:`, e);
     return err(`Failed to ${action}`);
   }
