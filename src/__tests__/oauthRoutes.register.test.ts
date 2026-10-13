@@ -53,4 +53,54 @@ describe('oauth /register + metadata', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_redirect_uri');
   });
+
+  const reg = (body: object) => request(appWith()).post('/oauth/register').send(body);
+
+  it.each([
+    'https://client.example/cb',
+    'http://127.0.0.1:8123/cb',
+    'http://localhost/cb',
+    'http://localhost:3000/cb',
+    'http://[::1]:9000/cb',
+    'HTTPS://client.example/cb',
+    'HTTP://127.0.0.1/cb',
+    'http://[0:0:0:0:0:0:0:1]/cb', // normalised to [::1]
+  ])('accepts redirect uri %s', async (u) => {
+    expect((await reg({ client_name: 'x', redirect_uris: [u] })).status).toBe(201);
+  });
+
+  it.each([
+    'http://client.example/cb',
+    'HTTP://client.example/cb',
+    'http://127.0.0.1.evil.com/cb',
+    'http://localhost.evil.com/cb',
+    'ftp://client.example/cb',
+    'javascript:alert(1)',
+    'myapp://cb',
+    'https://user:pw@client.example/cb',
+    'https://client.example/cb#frag',
+  ])('rejects redirect uri %s', async (u) => {
+    const res = await reg({ client_name: 'x', redirect_uris: [u] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_redirect_uri');
+  });
+
+  it('rejects a non-string or oversized client_name', async () => {
+    expect((await reg({ client_name: { a: 1 }, redirect_uris: ['https://c/cb'] })).status).toBe(400);
+    expect((await reg({ client_name: 'n'.repeat(101), redirect_uris: ['https://c/cb'] })).status).toBe(400);
+  });
+
+  it('rejects too many redirect uris', async () => {
+    const uris = Array.from({ length: 11 }, (_, i) => `https://c/cb${i}`);
+    expect((await reg({ client_name: 'x', redirect_uris: uris })).status).toBe(400);
+  });
+
+  it('refuses registration once the client cap is reached by used clients', async () => {
+    const clients = Array.from({ length: 200 }, (_, i) => ({
+      client_id: `c${i}`, redirect_uris: ['https://c/cb'], created_at: new Date().toISOString(), last_used_at: new Date().toISOString(),
+    }));
+    await fs.writeFile(path.join(tmpDir, 'mcp-oauth.json'), JSON.stringify({ clients, refreshTokens: [] }));
+    const res = await reg({ client_name: 'x', redirect_uris: ['https://c/cb'] });
+    expect(res.status).toBe(429);
+  });
 });
