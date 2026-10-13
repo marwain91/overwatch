@@ -21,7 +21,7 @@ vi.mock('../services/users', async (orig) => {
 });
 
 import { createOAuthRouter } from '../routes/oauth';
-import { registerClient, consumeAuthCode } from '../oauth/store';
+import { registerClient, getClient, consumeAuthCode } from '../oauth/store';
 import { isAdminEmail } from '../services/users';
 
 const ISSUER = 'https://ow.example.com';
@@ -96,6 +96,7 @@ describe('oauth consent step', () => {
     expect(rec?.client_id).toBe(client.client_id);
     expect(rec?.email).toBe('a@b.c');
     expect(rec?.role).toBe('editor');
+    expect((await getClient(client.client_id))?.last_used_at).toBeDefined();
   });
 
   it('deny redirects with access_denied and no code', async () => {

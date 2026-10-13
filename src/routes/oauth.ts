@@ -314,10 +314,10 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     }
 
     if (grant === 'refresh_token') {
-      const rec = await consumeRefreshToken(req.body?.refresh_token);
-      if (!rec) return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown or expired refresh token' });
-      // The token is already consumed, so a mismatching client burns it (likely stolen).
-      if (!clientId || rec.client_id !== clientId) return res.status(400).json({ error: 'invalid_grant', error_description: 'client_id mismatch' });
+      // Validate client_id before consuming: a wrong caller must not be able to burn the token.
+      if (!clientId) return res.status(400).json({ error: 'invalid_grant', error_description: 'client_id required' });
+      const rec = await consumeRefreshToken(req.body?.refresh_token, clientId);
+      if (!rec) return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown, expired or mismatched refresh token' });
       if (!(await isAdminEmail(rec.email))) return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
       const role = normaliseRole(await getUserRole(rec.email));
       const access_token = issueAccessToken({ email: rec.email, role, issuer, ttl: accessTtl });

@@ -62,12 +62,16 @@ describe('oauth /register + metadata', () => {
     'http://localhost/cb',
     'http://localhost:3000/cb',
     'http://[::1]:9000/cb',
+    'HTTPS://client.example/cb',
+    'HTTP://127.0.0.1/cb',
+    'http://[0:0:0:0:0:0:0:1]/cb', // normalised to [::1]
   ])('accepts redirect uri %s', async (u) => {
     expect((await reg({ client_name: 'x', redirect_uris: [u] })).status).toBe(201);
   });
 
   it.each([
     'http://client.example/cb',
+    'HTTP://client.example/cb',
     'http://127.0.0.1.evil.com/cb',
     'http://localhost.evil.com/cb',
     'ftp://client.example/cb',
@@ -91,9 +95,9 @@ describe('oauth /register + metadata', () => {
     expect((await reg({ client_name: 'x', redirect_uris: uris })).status).toBe(400);
   });
 
-  it('refuses registration once the client cap is reached', async () => {
+  it('refuses registration once the client cap is reached by used clients', async () => {
     const clients = Array.from({ length: 200 }, (_, i) => ({
-      client_id: `c${i}`, redirect_uris: ['https://c/cb'], created_at: new Date().toISOString(),
+      client_id: `c${i}`, redirect_uris: ['https://c/cb'], created_at: new Date().toISOString(), last_used_at: new Date().toISOString(),
     }));
     await fs.writeFile(path.join(tmpDir, 'mcp-oauth.json'), JSON.stringify({ clients, refreshTokens: [] }));
     const res = await reg({ client_name: 'x', redirect_uris: ['https://c/cb'] });

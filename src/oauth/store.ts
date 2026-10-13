@@ -35,6 +35,9 @@ function sha256(s: string): string {
 // ---- Clients (persisted) ----
 export const MAX_CLIENTS = 200;
 export const CLIENT_IDLE_MS = 90 * 24 * 3600 * 1000;
+// Clients that never completed an authorization expire quickly so unauthenticated
+// registrations can't squat the cap.
+export const UNUSED_CLIENT_TTL_MS = 24 * 3600 * 1000;
 const TOUCH_INTERVAL_MS = 24 * 3600 * 1000; // avoid a store write on every request
 
 export class ClientLimitError extends Error {
@@ -51,7 +54,8 @@ function lastActivityMs(c: RegisteredClient): number {
 
 // Drops clients idle for CLIENT_IDLE_MS plus their refresh tokens. Mutates state.
 function pruneIdleClients(state: OAuthFile, now: number): number {
-  const keep = state.clients.filter(c => now - lastActivityMs(c) <= CLIENT_IDLE_MS);
+  const keep = state.clients.filter(c =>
+    now - lastActivityMs(c) <= (c.last_used_at ? CLIENT_IDLE_MS : UNUSED_CLIENT_TTL_MS));
   const removed = state.clients.length - keep.length;
   if (removed > 0) {
     const ids = new Set(keep.map(c => c.client_id));
@@ -65,7 +69,16 @@ export async function registerClient(input: { client_name?: string; redirect_uri
   return withFileLock('mcp-oauth', async () => {
     const state = await readFileState();
     pruneIdleClients(state, Date.now());
-    if (state.clients.length >= MAX_CLIENTS) throw new ClientLimitError();
+    if (state.clients.length >= MAX_CLIENTS) {
+      // Evict the oldest never-used client; refuse only when every client has been used.
+      let oldest = -1;
+      state.clients.forEach((c, i) => {
+        if (!c.last_used_at && (oldest === -1 || lastActivityMs(c) < lastActivityMs(state.clients[oldest]))) oldest = i;
+      });
+      if (oldest === -1) throw new ClientLimitError();
+      const [gone] = state.clients.splice(oldest, 1);
+      state.refreshTokens = state.refreshTokens.filter(t => t.client_id !== gone.client_id);
+    }
     const client: RegisteredClient = {
       client_id: crypto.randomUUID(),
       client_name: input.client_name,
@@ -136,12 +149,15 @@ export async function saveRefreshToken(token: string, rec: Omit<RefreshTokenReco
 }
 
 // Returns the record and removes it (rotation). Expired/unknown -> undefined.
-export async function consumeRefreshToken(token: string): Promise<Omit<RefreshTokenRecord, 'token_hash'> | undefined> {
+// With expectedClientId, a token owned by another client is left untouched (returns undefined)
+// so a third party can't revoke a session just by presenting its token.
+export async function consumeRefreshToken(token: string, expectedClientId?: string): Promise<Omit<RefreshTokenRecord, 'token_hash'> | undefined> {
   return withFileLock('mcp-oauth', async () => {
     const state = await readFileState();
     const hash = sha256(token);
     const idx = state.refreshTokens.findIndex(t => t.token_hash === hash);
     if (idx === -1) return undefined;
+    if (expectedClientId !== undefined && state.refreshTokens[idx].client_id !== expectedClientId) return undefined;
     // Splice + persist unconditionally so an expired token can't be replayed.
     const [rec] = state.refreshTokens.splice(idx, 1);
     await writeFileState(state);
@@ -178,6 +194,11 @@ export async function sweepOAuthStore(): Promise<{ authCodes: number; refreshTok
 }
 
 let sweeper: NodeJS.Timeout | undefined;
+
+export function stopOAuthSweeper(): void {
+  if (sweeper) clearInterval(sweeper);
+  sweeper = undefined;
+}
 
 export function startOAuthSweeper(): void {
   if (sweeper) return;

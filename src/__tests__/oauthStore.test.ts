@@ -13,7 +13,7 @@ import {
   registerClient, getClient,
   putAuthCode, consumeAuthCode,
   saveRefreshToken, consumeRefreshToken,
-  sweepOAuthStore, touchClient, MAX_CLIENTS, CLIENT_IDLE_MS, ClientLimitError,
+  sweepOAuthStore, touchClient, UNUSED_CLIENT_TTL_MS, startOAuthSweeper, stopOAuthSweeper, MAX_CLIENTS, CLIENT_IDLE_MS, ClientLimitError,
 } from '../oauth/store';
 
 describe('oauth store', () => {
@@ -99,9 +99,44 @@ describe('oauth store', () => {
     expect((await getClient('a'))?.last_used_at).toBeDefined();
   });
 
+  it('prunes never-used clients after 24h but keeps used ones', async () => {
+    await seed({
+      clients: [
+        { client_id: 'unused-old', redirect_uris: ['https://c/cb'], created_at: iso(UNUSED_CLIENT_TTL_MS + 1000) },
+        { client_id: 'unused-new', redirect_uris: ['https://c/cb'], created_at: iso(1000) },
+        { client_id: 'used-old', redirect_uris: ['https://c/cb'], created_at: iso(UNUSED_CLIENT_TTL_MS * 5), last_used_at: iso(UNUSED_CLIENT_TTL_MS * 2) },
+      ],
+      refreshTokens: [],
+    });
+    expect((await sweepOAuthStore()).clients).toBe(1);
+    expect((await read()).clients.map((c: any) => c.client_id).sort()).toEqual(['unused-new', 'used-old']);
+  });
+
+  it('at the cap, registration evicts the oldest never-used client', async () => {
+    const clients = Array.from({ length: MAX_CLIENTS }, (_, i) => ({
+      client_id: `c${i}`, redirect_uris: ['https://c/cb'], created_at: iso(10_000 - i), // c0 oldest
+    }));
+    clients[5] = { ...clients[5], last_used_at: iso(1) } as any;
+    await seed({ clients, refreshTokens: [] });
+    const c = await registerClient({ client_name: 'new', redirect_uris: ['https://c/cb'] });
+    const ids = (await read()).clients.map((x: any) => x.client_id);
+    expect(ids).toHaveLength(MAX_CLIENTS);
+    expect(ids).not.toContain('c0');
+    expect(ids).toContain('c1');
+    expect(ids).toContain('c5');
+    expect(ids).toContain(c.client_id);
+  });
+
+  it('sweeper can be started and stopped', () => {
+    startOAuthSweeper();
+    startOAuthSweeper();
+    stopOAuthSweeper();
+    stopOAuthSweeper();
+  });
+
   it('registerClient prunes idle clients before enforcing the cap', async () => {
     const clients = Array.from({ length: MAX_CLIENTS }, (_, i) => ({
-      client_id: `c${i}`, redirect_uris: ['https://c/cb'], created_at: iso(CLIENT_IDLE_MS + 1000),
+      client_id: `c${i}`, redirect_uris: ['https://c/cb'], created_at: iso(CLIENT_IDLE_MS + 1000), last_used_at: iso(CLIENT_IDLE_MS + 1000),
     }));
     await seed({ clients, refreshTokens: [] });
     const c = await registerClient({ client_name: 'new', redirect_uris: ['https://c/cb'] });
@@ -111,7 +146,7 @@ describe('oauth store', () => {
 
   it('registerClient throws ClientLimitError when full of active clients', async () => {
     const clients = Array.from({ length: MAX_CLIENTS }, (_, i) => ({
-      client_id: `c${i}`, redirect_uris: ['https://c/cb'], created_at: iso(1000),
+      client_id: `c${i}`, redirect_uris: ['https://c/cb'], created_at: iso(1000), last_used_at: iso(1000),
     }));
     await seed({ clients, refreshTokens: [] });
     await expect(registerClient({ client_name: 'new', redirect_uris: ['https://c/cb'] })).rejects.toBeInstanceOf(ClientLimitError);

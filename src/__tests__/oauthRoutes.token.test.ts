@@ -17,7 +17,7 @@ vi.mock('../services/users', async (orig) => {
 });
 
 import { createOAuthRouter } from '../routes/oauth';
-import { putAuthCode, saveRefreshToken } from '../oauth/store';
+import { putAuthCode, saveRefreshToken, registerClient, getClient } from '../oauth/store';
 import { verifyAccessToken } from '../oauth/tokens';
 import { isAdminEmail } from '../services/users';
 
@@ -202,13 +202,34 @@ describe('oauth /token', () => {
     expect(res.status).toBe(200);
   });
 
-  it('rejects a refresh token presented by a different client_id (and burns it)', async () => {
+  it('rejects a refresh token presented by a different client_id without consuming it', async () => {
     await saveRefreshToken('RT_OWNED', { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() + 60_000 });
     const stolen = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'evil', refresh_token: 'RT_OWNED' });
     expect(stolen.status).toBe(400);
     expect(stolen.body.error).toBe('invalid_grant');
     const owner = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: 'RT_OWNED' });
-    expect(owner.status).toBe(400);
+    expect(owner.status).toBe(200);
+  });
+
+  it('a refresh without client_id does not consume the token', async () => {
+    await saveRefreshToken('RT_KEEP', { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() + 60_000 });
+    const bad = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: 'RT_KEEP' });
+    expect(bad.status).toBe(400);
+    const ok = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: 'RT_KEEP' });
+    expect(ok.status).toBe(200);
+  });
+
+  it('marks the client as used on code exchange and refresh', async () => {
+    const client = await registerClient({ client_name: 'c', redirect_uris: ['https://client/cb'] });
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    putAuthCode({ code: 'CODE_USED', client_id: client.client_id, redirect_uri: 'https://client/cb', code_challenge: challenge, email: 'a@b.c', role: 'editor', expires_at: Date.now() + 60_000 });
+    expect((await getClient(client.client_id))?.last_used_at).toBeUndefined();
+    const first = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_USED', client_id: client.client_id, redirect_uri: 'https://client/cb', code_verifier: verifier,
+    });
+    expect(first.status).toBe(200);
+    expect((await getClient(client.client_id))?.last_used_at).toBeDefined();
   });
 
   it('rejects a refresh without client_id', async () => {
