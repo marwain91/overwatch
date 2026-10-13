@@ -7,7 +7,7 @@ import path from 'path';
 import { errorHandler } from './middleware/errorHandler';
 import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors, clearConfigCache } from './config';
 import { loginToAllRegistries } from './adapters/registry';
-import { listApps } from './services/app';
+import { listApps, setAppsChangedHook } from './services/app';
 import { authMiddleware } from './middleware/auth';
 import { rateLimit, destructiveRateLimit } from './middleware/rateLimit';
 import { auditLog } from './middleware/audit';
@@ -26,7 +26,10 @@ import traefikRouter from './routes/traefik';
 import { closeAllDatabaseAdapters } from './adapters/database';
 import { mountMcp } from './mcp/server';
 import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions, repairBindMountedDataFiles } from './services/envVars';
-import { startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns } from './services/scheduler';
+import {
+  startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns,
+  reconcileBackupSchedulers, startSchedulerReconciler, stopSchedulerReconciler,
+} from './services/scheduler';
 import { flushAuditLog } from './middleware/audit';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
 import { startDockerEventListener, stopDockerEventListener } from './services/dockerEvents';
@@ -254,6 +257,8 @@ async function start() {
 
   await runStartupStep('report abandoned backup runs', () => reportAbandonedRuns());
   await runStartupStep('start backup schedulers', () => startAllBackupSchedulers());
+  setAppsChangedHook(reconcileBackupSchedulers);
+  startSchedulerReconciler();
 
   // Daily config snapshot: protects against apps.d/, apps.runtime.json, env-vars.json loss.
   // 03:17 UTC (off-peak). Also run one immediately on boot so we have a recent snapshot.
@@ -301,6 +306,8 @@ async function start() {
     console.log(`\n${signal} received — shutting down gracefully...`);
 
     stopRetention();
+    stopSchedulerReconciler();
+    setAppsChangedHook(undefined);
     stopBackupScheduler();
     stopAlertEngine();
     stopHealthChecker();
