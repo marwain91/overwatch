@@ -4,6 +4,8 @@ import { GitLabAdapter } from './gitlab';
 import { DockerHubAdapter } from './dockerhub';
 import { ECRAdapter } from './ecr';
 import { CustomRegistryAdapter } from './custom';
+import { loadConfig } from '../../config/loader';
+import { isReservedSecretEnv } from '../../utils/reservedEnv';
 import { AppDefinition, AppRegistry } from '../../models/app';
 
 export * from './types';
@@ -41,6 +43,13 @@ export function createRegistryAdapter(adapterConfig: RegistryAdapterConfig): Reg
  */
 function appRegistryToAdapterConfig(registry: AppRegistry): RegistryAdapterConfig {
   const auth = registry.auth;
+  let config = null;
+  try { config = loadConfig(); } catch { /* static reserved list still applies */ }
+  for (const [field, envName] of [['token_env', auth.token_env], ['username_env', auth.username_env]] as const) {
+    if (envName && isReservedSecretEnv(envName, config, { forRegistryAuth: true })) {
+      throw new Error(`registry.auth.${field} '${envName}' is a reserved Overwatch secret and cannot be used as a registry credential`);
+    }
+  }
   return {
     type: registry.type,
     url: registry.url,

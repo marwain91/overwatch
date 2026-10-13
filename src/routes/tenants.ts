@@ -8,6 +8,8 @@ import { isValidSlug } from '../utils/validators';
 import { validateTenantId } from '../middleware/validators';
 import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
+import { loadConfig } from '../config/loader';
+import { isReservedSecretEnv } from '../utils/reservedEnv';
 import { getTenantTraefik, updateTenantTraefik } from '../services/traefikConfig';
 
 const router = Router({ mergeParams: true });
@@ -103,6 +105,17 @@ router.post('/:tenantId/access-token', validateTenantId, requireRole('admin'), a
   }
 
   const secretEnv = adminAccess.secret_env || 'AUTH_SERVICE_SECRET';
+
+  // Tokens signed with an Overwatch core secret (e.g. JWT_SECRET) would be valid
+  // against Overwatch itself; refuse before reading the value.
+  let config = null;
+  try { config = loadConfig(); } catch { /* static reserved list still applies */ }
+  if (isReservedSecretEnv(secretEnv, config)) {
+    console.error(`[AdminAccess] Refusing to mint for app ${appId}: secret_env '${secretEnv}' is a reserved Overwatch secret`);
+    return res.status(400).json({
+      error: `admin_access.secret_env '${secretEnv}' is a reserved Overwatch secret and cannot sign tenant admin tokens. Use a dedicated env such as AUTH_SERVICE_SECRET.`,
+    });
+  }
   const secret = process.env[secretEnv];
 
   if (!secret) {

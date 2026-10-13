@@ -302,6 +302,8 @@ Apps are created and managed through the web UI, the HTTP API (`POST /api/apps`)
 }
 ```
 
+`admin_access.secret_env` and registry `token_env` / `username_env` must not name an Overwatch core secret (`JWT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, the database root password env, `RESTIC_PASSWORD`, `R2_*`, `AWS_*`, `GHCR_TOKEN`). Token minting and registry adapter creation refuse these with an error, and a stored definition that names one logs a warning at load. `AUTH_SERVICE_SECRET` is the intended tenant-admin secret, and `GHCR_TOKEN` stays valid as a GHCR registry token.
+
 ### Services
 
 Each service in an app defines a container that gets deployed per tenant:
