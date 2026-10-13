@@ -87,9 +87,12 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       await this.initialize();
     }
 
-    const pattern = this.config.dbPrefix ? `${this.config.dbPrefix}_%` : '%';
-    const [rows] = await this.pool!.query('SHOW DATABASES LIKE ?', [pattern]);
-    return (rows as any[]).map(row => Object.values(row)[0] as string);
+    const prefix = this.config.dbPrefix ? `${this.config.dbPrefix}_` : '';
+    const [rows] = await this.pool!.query('SHOW DATABASES LIKE ?', [`${prefix}%`]);
+    const names = (rows as any[]).map(row => Object.values(row)[0] as string);
+    // `_` is a LIKE wildcard, so the pattern alone over-matches
+    // (prefix "a_b" also matches "aXb_t1"); keep only true prefix matches.
+    return prefix ? names.filter(n => n.startsWith(prefix)) : names;
   }
 
   async dumpDatabase(tenantId: string, outputPath: string): Promise<void> {

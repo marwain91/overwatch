@@ -18,7 +18,7 @@ import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '.
 import { eventBus } from './eventBus';
 import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
-import { SLUG_RE, isValidSlug } from '../utils/validators';
+import { SLUG_RE } from '../utils/validators';
 import { parseEnv } from '../utils/env';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
 
@@ -41,10 +41,6 @@ export interface TenantConfig {
 
 function generatePassword(length: number): string {
   return crypto.randomBytes(length).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, length);
-}
-
-function validateTenantId(tenantId: string): boolean {
-  return isValidSlug(tenantId);
 }
 
 export function validateImageTag(imageTag: unknown): { valid: boolean; error?: string } {
@@ -308,9 +304,6 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
     // Fall back to constructed name
   }
 
-  // Clean up tenant env var overrides
-  await deleteTenantAllOverrides(appId, tenantId);
-
   // Stop containers. If this fails we refuse to drop the DB — orphaned
   // containers running against a gone DB are worse than an incomplete delete.
   // Caller can retry once the compose issue is resolved.
@@ -333,6 +326,11 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
     await db.initialize();
     await db.dropDatabase(dbTenantId);
   }
+
+  // Clean up tenant env var overrides only once teardown has succeeded: a
+  // failed compose down throws above and the tenant must keep its config for
+  // the retry.
+  await deleteTenantAllOverrides(appId, tenantId);
 
   // Remove tenant directory
   await fs.rm(tenantPath, { recursive: true, force: true });
@@ -601,26 +599,6 @@ async function pruneReplacedImages(
     }
   } catch (err: any) {
     console.warn(`[tenant:update] image cleanup skipped for ${appId}/${tenantId}: ${err?.message || err}`);
-  }
-}
-
-export async function getTenantConfig(appId: string, tenantId: string): Promise<TenantConfig | null> {
-  const tenantPath = getTenantPath(appId, tenantId);
-  const envPath = path.join(tenantPath, '.env');
-
-  try {
-    const envContent = await fs.readFile(envPath, 'utf-8');
-    const env = parseEnv(envContent);
-
-    return {
-      appId,
-      tenantId,
-      domain: env.TENANT_DOMAIN || '',
-      imageTag: env.IMAGE_TAG || 'latest',
-      createdAt: '',
-    };
-  } catch {
-    return null;
   }
 }
 

@@ -18,7 +18,7 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
   }
 
   protected createPool(): Pool {
-    return new Pool({
+    const pool = new Pool({
       host: this.config.host,
       port: this.config.port,
       user: this.config.rootUser,
@@ -26,6 +26,13 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       database: 'postgres', // Connect to default db for admin operations
       max: 5,
     });
+    // pg emits 'error' when an idle pooled client dies (DB restart,
+    // pg_terminate_backend). With no listener that EventEmitter error is
+    // thrown and takes the whole process down; the pool replaces the client.
+    pool.on('error', (err) => {
+      console.error(`[postgres] idle client error: ${err.message}`);
+    });
+    return pool;
   }
 
   protected async executeTestQuery(): Promise<void> {
@@ -115,12 +122,15 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       await this.initialize();
     }
 
-    const pattern = this.config.dbPrefix ? `${this.config.dbPrefix}_%` : '%';
+    const prefix = this.config.dbPrefix ? `${this.config.dbPrefix}_` : '';
     const result = await this.pool!.query(
       `SELECT datname FROM pg_database WHERE datname LIKE $1 AND datname NOT IN ('postgres', 'template0', 'template1')`,
-      [pattern]
+      [`${prefix}%`]
     );
-    return result.rows.map(row => row.datname);
+    const names: string[] = result.rows.map(row => row.datname);
+    // `_` is a LIKE wildcard, so the pattern alone over-matches
+    // (prefix "a_b" also matches "aXb_t1"); keep only true prefix matches.
+    return prefix ? names.filter(n => n.startsWith(prefix)) : names;
   }
 
   async dumpDatabase(tenantId: string, outputPath: string): Promise<void> {
