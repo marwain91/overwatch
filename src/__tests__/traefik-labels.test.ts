@@ -157,6 +157,9 @@ describe('buildTraefikLabels', () => {
         raw_labels: {
           'traefik.HTTP.routers.evil.Rule': 'Host(`admin.example.com`)',
           'traefik.http.routers.evil.rul\\x65': 'Host(`admin.example.com`)',
+          'traefik.http.routers.evil.rule=Host(`admin.example.com`)#': 'x',
+          'traefik.http.router\u017f.evil.rule': 'Host(`admin.example.com`)',
+          'traefik.http.routers.evil.rule ': 'Host(`admin.example.com`)',
           'traefik.http.middlewares.ok.headers.customrequestheaders.X-Re': '^https://(.*)\\.example\\.com',
         },
       },

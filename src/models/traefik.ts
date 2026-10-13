@@ -140,18 +140,23 @@ export function isDenylistedLabelKey(key: string): boolean {
   return RAW_LABEL_DENYLIST.some(rx => rx.test(key));
 }
 
+// Every character a real Traefik label key uses (`[n]` indexes list fields).
+const RAW_LABEL_KEY_RE = /^[A-Za-z0-9._\-[\]]+$/;
+
 /**
- * Emit-time filter for raw label keys. Stricter than the schema check:
- * - Traefik matches label keys case-insensitively, so `...routers.x.Rule`
- *   must be dropped too.
- * - Labels are emitted inside double-quoted YAML, where `\` starts an escape:
- *   `...routers.x.rul\x65` passes the denylist but decodes to `.rule`. No
- *   legitimate label key contains a backslash.
+ * Emit-time filter for raw label keys. Stricter than the schema check because
+ * the denylist must see the key exactly as compose and Traefik will:
+ * - Only plain ASCII key characters pass. `=` would end the key early when
+ *   compose splits "key=value" (`...rule=Host(x)#` becomes `...rule`); `\`
+ *   starts a YAML escape in the double-quoted label line (`rul\x65` -> `rule`);
+ *   whitespace and non-ASCII letters differ between this check and Traefik,
+ *   whose case-insensitive match (Go EqualFold) treats U+017F "ſ" as "s".
+ * - With ASCII only, lower-casing matches Traefik's case-insensitive keys.
  * Kept out of the schema refinement on purpose: that schema is parsed at
  * boot, so tightening it there would turn a stored key into a boot failure.
  */
 export function isBlockedRawLabelKey(key: string): boolean {
-  return key.includes('\\') || isDenylistedLabelKey(key.toLowerCase());
+  return !RAW_LABEL_KEY_RE.test(key) || isDenylistedLabelKey(key.toLowerCase());
 }
 
 const denylistRefinement = (labels: Record<string, string>, ctx: z.RefinementCtx) => {

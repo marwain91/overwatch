@@ -34,6 +34,11 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
   if (!key) {
     return res.status(400).json({ error: 'Key is required' });
   }
+  // Strict boolean: a falsy non-boolean (0, "") would skip the unmask guard
+  // below and be stored as a non-sensitive flag.
+  if (sensitive !== undefined && sensitive !== null && typeof sensitive !== 'boolean') {
+    return res.status(400).json({ error: 'sensitive must be a boolean' });
+  }
 
   const existing = (await listEnvVars(appId)).find(v => v.key === key);
 
