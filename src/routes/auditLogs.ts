@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getDataDir } from '../config';
 import { asyncHandler } from '../utils/asyncHandler';
+import { queryString, queryInt } from '../utils/query';
 
 const router = Router();
 
@@ -20,9 +21,9 @@ interface AuditEntry {
 // Get recent audit log entries
 router.get('/', asyncHandler(async (req, res) => {
   const logFile = path.join(getDataDir(), 'audit.log');
-  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-  const user = req.query.user as string | undefined;
-  const action = req.query.action as string | undefined;
+  const limit = queryInt(req.query.limit, 50, 1, 200);
+  const user = queryString(req.query.user);
+  const action = queryString(req.query.action);
 
   let entries: AuditEntry[] = [];
 

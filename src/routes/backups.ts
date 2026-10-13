@@ -178,7 +178,8 @@ router.post('/:snapshotId/create-tenant', requireRole('admin'), asyncHandler(asy
     return res.status(400).json({ error: 'Valid tenantId and domain are required' });
   }
 
-  await createTenant({ appId, tenantId, domain, imageTag: imageTag || 'latest' });
+  // createTenant falls back to the app's default_image_tag, then 'latest'.
+  await createTenant({ appId, tenantId, domain, imageTag });
 
   // Wait a moment for the database to be ready
   await new Promise(resolve => setTimeout(resolve, 5000));

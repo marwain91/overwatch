@@ -1,6 +1,9 @@
+// Must stay the first import: several modules read process.env (JWT_SECRET,
+// GOOGLE_CLIENT_ID, ...) at import time, so .env has to be loaded before them.
+import 'dotenv/config';
 import express from 'express';
+import * as fs from 'fs';
 import path from 'path';
-import dotenv from 'dotenv';
 import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors, clearConfigCache } from './config';
 import { loginToAllRegistries } from './adapters/registry';
 import { listApps } from './services/app';
@@ -34,9 +37,6 @@ import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitiali
 import { createSnapshot, pruneOldSnapshots } from './services/configSnapshots';
 import { resolveTrustProxySetting } from './utils/proxyTrust';
 import cron from 'node-cron';
-
-// Load environment variables
-dotenv.config();
 
 // Initialize and start server
 async function start() {
@@ -100,7 +100,6 @@ async function start() {
   });
 
   const staticPath = path.join(__dirname, '../ui/dist');
-  const fs = require('fs');
   app.use(express.static(staticPath));
 
   // Rate limiting
@@ -119,17 +118,20 @@ async function start() {
   app.post('/api/auth/google', authLimiter);
   app.use('/api/auth', apiLimiter, authRouter);
 
-  // App routes (with auth + appId validation for :appId sub-routes)
-  app.use('/api/apps', authMiddleware, apiLimiter, destructiveLimiter, auditLog, appsRouter);
-
-  // App-scoped routes
+  // App-scoped routes. Must be mounted BEFORE '/api/apps': that prefix also
+  // matches these paths and appsRouter falls through on no match, so the
+  // reverse order ran auth, both limiters and auditLog twice per request
+  // (duplicate audit lines, halved rate limits).
   app.use('/api/apps/:appId/tenants', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, tenantsRouter);
   app.use('/api/apps/:appId/env-vars', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, envVarsRouter);
   app.use('/api/apps/:appId/backups', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, backupsRouter);
 
+  // App routes (with auth + appId validation for :appId sub-routes)
+  app.use('/api/apps', authMiddleware, apiLimiter, destructiveLimiter, auditLog, appsRouter);
+
   // Global routes
   app.use('/api/admin-users', authMiddleware, apiLimiter, destructiveLimiter, auditLog, adminUsersRouter);
-  app.use('/api/status', authMiddleware, apiLimiter, statusRouter);
+  app.use('/api/status', authMiddleware, apiLimiter, auditLog, statusRouter);
   app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
   app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
   app.use('/api/database', authMiddleware, apiLimiter, auditLog, databaseRouter);

@@ -59,12 +59,13 @@ router.post('/containers/:containerId/restart', requireRole('admin'), asyncHandl
 
 // Get system health
 router.get('/health', asyncHandler(async (req, res) => {
-  const config = loadConfig();
   const db = getDatabaseAdapter();
 
   const dbConnected = await db.testConnection();
   const containers = await listContainers();
-  const databases = await db.listDatabases();
+  // listDatabases throws when the DB is unreachable; report 'disconnected'
+  // instead of failing the whole health endpoint during a DB outage.
+  const databases = dbConnected ? await db.listDatabases() : [];
   const apps = await listApps();
 
   // Build set of init container service names to exclude from counts
