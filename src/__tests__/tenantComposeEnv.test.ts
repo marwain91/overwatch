@@ -12,9 +12,9 @@ beforeEach(async () => {
   appsDir = path.join(tmpRoot, 'apps');
   const tenantPath = path.join(appsDir, 'demo', 'tenants', 'tenant-one');
   await fs.mkdir(tenantPath, { recursive: true });
-  await fs.writeFile(path.join(tenantPath, '.env'), 'DB_NAME=test_demo_tenant-one\n');
+  await fs.writeFile(path.join(tenantPath, '.env'), 'DB_NAME=test_demo_tenant-one\nJWT_SECRET=tenant-secret\n');
   await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), 'services: {}\n');
-  process.env.JWT_SECRET = 'overwatch-signing-key';
+  process.env.JWT_SECRET = 'overwatch-secret'; // tenant .env holds its own JWT_SECRET=tenant-secret; compose must resolve it from there
   process.env.MYSQL_ROOT_PASSWORD = 'root-pw';
   process.env.DOCKER_CONFIG = '/home/ow/.docker';
 });

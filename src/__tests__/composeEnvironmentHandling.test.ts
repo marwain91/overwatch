@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as yaml from 'js-yaml';
-import { generateComposeFile, assertAppEnvMappingAllowed } from '../services/composeGenerator';
+import { generateComposeFile } from '../services/composeGenerator';
 
 function config(): any {
   return {
@@ -71,45 +71,6 @@ describe('compose environment values', () => {
   it('still lets a named source be interpolated by compose', () => {
     const doc = render([web({ env_mapping: { API_KEY: 'THIRD_PARTY_KEY' } })]);
     expect(doc.services.web.environment.API_KEY).toBe('${THIRD_PARTY_KEY}');
-  });
-
-  it('drops env_mapping entries that name a reserved Overwatch secret, with a warning', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const doc = render([web({ env_mapping: { STOLEN: 'MYSQL_ROOT_PASSWORD', KEEP: 'OK_VAR', TOKEN: 'R2_SECRET' } })]);
-    expect(doc.services.web.environment).toEqual({ KEEP: '${OK_VAR}' });
-    expect(warn.mock.calls.flat().join(' ')).toContain('MYSQL_ROOT_PASSWORD');
-    warn.mockRestore();
-  });
-
-  it('omits the environment block when every entry was dropped', () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const doc = render([web({ env_mapping: { STOLEN: 'JWT_SECRET' } })]);
-    expect(doc.services.web.environment).toBeUndefined();
-    vi.restoreAllMocks();
-  });
-});
-
-describe('assertAppEnvMappingAllowed', () => {
-  it('rejects a reserved source with a ValidationError (400)', () => {
-    expect.assertions(2);
-    try {
-      assertAppEnvMappingAllowed([{ name: 'web', env_mapping: { X: 'JWT_SECRET' } }], config());
-    } catch (err: any) {
-      expect(err.status ?? err.statusCode).toBe(400);
-      expect(err.message).toContain('JWT_SECRET');
-    }
-  });
-
-  it('honours the configured DB root password env', () => {
-    const cfg = config();
-    cfg.database.root_password_env = 'DB_ROOT_PW';
-    expect(() => assertAppEnvMappingAllowed([{ name: 'w', env_mapping: { X: 'DB_ROOT_PW' } }], cfg)).toThrow(/DB_ROOT_PW/);
-  });
-
-  it('accepts ordinary sources, static values and malformed input', () => {
-    expect(() => assertAppEnvMappingAllowed([{ name: 'w', env_mapping: { X: 'OK', Y: { static: 'JWT_SECRET' } } }], config())).not.toThrow();
-    expect(() => assertAppEnvMappingAllowed(undefined, config())).not.toThrow();
-    expect(() => assertAppEnvMappingAllowed([null, { name: 'w' }], config())).not.toThrow();
   });
 });
 

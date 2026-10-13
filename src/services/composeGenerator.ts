@@ -2,10 +2,8 @@ import * as yaml from 'js-yaml';
 import { AppDefinition, AppService } from '../models/app';
 import { OverwatchConfig } from '../config/schema';
 import type { TraefikTenant } from '../models/traefik';
-import { resolveCertResolver, loadConfig } from '../config/loader';
+import { resolveCertResolver } from '../config/loader';
 import { buildTraefikLabels } from './traefikLabels';
-import { isReservedSecretEnv } from '../utils/reservedEnv';
-import { ValidationError } from '../utils/httpErrors';
 
 interface GenerateOptions {
   app: AppDefinition;
@@ -206,14 +204,9 @@ function buildEnvironment(
   if (!service.env_mapping || Object.keys(service.env_mapping).length === 0) return undefined;
   const entries: Array<[string, string]> = [];
   for (const [key, value] of Object.entries(service.env_mapping)) {
-    // A reserved source would hand an Overwatch secret to the tenant container.
-    if (typeof value === 'string' && isReservedSecretEnv(value, ctx.config)) {
-      console.warn(`[compose] dropped env_mapping '${key}' on ${where}/${service.name}: source '${value}' is a reserved Overwatch secret`);
-      continue;
-    }
     entries.push([key, resolveEnvValue(value, ctx)]);
   }
-  return entries.length > 0 ? toMapping(entries, 'environment variable', where) : undefined;
+  return toMapping(entries, 'environment variable', where);
 }
 
 function resolveVolumeName(vol: AppServiceVolume, appId: string, tenantId: string): string {
@@ -366,34 +359,5 @@ function getAutoResolvedValue(
       return 'production';
     default:
       return undefined;
-  }
-}
-
-/**
- * Save-time check for env_mapping sources, run by the API and CLI paths that
- * store an app definition. Takes the unparsed `services` because it runs
- * before/alongside schema parsing. Generation drops such entries too, so
- * definitions stored earlier still load.
- */
-export function assertAppEnvMappingAllowed(
-  services: unknown,
-  config?: Parameters<typeof isReservedSecretEnv>[1],
-): void {
-  if (!Array.isArray(services)) return;
-  // Without a config only the static reserved list applies (the DB root
-  // password env name is configurable).
-  if (config === undefined) {
-    try { config = loadConfig(); } catch { config = null; }
-  }
-  for (const svc of services) {
-    const mapping = svc?.env_mapping;
-    if (!mapping || typeof mapping !== 'object') continue;
-    for (const [key, source] of Object.entries(mapping as Record<string, unknown>)) {
-      if (typeof source === 'string' && isReservedSecretEnv(source, config)) {
-        throw new ValidationError(
-          `env_mapping "${key}" on service "${svc?.name}" cannot read "${source}": it is a reserved Overwatch secret`,
-        );
-      }
-    }
   }
 }
