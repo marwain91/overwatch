@@ -55,6 +55,8 @@ describe('POST /:tenantId/access-token', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/apps/:appId/tenants', router);
+    const { errorHandler } = await import('../middleware/errorHandler');
+    app.use(errorHandler);
     return app;
   }
 

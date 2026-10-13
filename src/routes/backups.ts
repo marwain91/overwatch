@@ -10,7 +10,7 @@ import {
 } from '../services/backup';
 import { getBackupInfoCached, listSnapshotsCached } from '../services/backupCache';
 import { getApp } from '../services/app';
-import { createTenant } from '../services/tenant';
+import { createTenantFromBackup } from '../services/tenantFromBackup';
 import { getTenantInfo } from '../services/docker';
 import { asyncHandler } from '../utils/asyncHandler';
 import { isValidSlug, isValidSnapshotId } from '../utils/validators';
@@ -183,15 +183,7 @@ router.post('/:snapshotId/create-tenant', requireRole('admin'), asyncHandler(asy
   }
 
   // createTenant falls back to the app's default_image_tag, then 'latest'.
-  await createTenant({ appId, tenantId, domain, imageTag });
-
-  // Wait a moment for the database to be ready
-  await new Promise(resolve => setTimeout(resolve, 5000));
-
-  const result = await restoreBackup(appId, snapshotId, tenantId, {
-    createNew: true,
-    newDomain: domain,
-  });
+  const result = await createTenantFromBackup(appId, snapshotId, { tenantId, domain, imageTag });
 
   if (result.success) {
     res.json({
