@@ -61,6 +61,7 @@ async function readRuntimeStore(): Promise<AppRuntimeStore> {
 }
 
 async function writeRuntimeStore(store: AppRuntimeStore): Promise<void> {
+  invalidateAppsCache();
   await writeJsonAtomic(getRuntimeFile(), store, { mode: 0o644 });
 }
 
@@ -92,8 +93,57 @@ function warnReservedSecretEnv(def: { id: string; admin_access?: { secret_env?: 
   }
 }
 
+// readApps runs on every request and on the monitoring timers. The CLI edits
+// apps.d from another process, so the cache is validated against file metadata
+// on every call (one readdir + one stat per file) rather than trusted.
+// In-process writes also invalidate it: an atomic rename can reuse an inode and
+// leave size and mtime unchanged.
+let appsCache: { signature: string; apps: AppDefinition[] } | null = null;
+let appsCacheGeneration = 0;
+
+function invalidateAppsCache(): void {
+  appsCache = null;
+  appsCacheGeneration++;
+}
+
+async function statSignature(file: string): Promise<string> {
+  try {
+    const st = await fs.stat(file);
+    return `${st.mtimeMs}:${st.size}:${st.ino}`;
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return 'absent';
+    throw err;
+  }
+}
+
+/** Fingerprint of everything readApps depends on; null when it cannot be taken. */
+async function appsSignature(files: string[]): Promise<string | null> {
+  try {
+    const parts = await Promise.all([
+      statSignature(getRuntimeFile()),
+      ...files.map(async f => `${f}:${await statSignature(path.join(getAppsDDir(), f))}`),
+    ]);
+    return parts.join('|');
+  } catch {
+    return null;
+  }
+}
+
 async function readApps(): Promise<AppDefinition[]> {
   const files = await listStaticFiles();
+  const generation = appsCacheGeneration;
+  // Taken before reading, so a change racing the read invalidates the entry next time.
+  const signature = await appsSignature(files);
+  if (signature && appsCache?.signature === signature) return structuredClone(appsCache.apps);
+
+  const { apps, runtimeWritten } = await loadApps(files);
+  if (signature && !runtimeWritten && generation === appsCacheGeneration) {
+    appsCache = { signature, apps: structuredClone(apps) };
+  }
+  return apps;
+}
+
+async function loadApps(files: string[]): Promise<{ apps: AppDefinition[]; runtimeWritten: boolean }> {
   const runtime = await readRuntimeStore();
   let runtimeDirty = false;
   const apps: AppDefinition[] = [];
@@ -144,7 +194,7 @@ async function readApps(): Promise<AppDefinition[]> {
     // concurrent-synthesis race is tolerated: writes are atomic and idempotent.
     await writeRuntimeStore(runtime);
   }
-  return apps;
+  return { apps, runtimeWritten: runtimeDirty };
 }
 
 let appsChangedHook: (() => void | Promise<unknown>) | undefined;
@@ -163,10 +213,12 @@ function notifyAppsChanged(): void {
 
 async function writeStatic(appDef: AppDefinition): Promise<void> {
   const { createdAt, updatedAt, ...staticOnly } = appDef;
+  invalidateAppsCache();
   await writeJsonAtomic(getStaticFile(appDef.id), staticOnly, { mode: 0o644 });
 }
 
 async function removeStatic(id: string): Promise<void> {
+  invalidateAppsCache();
   try {
     await fs.unlink(getStaticFile(id));
   } catch (err: any) {

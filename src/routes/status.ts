@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { loadConfig } from '../config';
 import { VERSION } from '../version';
-import { listContainers, getContainerLogs, restartContainer, listTenants } from '../services/docker';
+import { listContainers, findManagedContainer, getContainerLogs, restartContainer, listTenants } from '../services/docker';
 import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
 import { getBackupInfoCached, listSnapshotsCached } from '../services/backupCache';
@@ -11,14 +11,8 @@ import { requireRole } from '../middleware/requireRole';
 
 const router = Router();
 
-function containerIdMatches(requested: string, managedId: string): boolean {
-  return requested === managedId || requested.startsWith(managedId) || managedId.startsWith(requested);
-}
-
 async function findManagedContainerId(containerId: string): Promise<string | null> {
-  const containers = await listContainers();
-  const managed = containers.find(c => containerIdMatches(containerId, c.id));
-  return managed?.id ?? null;
+  return (await findManagedContainer(containerId))?.id ?? null;
 }
 
 // Get all containers managed by Overwatch
@@ -61,12 +55,18 @@ router.post('/containers/:containerId/restart', requireRole('admin'), asyncHandl
 router.get('/health', asyncHandler(async (req, res) => {
   const db = getDatabaseAdapter();
 
-  const dbConnected = await db.testConnection();
-  const containers = await listContainers();
+  const appsPromise = listApps();
   // listDatabases throws when the DB is unreachable; report 'disconnected'
   // instead of failing the whole health endpoint during a DB outage.
-  const databases = dbConnected ? await db.listDatabases() : [];
-  const apps = await listApps();
+  const dbStatus = db.testConnection().then(async (connected) => ({
+    connected,
+    databases: connected ? await db.listDatabases() : [],
+  }));
+  const [apps, containers, { connected: dbConnected, databases }] = await Promise.all([
+    appsPromise,
+    appsPromise.then(a => listContainers(a)),
+    dbStatus,
+  ]);
 
   // Build set of init container service names to exclude from counts
   const initServices = new Set<string>();

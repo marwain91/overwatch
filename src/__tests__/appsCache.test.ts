@@ -1,0 +1,112 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import * as os from 'os';
+
+let tmpRoot: string;
+let dataDir: string;
+
+function validStatic(id: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    name: id,
+    domain_template: `*.${id}.example`,
+    registry: { type: 'ghcr', url: 'ghcr.io', repository: `ns/${id}`, auth: { type: 'token' } },
+    services: [{ name: 'web', image_suffix: 'web', ports: { internal: 80 } }],
+    default_image_tag: 'latest',
+    ...extra,
+  };
+}
+const appFile = (id: string) => path.join(dataDir, 'apps.d', `${id}.json`);
+
+beforeEach(async () => {
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-apps-cache-'));
+  dataDir = path.join(tmpRoot, 'data');
+  await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
+  vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
+  vi.doMock('../config/loader', () => ({ getAppsDir: () => path.join(tmpRoot, 'apps'), loadConfig: () => ({}) }));
+  vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
+});
+afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.doUnmock('fs/promises');
+  vi.resetModules();
+  await fs.rm(tmpRoot, { recursive: true, force: true });
+});
+
+describe('readApps cache', () => {
+  it('serves repeated reads without re-reading apps.d files', async () => {
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme')));
+    const readFile = vi.fn((...args: Parameters<typeof fs.readFile>) => fs.readFile(...args));
+    vi.doMock('fs/promises', async (orig) => ({ ...(await orig<any>()), readFile }));
+    const { listApps } = await import('../services/app');
+    await listApps(); // first read also synthesises the runtime entry
+    await listApps();
+    readFile.mockClear();
+    const apps = await listApps();
+    expect(apps.map(a => a.id)).toEqual(['acme']);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('picks up an external edit to a file (CLI process) via size/mtime/ino', async () => {
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme')));
+    const { listApps } = await import('../services/app');
+    expect((await listApps())[0].default_image_tag).toBe('latest');
+    await listApps();
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme', { default_image_tag: 'v2' })));
+    expect((await listApps())[0].default_image_tag).toBe('v2');
+  });
+
+  it('picks up added and removed files', async () => {
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme')));
+    const { listApps } = await import('../services/app');
+    await listApps();
+    await listApps();
+    await fs.writeFile(appFile('beta'), JSON.stringify(validStatic('beta')));
+    expect((await listApps()).map(a => a.id)).toEqual(['acme', 'beta']);
+    await fs.unlink(appFile('acme'));
+    expect((await listApps()).map(a => a.id)).toEqual(['beta']);
+  });
+
+  it('never caches an error: a corrupt file throws every time, then recovers', async () => {
+    await fs.writeFile(appFile('acme'), '{not json');
+    const { listApps } = await import('../services/app');
+    await expect(listApps()).rejects.toThrow(/not valid JSON/);
+    await expect(listApps()).rejects.toThrow(/not valid JSON/);
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme')));
+    await expect(listApps()).resolves.toHaveLength(1);
+  });
+
+  it('returns defensive copies: mutating a result does not poison the cache', async () => {
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme')));
+    const { listApps } = await import('../services/app');
+    const first = await listApps();
+    await listApps();
+    const second = await listApps();
+    second[0].name = 'mutated';
+    second[0].services.push({ name: 'x' } as any);
+    second.length = 0;
+    const third = await listApps();
+    expect(third).toHaveLength(1);
+    expect(third[0].name).toBe('acme');
+    expect(third[0].services).toHaveLength(1);
+    expect(first[0]).not.toBe(third[0]);
+  });
+
+  it('still synthesises and writes the runtime entry for a new file', async () => {
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme')));
+    const { listApps } = await import('../services/app');
+    await listApps();
+    const runtime = JSON.parse(await fs.readFile(path.join(dataDir, 'apps.runtime.json'), 'utf-8'));
+    expect(runtime.acme.createdAt).toBeTruthy();
+  });
+
+  it('reflects in-process mutations immediately', async () => {
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme')));
+    const { listApps, deleteApp } = await import('../services/app');
+    await listApps();
+    await listApps();
+    await deleteApp('acme');
+    expect(await listApps()).toEqual([]);
+  });
+});
