@@ -40,4 +40,4 @@ jobs:
         run: npm run build:all
 
       - name: Verify generated files are committed
-        run: git diff --exit-code -- src/generated
+        run: git diff --exit-code -- src/generated ui/src/lib/api-types.generated.ts

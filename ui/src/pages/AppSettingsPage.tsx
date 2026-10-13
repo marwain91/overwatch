@@ -3,6 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useUpdateApp, useDeleteApp } from '../hooks/useApps';
 import type { AppService, AppRegistry, AppBackup, AppAdminAccess } from '../lib/types';
+import { RegistryForm } from '../components/RegistryForm';
+import { ServiceEditor } from '../components/ServiceEditor';
 import { AppTraefikSection } from '../components/AppTraefikSection';
 
 export function AppSettingsPage() {
@@ -26,7 +28,7 @@ export function AppSettingsPage() {
     if (app) {
       setName(app.name);
       setDomainTemplate(app.domain_template);
-      setDefaultImageTag(app.default_image_tag);
+      setDefaultImageTag(app.default_image_tag ?? 'latest');
       setRegistry(app.registry);
       setServices(app.services);
       setBackup(app.backup || { enabled: false, provider: 's3' });
@@ -111,97 +113,7 @@ export function AppSettingsPage() {
       {registry && (
         <div className="card mb-4">
           <h2 className="mb-4 text-lg font-semibold text-content-secondary">Registry</h2>
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="label">Type</label>
-                <select className="input" value={registry.type} onChange={(e) => setRegistry({ ...registry, type: e.target.value as AppRegistry['type'] })}>
-                  <option value="ghcr">GHCR</option>
-                  <option value="gitlab">GitLab</option>
-                  <option value="dockerhub">Docker Hub</option>
-                  <option value="ecr">AWS ECR</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              <div>
-                <label className="label">URL</label>
-                <input className="input" value={registry.url} onChange={(e) => setRegistry({ ...registry, url: e.target.value })} />
-              </div>
-            </div>
-            {registry.type === 'gitlab' && (
-              <div>
-                <label className="label">
-                  API URL <span className="text-content-faint">(optional for gitlab.com SaaS)</span>
-                </label>
-                <input
-                  className="input"
-                  value={registry.api_url || ''}
-                  onChange={(e) => setRegistry({ ...registry, api_url: e.target.value || undefined })}
-                  placeholder="https://gitlab.acme.com"
-                />
-                <p className="mt-1 text-xs text-content-faint">
-                  Required for self-hosted GitLab. Leave empty when using <code>gitlab.com</code>. See{' '}
-                  <a
-                    href="https://github.com/marwain91/overwatch/blob/main/docs/registry-gitlab.md"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline hover:text-content-muted"
-                  >
-                    registry-gitlab.md
-                  </a>.
-                </p>
-              </div>
-            )}
-            <div>
-              <label className="label">Repository</label>
-              <input className="input" value={registry.repository} onChange={(e) => setRegistry({ ...registry, repository: e.target.value })} />
-            </div>
-            <div>
-              <label className="label">Auth Type</label>
-              <select
-                className="input"
-                value={registry.auth.type}
-                onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, type: e.target.value as AppRegistry['auth']['type'] } })}
-              >
-                <option value="token">Personal Access Token</option>
-                <option value="basic">Basic (username/password)</option>
-                <option value="aws_iam">AWS ECR</option>
-              </select>
-            </div>
-            {(registry.auth.type === 'token' || registry.auth.type === 'basic') && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label">Username Env Var</label>
-                  <input
-                    className="input"
-                    value={registry.auth.username_env || ''}
-                    onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, username_env: e.target.value } })}
-                    placeholder="GHCR_USERNAME"
-                  />
-                </div>
-                <div>
-                  <label className="label">Token Env Var</label>
-                  <input
-                    className="input"
-                    value={registry.auth.token_env || ''}
-                    onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, token_env: e.target.value } })}
-                    placeholder="GHCR_TOKEN"
-                  />
-                </div>
-              </div>
-            )}
-            {registry.auth.type === 'aws_iam' && (
-              <div>
-                <label className="label">AWS Region Env Var</label>
-                <input
-                  className="input"
-                  value={registry.auth.aws_region_env || ''}
-                  onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, aws_region_env: e.target.value } })}
-                  placeholder="AWS_REGION"
-                />
-              </div>
-            )}
-          </div>
+          <RegistryForm value={registry} onChange={setRegistry} />
         </div>
       )}
 
@@ -210,42 +122,12 @@ export function AppSettingsPage() {
         <h2 className="mb-4 text-lg font-semibold text-content-secondary">Services ({services.length})</h2>
         <div className="space-y-3">
           {services.map((svc, i) => (
-            <div key={i} className="rounded border border-border-subtle bg-surface-muted p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="text-sm font-medium text-content-secondary">{svc.name || 'Unnamed'}</span>
-                <button className="text-xs text-red-400" onClick={() => setServices(services.filter((_, j) => j !== i))}>
-                  Remove
-                </button>
-              </div>
-              <div className="space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="label">Name</label>
-                    <input className="input" value={svc.name} onChange={(e) => { const n = [...services]; n[i] = { ...svc, name: e.target.value }; setServices(n); }} placeholder="backend" />
-                  </div>
-                  <div>
-                    <label className="label">Internal Port</label>
-                    <input className="input" type="number" value={svc.ports?.internal || ''} onChange={(e) => { const n = [...services]; n[i] = { ...svc, ports: { internal: parseInt(e.target.value) || 0 } }; setServices(n); }} placeholder="3000" />
-                  </div>
-                </div>
-                {svc.image_suffix && (
-                  <div>
-                    <label className="label">Image Name Override</label>
-                    <input className="input" value={svc.image_suffix} onChange={(e) => { const n = [...services]; n[i] = { ...svc, image_suffix: e.target.value || undefined }; setServices(n); }} placeholder={svc.name || 'defaults to service name'} />
-                  </div>
-                )}
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 text-xs text-content-tertiary">
-                    <input type="checkbox" checked={svc.required} onChange={(e) => { const n = [...services]; n[i] = { ...svc, required: e.target.checked }; setServices(n); }} />
-                    Required
-                  </label>
-                  <label className="flex items-center gap-2 text-xs text-content-tertiary">
-                    <input type="checkbox" checked={svc.is_init_container} onChange={(e) => { const n = [...services]; n[i] = { ...svc, is_init_container: e.target.checked }; setServices(n); }} />
-                    Init Container
-                  </label>
-                </div>
-              </div>
-            </div>
+            <ServiceEditor
+              key={i}
+              service={svc}
+              onChange={(updated) => setServices(services.map((s, j) => (j === i ? updated : s)))}
+              onRemove={() => setServices(services.filter((_, j) => j !== i))}
+            />
           ))}
           <button className="btn btn-secondary btn-sm" onClick={() => setServices([...services, { name: '', required: false, is_init_container: false }])}>
             + Add Service
