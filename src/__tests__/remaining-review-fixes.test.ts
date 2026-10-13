@@ -5,6 +5,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as util from 'util';
+import * as yaml from 'js-yaml';
 
 /**
  * Wrap a vi.fn execFile mock so `promisify(execFile)` resolves with
@@ -114,11 +115,16 @@ describe('container ownership labels and scoped operations', () => {
       config: baseConfig(),
     });
 
-    expect(yml).toContain('      - "com.overwatch.managed=true"');
-    expect(yml).toContain('      - "com.overwatch.app-id=customer-portal"');
-    expect(yml).toContain('      - "com.overwatch.tenant-id=tenant-one"');
-    expect(yml).toContain('      - "com.overwatch.service=web-api"');
-    expect(yml).toContain('      - "com.overwatch.service=worker"');
+    const services = (yaml.load(yml) as any).services;
+    expect(Object.keys(services)).toEqual(['web-api', 'worker']);
+    for (const name of ['web-api', 'worker']) {
+      expect(services[name].labels).toEqual(expect.arrayContaining([
+        'com.overwatch.managed=true',
+        'com.overwatch.app-id=customer-portal',
+        'com.overwatch.tenant-id=tenant-one',
+        `com.overwatch.service=${name}`,
+      ]));
+    }
   }, 30000);
 
   it('discovers hyphenated app and tenant ids from labels instead of dashed names', async () => {
@@ -391,8 +397,9 @@ describe('tenant lifecycle rollback', () => {
       expect.stringContaining('manifest:'),
     );
     const compose = await fs.readFile(composePath, 'utf-8');
-    expect(compose).toContain('image: ghcr.io/jerryminiapps/product/backend:${IMAGE_TAG:-latest}');
-    expect(compose).toContain('container_name: product-daktela-backend');
+    const backend = (yaml.load(compose) as any).services.backend;
+    expect(backend.image).toBe('ghcr.io/jerryminiapps/product/backend:${IMAGE_TAG:-latest}');
+    expect(backend.container_name).toBe('product-daktela-backend');
     expect(compose).not.toContain('theopenapps/hyperproduct');
   });
 });
