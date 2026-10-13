@@ -16,7 +16,7 @@ import type { InitConfig } from '../cli/init';
 let tmpRoot: string;
 let deployDir: string;
 
-function answers(over: Partial<InitConfig> = {}): InitConfig {
+function answers(deployDir: string, over: Partial<InitConfig> = {}): InitConfig {
   return {
     projectName: 'Acme',
     projectPrefix: 'acme',
@@ -48,6 +48,7 @@ afterEach(async () => {
 });
 
 async function deployFromInitYaml(c: InitConfig): Promise<void> {
+  const deployDir = c.deployDir;
   const { generateOverwatchYaml } = await import('../cli/init');
   const configPath = path.join(deployDir, 'overwatch', 'overwatch.yaml');
   await fs.writeFile(configPath, generateOverwatchYaml(c));
@@ -59,7 +60,9 @@ async function deployFromInitYaml(c: InitConfig): Promise<void> {
 
 describe.each(['mariadb', 'postgres'] as const)('init vs infra deploy (%s)', (dbType) => {
   it('init renders byte-identical files to `infra deploy` for the same answers', async () => {
-    const c = answers({ dbType });
+    // Capture this case's dir: a slow case must never see the next case's.
+    const dir = deployDir;
+    const c = answers(dir, { dbType });
     const { renderInitInfraFiles } = await import('../cli/init');
     const fromInit = renderInitInfraFiles(c);
     expect(fromInit.length).toBeGreaterThan(0);
@@ -67,7 +70,7 @@ describe.each(['mariadb', 'postgres'] as const)('init vs infra deploy (%s)', (db
     await deployFromInitYaml(c);
 
     for (const f of fromInit) {
-      const onDisk = await fs.readFile(path.join(deployDir, f.dest), 'utf-8');
+      const onDisk = await fs.readFile(path.join(dir, f.dest), 'utf-8');
       expect(onDisk, f.dest).toBe(f.content);
     }
   });
@@ -76,7 +79,7 @@ describe.each(['mariadb', 'postgres'] as const)('init vs infra deploy (%s)', (db
 describe('init output content', () => {
   it('uses the reference versions, the shared letsencrypt volume and a read-write overwatch.yaml mount', async () => {
     const { renderInitInfraFiles } = await import('../cli/init');
-    const files = Object.fromEntries(renderInitInfraFiles(answers()).map(f => [f.dest, f.content]));
+    const files = Object.fromEntries(renderInitInfraFiles(answers(deployDir)).map(f => [f.dest, f.content]));
     const infra = files['infrastructure/docker-compose.yml'];
     expect(infra).toContain('image: mariadb:10.11');
     expect(infra).toContain('image: traefik:v3.6');
@@ -91,7 +94,7 @@ describe('init output content', () => {
 
   it('writes a postgres stack for dbType=postgres', async () => {
     const { renderInitInfraFiles } = await import('../cli/init');
-    const files = Object.fromEntries(renderInitInfraFiles(answers({ dbType: 'postgres' })).map(f => [f.dest, f.content]));
+    const files = Object.fromEntries(renderInitInfraFiles(answers(deployDir, { dbType: 'postgres' })).map(f => [f.dest, f.content]));
     expect(files['infrastructure/docker-compose.yml']).toContain('image: postgres:16');
     expect(files['overwatch/docker-compose.yml']).toContain('POSTGRES_PASSWORD');
   });
