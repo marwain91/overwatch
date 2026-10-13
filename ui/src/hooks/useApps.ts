@@ -73,12 +73,6 @@ export function useRestoreApp() {
   });
 }
 
-export function useTestRegistry(appId: string) {
-  return useMutation({
-    mutationFn: () => api.post<{ success: boolean }>(`/apps/${appId}/registry/test`),
-  });
-}
-
 export function useProjectConfig() {
   return useQuery({
     queryKey: ['project-config'],

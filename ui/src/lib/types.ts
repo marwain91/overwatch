@@ -111,7 +111,7 @@ export interface AppRegistry {
   api_url?: string;
   repository: string;
   auth: {
-    type: 'token' | 'aws_ecr' | 'basic';
+    type: 'token' | 'aws_iam' | 'basic';
     username_env?: string;
     token_env?: string;
     aws_region_env?: string;
@@ -126,7 +126,7 @@ export interface AppService {
   image_suffix?: string;
   user?: string;
   ports?: { internal: number; external?: number };
-  health_check?: { type: string; path?: string; port?: number; interval?: number; start_period?: string };
+  health_check?: { type: string; path?: string; port?: number; interval?: string; start_period?: string; tool?: 'wget' | 'curl' };
   backup?: { enabled: boolean; paths?: Array<{ container: string; local: string }> };
   command?: string[];
   env_mapping?: Record<string, string | { static: string }>;
@@ -251,6 +251,7 @@ export interface AdminUser {
   email: string;
   addedAt: string;
   addedBy: string;
+  role?: 'viewer' | 'editor' | 'admin';
 }
 
 // Status
@@ -265,8 +266,8 @@ export interface SystemHealth {
 export interface ProjectConfig {
   version: string;
   project: { name: string; prefix: string };
-  database: { type: string; host: string };
-  apps: Array<{ id: string; name: string; serviceCount: number; tenantCount: number }>;
+  database: { type: string };
+  apps: Array<{ id: string; name: string; servicesCount: number; registry: { type: string }; backup: { enabled: boolean } }>;
 }
 
 // Backup
@@ -274,7 +275,7 @@ export interface BackupSnapshot {
   id: string;
   shortId: string;
   time: string;
-  tags: Record<string, string>;
+  tags: string[];
   tenantId?: string;
 }
 
@@ -282,7 +283,7 @@ export interface BackupStatus {
   configured: boolean;
   initialized: boolean;
   isLocked?: boolean;
-  lockInfo?: { pid?: number; host?: string; user?: string; createdAt?: string; age?: string };
+  lockInfo?: { pid?: string; host?: string; user?: string; createdAt?: string; age?: string };
 }
 
 export interface BackupSummary {

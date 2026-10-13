@@ -29,13 +29,6 @@ export function useAlertHistory(limit = 50) {
   });
 }
 
-export function useAlertRules() {
-  return useQuery({
-    queryKey: ['alert-rules'],
-    queryFn: () => api.get<Array<Record<string, unknown>>>('/monitoring/alerts/rules'),
-  });
-}
-
 export function useNotificationChannels() {
   return useQuery({
     queryKey: ['notifications'],

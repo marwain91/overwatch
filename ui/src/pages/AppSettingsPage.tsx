@@ -163,7 +163,7 @@ export function AppSettingsPage() {
               >
                 <option value="token">Personal Access Token</option>
                 <option value="basic">Basic (username/password)</option>
-                <option value="aws_ecr">AWS ECR</option>
+                <option value="aws_iam">AWS ECR</option>
               </select>
             </div>
             {(registry.auth.type === 'token' || registry.auth.type === 'basic') && (
@@ -188,7 +188,7 @@ export function AppSettingsPage() {
                 </div>
               </div>
             )}
-            {registry.auth.type === 'aws_ecr' && (
+            {registry.auth.type === 'aws_iam' && (
               <div>
                 <label className="label">AWS Region Env Var</label>
                 <input

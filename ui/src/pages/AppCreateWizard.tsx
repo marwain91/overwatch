@@ -38,7 +38,7 @@ export function AppCreateWizard() {
       required: true,
       is_init_container: false,
       ports: { internal: 3000 },
-      health_check: { type: 'http', path: '/health', port: 3000, interval: 30 },
+      health_check: { type: 'http', path: '/health', port: 3000, interval: '30s' },
     },
   ]);
 
@@ -197,11 +197,11 @@ export function AppCreateWizard() {
               <select
                 className="input"
                 value={registry.auth.type}
-                onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, type: e.target.value as 'token' | 'aws_ecr' | 'basic' } })}
+                onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, type: e.target.value as AppRegistry['auth']['type'] } })}
               >
                 <option value="token">Personal Access Token</option>
                 <option value="basic">Basic (username/password)</option>
-                <option value="aws_ecr">AWS ECR</option>
+                <option value="aws_iam">AWS ECR</option>
               </select>
             </div>
             {(registry.auth.type === 'token' || registry.auth.type === 'basic') && (
@@ -226,7 +226,7 @@ export function AppCreateWizard() {
                 </div>
               </>
             )}
-            {registry.auth.type === 'aws_ecr' && (
+            {registry.auth.type === 'aws_iam' && (
               <div>
                 <label className="label">AWS Region Env Var</label>
                 <input
