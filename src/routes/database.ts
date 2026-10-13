@@ -11,15 +11,27 @@ import { HttpError } from '../utils/httpErrors';
 
 const router = Router();
 
-// Driver failures (unreachable server, bad credentials) are what the operator
-// needs to see, so they are surfaced as an exposed 502 instead of a generic 500.
+// Driver messages carry hosts, user names and SQL, and these routes are open to
+// every role, so failures are classified into fixed messages; the raw error is
+// only logged.
+export function classifyDbError(err: any): HttpError {
+  const code = String(err?.code ?? '');
+  if (/^(ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EHOSTUNREACH|ECONNRESET|EAI_AGAIN|PROTOCOL_CONNECTION_LOST|57P0[1-3]|08.{3})$/.test(code)) {
+    return new HttpError(503, 'Database unreachable', { expose: true });
+  }
+  if (/^(ER_ACCESS_DENIED_ERROR|ER_DBACCESS_DENIED_ERROR|28P01|28000)$/.test(code)) {
+    return new HttpError(502, 'Database authentication failed', { expose: true });
+  }
+  return new HttpError(502, 'Database query failed', { expose: true });
+}
+
 async function dbCall<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err: any) {
     if (err instanceof HttpError) throw err;
     console.error('[database] operation failed:', err);
-    throw new HttpError(502, `Database error: ${err?.message || err}`, { expose: true });
+    throw classifyDbError(err);
   }
 }
 

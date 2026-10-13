@@ -24,8 +24,8 @@ export function errorHandler(err: any, req: Request, res: Response, next: NextFu
   const status = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599 ? rawStatus : 500;
   if (status >= 500) {
     const exposed = err instanceof HttpError && err.expose;
-    res.status(status).json({ error: exposed ? err.message : 'Internal server error' });
+    res.status(status).json({ error: exposed ? err.clientMessage : 'Internal server error' });
     return;
   }
-  res.status(status).json({ error: err?.message || 'Bad request' });
+  res.status(status).json({ error: (err instanceof HttpError ? err.clientMessage : err?.message) || 'Bad request' });
 }

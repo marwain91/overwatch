@@ -12,7 +12,7 @@ export class ToolRoleError extends Error {
 // One rule for every MCP tool: exposed HttpErrors (incl. DockerCommandError) pass
 // their message through; anything else is logged and replaced by a generic one.
 export function toolErrorMessage(e: unknown, fallback: string): string {
-  if (e instanceof HttpError && e.expose) return e.message;
+  if (e instanceof HttpError && e.expose) return e.clientMessage;
   console.error(`[mcp] ${fallback}:`, e);
   return fallback;
 }

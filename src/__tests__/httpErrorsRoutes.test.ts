@@ -93,15 +93,36 @@ describe('backup and snapshot services typed errors', () => {
 });
 
 describe('database routes', () => {
-  it('surfaces driver failures as an exposed 502 instead of a generic 500', async () => {
+  it('surfaces connection failures as a fixed 503 instead of a generic 500', async () => {
     vi.doMock('../adapters/database', () => ({
-      getDatabaseAdapter: () => ({ getServerInfo: async () => { throw new Error('connect ECONNREFUSED 10.0.0.5:3306'); } }),
+      getDatabaseAdapter: () => ({ getServerInfo: async () => { throw Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:3306'), { code: 'ECONNREFUSED' }); } }),
     }));
     const router = (await import('../routes/database')).default;
     const app = await mountWith(router, '/database');
     const res = await request(app).get('/database/info');
-    expect(res.status).toBe(502);
-    expect(res.body.error).toContain('ECONNREFUSED');
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe('Database unreachable');
+    expect(JSON.stringify(res.body)).not.toContain('10.0.0.5');
+  });
+
+  it.each([
+    [{ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 172.18.0.5:3306' }, 503, 'Database unreachable'],
+    [{ code: 'PROTOCOL_CONNECTION_LOST', message: 'Connection lost: 172.18.0.5' }, 503, 'Database unreachable'],
+    [{ code: '08006', message: 'connection failure to 172.18.0.5' }, 503, 'Database unreachable'],
+    [{ code: 'ER_ACCESS_DENIED_ERROR', message: "Access denied for user 'root'@'172.18.0.3' (using password: YES)" }, 502, 'Database authentication failed'],
+    [{ code: '28P01', message: 'password authentication failed for user "postgres"' }, 502, 'Database authentication failed'],
+    [{ code: 'ER_PARSE_ERROR', message: "You have an error in your SQL syntax near 'SELECT secret'" }, 502, 'Database query failed'],
+    [{ message: 'something odd at 172.18.0.9' }, 502, 'Database query failed'],
+  ])('classifies %o without echoing driver text', async (driverErr, status, message) => {
+    vi.doMock('../adapters/database', () => ({
+      getDatabaseAdapter: () => ({ getServerStats: async () => { throw Object.assign(new Error(driverErr.message), driverErr); } }),
+    }));
+    const router = (await import('../routes/database')).default;
+    const app = await mountWith(router, '/database');
+    const res = await request(app).get('/database/stats');
+    expect(res.status).toBe(status);
+    expect(res.body).toEqual({ error: message });
+    expect(JSON.stringify(res.body)).not.toMatch(/172\.18|root|postgres|SELECT/);
   });
 });
 
