@@ -1,0 +1,32 @@
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { getAppsDir, resolveAppDbPrefix } from '../config';
+import { parseEnv } from '../utils/env';
+import type { AppDefinition } from '../models/app';
+
+/**
+ * Identifier to hand to the database adapter for a tenant.
+ *
+ * The adapter prepends the app's effective db_prefix, so this is `appId_tenantId`
+ * unless the tenant's .env carries a DB_NAME (migrated tenants), in which case the
+ * prefix is stripped from it. Shared by delete, backup and restore so all three
+ * address the same database.
+ */
+export async function resolveTenantDbId(
+  appId: string,
+  tenantId: string,
+  app?: Pick<AppDefinition, 'db_prefix'> | null,
+): Promise<string> {
+  const fallback = `${appId}_${tenantId}`;
+  try {
+    const envPath = path.join(getAppsDir(), appId, 'tenants', tenantId, '.env');
+    const env = parseEnv(await fs.readFile(envPath, 'utf-8'));
+    if (!env.DB_NAME) return fallback;
+    const effectivePrefix = resolveAppDbPrefix(app ?? undefined);
+    if (!effectivePrefix) return env.DB_NAME;
+    const prefix = `${effectivePrefix}_`;
+    return env.DB_NAME.startsWith(prefix) ? env.DB_NAME.slice(prefix.length) : env.DB_NAME;
+  } catch {
+    return fallback;
+  }
+}

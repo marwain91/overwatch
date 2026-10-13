@@ -199,7 +199,11 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
           </select>
           <div className="flex gap-2">
             <button className="btn btn-danger btn-sm" onClick={() => restoreBackup.mutate(restoreTarget, {
-              onSuccess: () => { toast.success('Backup restored'); setRestoreTarget(null); },
+              onSuccess: (res) => {
+                    if (res?.warnings?.length) toast.warning(`Backup restored with warnings: ${res.warnings.join('; ')}`);
+                    else toast.success('Backup restored');
+                    setRestoreTarget(null);
+                  },
               onError: (err) => toast.error(err.message),
             })} disabled={restoreBackup.isPending}>
               {restoreBackup.isPending ? 'Restoring...' : 'Restore'}

@@ -11,6 +11,7 @@ import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { invalidateBackupCache } from './backupCache';
+import { resolveTenantDbId } from './tenantDb';
 import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const execFileAsync = promisify(execFile);
@@ -296,7 +297,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     // try/catch so the backup is reported as failed — do NOT swallow, or restic
     // will happily archive a folder without database.sql and the scheduler will
     // report success while the backup is silently unrestorable.
-    const dbName = `${appId}_${tenantId}`;
+    const dbName = await resolveTenantDbId(appId, tenantId, app);
     await db.initialize();
     await db.dumpDatabase(dbName, path.join(tenantBackupDir, 'database.sql'));
 
@@ -324,9 +325,17 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
             incompletePaths.push({ service: service.name, path: pathConfig.local, error: 'unsafe path' });
             continue;
           }
-          const { stdout: checkOutput } = await execFileAsync(
-            'docker', ['exec', containerName, 'ls', '-A', pathConfig.container]
-          ).catch(() => ({ stdout: '' }));
+          // Only a missing directory counts as empty; any other exec failure
+          // (container stopped, daemon error) means the path was not backed up.
+          let checkOutput = '';
+          try {
+            ({ stdout: checkOutput } = await execFileAsync(
+              'docker', ['exec', containerName, 'ls', '-A', pathConfig.container]
+            ));
+          } catch (lsErr: any) {
+            const detail = `${lsErr?.stderr || ''} ${lsErr?.message || ''}`;
+            if (!/No such file or directory/i.test(detail)) throw lsErr;
+          }
           if (checkOutput.trim()) {
             const localDir = path.join(tenantBackupDir, pathConfig.local);
             await fs.mkdir(localDir, { recursive: true });
@@ -425,7 +434,7 @@ export async function restoreBackup(
   snapshotId: string,
   targetTenantId: string,
   options: { createNew?: boolean; newDomain?: string } = {}
-): Promise<{ success: boolean; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
+): Promise<{ success: boolean; warnings?: string[]; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
   const app = await getApp(appId);
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
@@ -502,7 +511,7 @@ export async function restoreBackup(
     }
 
     // Restore database using adapter
-    const dbName = `${appId}_${targetTenantId}`;
+    const dbName = await resolveTenantDbId(appId, targetTenantId, app);
     const sqlFile = path.join(tenantBackupDir, 'database.sql');
     try {
       await fs.access(sqlFile);
@@ -513,6 +522,14 @@ export async function restoreBackup(
       return { success: false, error: 'Failed to restore database. Check server logs.' };
     }
 
+    const warnings: string[] = [];
+    if (metadata.incomplete) {
+      const missing = Array.isArray(metadata.missingPaths)
+        ? metadata.missingPaths.map((m: any) => `${m.service}:${m.path}`).join(', ')
+        : 'unknown paths';
+      warnings.push(`The backup was incomplete when taken; missing: ${missing}`);
+    }
+
     // Restore paths to service containers
     for (const service of backupServices) {
       const containerName = `${appId}-${targetTenantId}-${service.name}`;
@@ -521,23 +538,29 @@ export async function restoreBackup(
         try {
           if (!isValidContainerPath(pathConfig.container)) {
             console.error(`Skipping unsafe container path: ${pathConfig.container}`);
+            warnings.push(`${service.name}:${pathConfig.container} skipped (unsafe path)`);
             continue;
           }
           if (!isValidContainerPath(pathConfig.local)) {
             console.error(`Skipping unsafe local path: ${pathConfig.local}`);
+            warnings.push(`${service.name}:${pathConfig.local} skipped (unsafe path)`);
             continue;
           }
           const localBackupDir = path.join(tenantBackupDir, pathConfig.local);
-          await fs.access(localBackupDir);
+          try {
+            await fs.access(localBackupDir);
+          } catch {
+            continue; // path was empty/absent when the backup was taken
+          }
           await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
           await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`]);
-        } catch {
-          // No data to restore or container not running
+        } catch (error: any) {
+          warnings.push(`${service.name}:${pathConfig.container} not restored: ${error?.message || error}`);
         }
       }
     }
 
-    return { success: true };
+    return warnings.length > 0 ? { success: true, warnings } : { success: true };
   } catch (error: any) {
     console.error('Restore failed:', error);
     const formatted = formatError(error);
