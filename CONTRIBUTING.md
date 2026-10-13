@@ -7,12 +7,12 @@ Thanks for your interest! This guide covers how to get a working dev environment
 ```bash
 git clone https://github.com/marwain91/overwatch.git
 cd overwatch
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:26-alpine npm ci
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:26-alpine npm test
-docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:26-alpine npm run build
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:22-alpine npm ci
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:22-alpine npm test
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/workspace -w /workspace node:22-alpine npm run build
 ```
 
-All project commands should run in Docker. The examples use `node:26-alpine`, matching the production Dockerfile. No host Node.js installation is required.
+All project commands should run in Docker. The examples use `node:22-alpine`, matching the production Dockerfile. No host Node.js installation is required.
 
 ## Project layout
 
@@ -36,9 +36,9 @@ For UI work:
 ```bash
 cd ui
 docker run --rm -u "$(id -u):$(id -g)" -p 5173:5173 \
-  -v "$PWD":/workspace -w /workspace node:26-alpine npm ci
+  -v "$PWD":/workspace -w /workspace node:22-alpine npm ci
 docker run --rm -u "$(id -u):$(id -g)" -p 5173:5173 \
-  -v "$PWD":/workspace -w /workspace node:26-alpine npm run dev -- --host 0.0.0.0
+  -v "$PWD":/workspace -w /workspace node:22-alpine npm run dev -- --host 0.0.0.0
 ```
 
 ## Commit and PR conventions

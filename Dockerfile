@@ -1,7 +1,7 @@
 # Overwatch - Multi-Tenant Management Tool
 
 # ── Stage 1: Build server from source ──
-FROM node:26-alpine AS server-build
+FROM node:22-alpine AS server-build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ COPY src/ ./src/
 RUN npm run build
 
 # ── Stage 2: Build React UI ──
-FROM node:26-alpine AS ui-build
+FROM node:22-alpine AS ui-build
 WORKDIR /ui
 COPY ui/package*.json ./
 RUN npm ci
@@ -20,7 +20,7 @@ COPY ui/ ./
 RUN npm run build
 
 # ── Stage 3: Runtime ──
-FROM node:26-alpine
+FROM node:22-alpine
 
 ARG BUILD_TIME=dev
 ARG BUILD_COMMIT=dev
@@ -32,7 +32,7 @@ WORKDIR /app
 # Install dependencies for health checks, backup operations, and database dumps.
 # `su-exec` lets the entrypoint drop from root to the `node` user while preserving
 # a clean signal-handling path (unlike `su` / `sudo`).
-RUN apk add --no-cache wget curl restic docker-cli docker-cli-compose mysql-client postgresql-client su-exec shadow
+RUN apk add --no-cache wget restic docker-cli docker-cli-compose mysql-client postgresql-client su-exec shadow
 
 # Copy package files
 COPY package*.json ./
