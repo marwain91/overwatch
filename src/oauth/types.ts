@@ -5,6 +5,7 @@ export interface RegisteredClient {
   client_name?: string;
   redirect_uris: string[];
   created_at: string;
+  last_used_at?: string;        // refreshed (at most daily) on authorize/token use; drives pruning
 }
 
 // Stored only long enough to exchange for a token (~60s, in memory).

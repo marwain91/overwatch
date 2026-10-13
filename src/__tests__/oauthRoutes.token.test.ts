@@ -70,10 +70,10 @@ describe('oauth /token', () => {
       grant_type: 'authorization_code', code: 'CODE3', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: verifier,
     });
     const rt = first.body.refresh_token;
-    const refreshed = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: rt });
+    const refreshed = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: rt });
     expect(refreshed.status).toBe(200);
     expect(refreshed.body.refresh_token).not.toBe(rt); // rotated
-    const reused = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: rt });
+    const reused = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: rt });
     expect(reused.status).toBe(400); // old token no longer valid
   });
 
@@ -103,7 +103,7 @@ describe('oauth /token', () => {
   });
 
   it('rejects an unknown refresh token', async () => {
-    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: 'does-not-exist' });
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: 'does-not-exist' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_grant');
   });
@@ -131,14 +131,14 @@ describe('oauth /token', () => {
     });
     const rt = first.body.refresh_token;
     (isAdminEmail as any).mockResolvedValueOnce(false);
-    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: rt });
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: rt });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_grant');
   });
 
   it('rejects an expired refresh token at the token endpoint', async () => {
     await saveRefreshToken('EXPIRED_RT', { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() - 1 });
-    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: 'EXPIRED_RT' });
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: 'EXPIRED_RT' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('invalid_grant');
   });
@@ -153,8 +153,88 @@ describe('oauth /token', () => {
     const rt = first.body.refresh_token;
     const revoke = await request(appWith()).post('/oauth/revoke').type('form').send({ token: rt });
     expect(revoke.status).toBe(200); // RFC 7009: always 200
-    const reuse = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: rt });
+    const reuse = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: rt });
     expect(reuse.status).toBe(400);
     expect(reuse.body.error).toBe('invalid_grant');
+  });
+
+  async function issueCode(code: string, extra: Record<string, unknown> = {}) {
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    putAuthCode({ code, client_id: 'c1', redirect_uri: 'https://client/cb', code_challenge: challenge, email: 'a@b.c', role: 'editor', expires_at: Date.now() + 60_000, ...extra } as any);
+    return verifier;
+  }
+
+  it('rejects a code exchange from a different client_id', async () => {
+    const verifier = await issueCode('CODE_CID');
+    const res = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_CID', client_id: 'other', redirect_uri: 'https://client/cb', code_verifier: verifier,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
+
+  it('rejects a code exchange without client_id', async () => {
+    const verifier = await issueCode('CODE_NOCID');
+    const res = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_NOCID', redirect_uri: 'https://client/cb', code_verifier: verifier,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
+
+  it('rejects an unknown resource at code exchange', async () => {
+    const verifier = await issueCode('CODE_RES');
+    const res = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_RES', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: verifier,
+      resource: 'https://other.example.com/mcp',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_target');
+  });
+
+  it('accepts the MCP resource at code exchange', async () => {
+    const verifier = await issueCode('CODE_RES_OK');
+    const res = await request(appWith()).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_RES_OK', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: verifier,
+      resource: ISSUER + '/mcp',
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects a refresh token presented by a different client_id (and burns it)', async () => {
+    await saveRefreshToken('RT_OWNED', { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() + 60_000 });
+    const stolen = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'evil', refresh_token: 'RT_OWNED' });
+    expect(stolen.status).toBe(400);
+    expect(stolen.body.error).toBe('invalid_grant');
+    const owner = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: 'RT_OWNED' });
+    expect(owner.status).toBe(400);
+  });
+
+  it('rejects a refresh without client_id', async () => {
+    await saveRefreshToken('RT_NOCID', { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() + 60_000 });
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', refresh_token: 'RT_NOCID' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_grant');
+  });
+
+  it('rejects an unknown resource on refresh', async () => {
+    await saveRefreshToken('RT_RES', { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() + 60_000 });
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: 'RT_RES', resource: 'https://other/x' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_target');
+  });
+
+  it('expires_in reflects the configured access token TTL on both grants', async () => {
+    const app = express();
+    app.use(express.urlencoded({ extended: true }));
+    app.use(createOAuthRouter({ issuer: ISSUER, accessTokenTtl: '15m' }));
+    const verifier = await issueCode('CODE_TTL');
+    const first = await request(app).post('/oauth/token').type('form').send({
+      grant_type: 'authorization_code', code: 'CODE_TTL', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: verifier,
+    });
+    expect(first.body.expires_in).toBe(900);
+    const second = await request(app).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: first.body.refresh_token });
+    expect(second.body.expires_in).toBe(900);
   });
 });
