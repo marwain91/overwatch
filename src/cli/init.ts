@@ -3,6 +3,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { execFileSync } from 'child_process';
+import * as yaml from 'js-yaml';
+import { OverwatchConfigSchema, type OverwatchConfig } from '../config/schema';
+import { renderInfraFiles, type InfraDeployVars } from '../services/infraTemplates';
 import { GREEN, YELLOW, RED, CYAN, BOLD, DIM, NC, header, success, warn, fail, info } from './config/utils';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
@@ -12,7 +15,7 @@ interface DnsProviderDef {
   envVars: { name: string; label: string; secret?: boolean }[];
 }
 
-interface InitConfig {
+export interface InitConfig {
   // Project
   projectName: string;
   projectPrefix: string;
@@ -335,6 +338,7 @@ async function showSummary(config: InitConfig): Promise<boolean> {
   console.log(`  ${DIM}Files to generate:${NC}`);
   console.log(`    ${config.deployDir}/infrastructure/docker-compose.yml`);
   console.log(`    ${config.deployDir}/infrastructure/.env`);
+  console.log(`    ${config.deployDir}/infrastructure/traefik/*.yml`);
   console.log(`    ${config.deployDir}/overwatch/docker-compose.yml`);
   console.log(`    ${config.deployDir}/overwatch/overwatch.yaml`);
   console.log(`    ${config.deployDir}/overwatch/.env`);
@@ -349,95 +353,6 @@ async function showSummary(config: InitConfig): Promise<boolean> {
   }]);
 
   return confirmed;
-}
-
-// ─── Template: infrastructure/docker-compose.yml ────────────────────────────────
-
-function generateInfraCompose(c: InitConfig): string {
-  const dnsEnvLines = c.dnsEnvVars
-    .map(v => `      ${v.name}: "\${${v.name}}"`)
-    .join('\n');
-
-  const isMariadb = c.dbType === 'mariadb';
-
-  const dbService = isMariadb
-    ? `  mariadb:
-    image: mariadb:11
-    container_name: ${c.projectPrefix}-mariadb
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: "\${MYSQL_ROOT_PASSWORD}"
-    volumes:
-      - mariadb-data:/var/lib/mysql
-    networks:
-      - ${c.projectPrefix}-network
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 30s
-      timeout: 10s
-      retries: 3`
-    : `  postgres:
-    image: postgres:16
-    container_name: ${c.projectPrefix}-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_PASSWORD: "\${POSTGRES_PASSWORD}"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - ${c.projectPrefix}-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 30s
-      timeout: 10s
-      retries: 3`;
-
-  const dbVolume = isMariadb ? '  mariadb-data:' : '  postgres-data:';
-
-  return `services:
-  traefik:
-    image: traefik:v3.3
-    container_name: ${c.projectPrefix}-traefik
-    restart: unless-stopped
-    command:
-      - "--api.dashboard=false"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=${c.projectPrefix}-network"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-      - "--entrypoints.websecure.address=:443"
-      # Wildcard SSL via DNS challenge
-      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
-      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=${c.dnsProvider}"
-      - "--certificatesresolvers.letsencrypt.acme.email=${c.adminEmail}"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
-      # HTTP challenge for custom tenant domains
-      - "--certificatesresolvers.letsencrypt-http.acme.httpchallenge=true"
-      - "--certificatesresolvers.letsencrypt-http.acme.httpchallenge.entrypoint=web"
-      - "--certificatesresolvers.letsencrypt-http.acme.email=${c.adminEmail}"
-      - "--certificatesresolvers.letsencrypt-http.acme.storage=/letsencrypt/acme.json"
-    environment:
-${dnsEnvLines}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - letsencrypt:/letsencrypt
-    networks:
-      - ${c.projectPrefix}-network
-
-${dbService}
-
-networks:
-  ${c.projectPrefix}-network:
-    name: ${c.projectPrefix}-network
-
-volumes:
-  letsencrypt:
-${dbVolume}
-`;
 }
 
 // ─── Template: infrastructure/.env ──────────────────────────────────────────────
@@ -463,76 +378,66 @@ function generateInfraEnv(c: InitConfig): string {
   return lines.join('\n');
 }
 
-// ─── Template: overwatch/overwatch.yaml (slimmed — infrastructure only) ─────
+// ─── overwatch.yaml + compose/Traefik files ─────────────────────────────────────
 
-function generateOverwatchYaml(c: InitConfig): string {
+/**
+ * The overwatch.yaml that `init` writes. The traefik block is what makes
+ * `overwatch infra deploy` render the same compose files `init` writes, so
+ * the two commands cannot drift apart.
+ */
+export function buildInitConfig(c: InitConfig): Record<string, unknown> {
   const isMariadb = c.dbType === 'mariadb';
-  const dbPasswordEnv = isMariadb ? 'MYSQL_ROOT_PASSWORD' : 'POSTGRES_PASSWORD';
   const dbHost = isMariadb ? `${c.projectPrefix}-mariadb` : `${c.projectPrefix}-postgres`;
-  const dbPort = isMariadb ? 3306 : 5432;
-  const dbUser = isMariadb ? 'root' : 'postgres';
+  const dnsEnv: Record<string, string> = {};
+  for (const v of c.dnsEnvVars) dnsEnv[v.name] = `\${${v.name}}`;
 
-  return `project:
-  name: "${c.projectName}"
-  prefix: "${c.projectPrefix}"
-  db_prefix: "${c.projectPrefix}"
-
-database:
-  type: "${c.dbType}"
-  host: "${dbHost}"
-  port: ${dbPort}
-  root_user: "${dbUser}"
-  root_password_env: "${dbPasswordEnv}"
-  container_name: "${dbHost}"
-
-credentials:
-  db_password_length: 32
-  jwt_secret_length: 64
-
-networking:
-  external_network: "${c.projectPrefix}-network"
-  apps_path: "/app/apps"
-`;
+  return {
+    project: { name: c.projectName, prefix: c.projectPrefix, db_prefix: c.projectPrefix },
+    database: {
+      type: c.dbType,
+      host: dbHost,
+      port: isMariadb ? 3306 : 5432,
+      root_user: isMariadb ? 'root' : 'postgres',
+      root_password_env: isMariadb ? 'MYSQL_ROOT_PASSWORD' : 'POSTGRES_PASSWORD',
+      container_name: dbHost,
+    },
+    credentials: { db_password_length: 32, jwt_secret_length: 64 },
+    networking: { external_network: `${c.projectPrefix}-network`, apps_path: '/app/apps' },
+    traefik: {
+      cert_resolvers: [
+        {
+          // Wildcard certs for tenant subdomains via DNS challenge.
+          name: 'letsencrypt',
+          challenge: 'dns',
+          provider: c.dnsProvider,
+          acme_email: c.adminEmail,
+          env: dnsEnv,
+          domain_patterns: [`*.${c.domain}`],
+        },
+        // HTTP challenge for custom tenant domains (fallback resolver).
+        { name: 'letsencrypt-http', challenge: 'http', acme_email: c.adminEmail, entrypoint: 'web' },
+      ],
+      overwatch: { host: c.overwatchDomain, cert_resolver: 'letsencrypt' },
+    },
+  };
 }
 
-// ─── Template: overwatch/docker-compose.yml ─────────────────────────────────────
+export function generateOverwatchYaml(c: InitConfig): string {
+  return yaml.dump(buildInitConfig(c), { lineWidth: 120, noRefs: true });
+}
 
-function generateOverwatchCompose(c: InitConfig): string {
-  return `services:
-  overwatch:
-    image: ghcr.io/marwain91/overwatch:latest
-    container_name: ${c.projectPrefix}-overwatch
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker:/root/.docker:ro
-      - ./overwatch.yaml:/app/overwatch.yaml:ro
-      - ./data:/app/data
-      - ../apps:/app/apps
-    networks:
-      - ${c.projectPrefix}-network
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.overwatch.rule=Host(\`${c.overwatchDomain}\`)"
-      - "traefik.http.routers.overwatch.entrypoints=websecure"
-      - "traefik.http.routers.overwatch.tls=true"
-      - "traefik.http.routers.overwatch.tls.certresolver=letsencrypt"
-      - "traefik.http.services.overwatch.loadbalancer.server.port=3002"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-
-networks:
-  ${c.projectPrefix}-network:
-    external: true
-`;
+/**
+ * Render the deploy-dir files (infra + overwatch compose, Traefik config)
+ * through the same renderer `overwatch infra deploy` uses.
+ */
+export function renderInitInfraFiles(c: InitConfig): Array<{ dest: string; content: string }> {
+  const config: OverwatchConfig = OverwatchConfigSchema.parse(buildInitConfig(c));
+  const vars: InfraDeployVars = {
+    PROJECT_PREFIX: c.projectPrefix,
+    NETWORK_NAME: `${c.projectPrefix}-network`,
+    APPS_PATH_ON_HOST: path.join(c.deployDir, 'apps'),
+  };
+  return renderInfraFiles(config, vars);
 }
 
 // ─── Template: overwatch/.env ───────────────────────────────────────────────────
@@ -582,10 +487,9 @@ async function generateFiles(config: InitConfig): Promise<void> {
   success('Created directory structure');
 
   // Infrastructure
-  await writeFileSafe(
-    path.join(base, 'infrastructure', 'docker-compose.yml'),
-    generateInfraCompose(config),
-  );
+  for (const file of renderInitInfraFiles(config)) {
+    await writeFileSafe(path.join(base, file.dest), file.content);
+  }
   await writeFileSafe(
     path.join(base, 'infrastructure', '.env'),
     generateInfraEnv(config),
@@ -593,10 +497,6 @@ async function generateFiles(config: InitConfig): Promise<void> {
   );
 
   // Overwatch
-  await writeFileSafe(
-    path.join(base, 'overwatch', 'docker-compose.yml'),
-    generateOverwatchCompose(config),
-  );
   await writeFileSafe(
     path.join(base, 'overwatch', 'overwatch.yaml'),
     generateOverwatchYaml(config),
