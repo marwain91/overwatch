@@ -10,9 +10,12 @@ function usage(): void {
   console.log('  Usage: overwatch infra <subcommand>');
   console.log('');
   console.log('  Subcommands:');
-  console.log('    deploy [--dry-run]   Render embedded infra templates, write to the');
+  console.log('    deploy [--dry-run] [--allow-db-downgrade]');
+  console.log('                         Render the infra templates, write to the');
   console.log('                         deploy directory, and run `docker compose up -d`');
-  console.log('                         on the infrastructure stack (Traefik + MariaDB).');
+  console.log('                         on the infrastructure stack (Traefik + database).');
+  console.log('                         Refuses to replace a running database with an older');
+  console.log('                         version unless --allow-db-downgrade is given.');
   console.log('');
 }
 
@@ -44,12 +47,13 @@ function formatChange(c: InfraFileChange): string {
 
 async function runDeploy(args: string[]): Promise<void> {
   const dryRun = args.includes('--dry-run');
+  const allowDbDowngrade = args.includes('--allow-db-downgrade');
   const deployDir = resolveDeployDir();
   console.log(`${BOLD}overwatch infra deploy${NC}${dryRun ? ` ${DIM}(dry-run)${NC}` : ''}`);
   console.log(`  deploy dir: ${deployDir}`);
   console.log('');
 
-  const result = await deployInfra({ deployDir, dryRun });
+  const result = await deployInfra({ deployDir, dryRun, allowDbDowngrade });
   for (const change of result.changes) {
     console.log(formatChange(change));
   }

@@ -6,6 +6,12 @@ services:
     image: ghcr.io/marwain91/overwatch:latest
     container_name: ${PROJECT_PREFIX}-overwatch
     restart: unless-stopped
+    # Operator-chosen env var names (registry token_env, backup *_env, ...) are
+    # read at runtime, so pass the whole .env through. Optional so a host
+    # without the file still starts; the explicit entries below win.
+    env_file:
+      - path: .env
+        required: false
     environment:
       OVERWATCH_UID: "${OVERWATCH_UID:-1001}"
       OVERWATCH_GID: "${OVERWATCH_GID:-1001}"
@@ -13,6 +19,7 @@ services:
       OVERWATCH_TRUST_PROXY: "${OVERWATCH_TRUST_PROXY:-1}"
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      ALLOWED_ADMIN_EMAILS: "${ALLOWED_ADMIN_EMAILS:-}"
       JWT_SECRET: ${JWT_SECRET}
       GHCR_TOKEN: ${GHCR_TOKEN}
       AUTH_SERVICE_SECRET: ${AUTH_SERVICE_SECRET}

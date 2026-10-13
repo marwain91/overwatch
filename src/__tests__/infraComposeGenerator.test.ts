@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'fs';
+import * as path from 'path';
 import { buildInfraComposeYml, buildOverwatchComposeYml } from '../services/infraComposeGenerator';
 import type { OverwatchConfig } from '../config/schema';
 import type { TraefikGlobal } from '../models/traefik';
@@ -84,15 +86,28 @@ describe('buildOverwatchComposeYml — env vars and YAML quoting', () => {
     expect(yml).not.toMatch(/cpus:\s+"\\"/);
   });
 
-  it('includes GITHUB_APP_* and GOOGLE_CLIENT_SECRET env passthroughs', () => {
-    const yml = buildOverwatchComposeYml(makeConfig({
-      log_level: 'INFO',
-      tls_termination: 'upstream',
-    }));
-    expect(yml).toContain('GITHUB_APP_ID: ${GITHUB_APP_ID}');
-    expect(yml).toContain('GITHUB_INSTALLATION_ID: ${GITHUB_INSTALLATION_ID}');
-    expect(yml).toContain('GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY}');
-    expect(yml).toContain('GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}');
+  it('drops the removed GITHUB_APP_* and unread GOOGLE_CLIENT_SECRET passthroughs', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({ log_level: 'INFO', tls_termination: 'upstream' }));
+    expect(yml).not.toContain('GITHUB_');
+    expect(yml).not.toContain('GOOGLE_CLIENT_SECRET');
+  });
+
+  it('passes ALLOWED_ADMIN_EMAILS through (the first admin cannot sign in without it)', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({ log_level: 'INFO', tls_termination: 'upstream' }));
+    expect(yml).toContain('ALLOWED_ADMIN_EMAILS');
+  });
+
+  it('defaults OVERWATCH_TRUST_PROXY to the same value as the static template', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({ log_level: 'INFO', tls_termination: 'upstream' }));
+    expect(yml).toMatch(/OVERWATCH_TRUST_PROXY:\s+"?\$\{OVERWATCH_TRUST_PROXY:-1\}"?$/m);
+    const tpl = readFileSync(path.resolve(__dirname, '..', '..', 'templates', 'overwatch', 'docker-compose.yml'), 'utf-8');
+    expect(tpl).toContain('${OVERWATCH_TRUST_PROXY:-1}');
+  });
+
+  it('mounts overwatch.yaml read-write', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({ log_level: 'INFO', tls_termination: 'upstream' }));
+    expect(yml).toContain('./overwatch.yaml:/app/overwatch.yaml\n');
+    expect(yml).not.toContain('overwatch.yaml:/app/overwatch.yaml:ro');
   });
 
   it('R2_ENDPOINT defaults from R2_ACCOUNT_ID but can be overridden by .env', () => {
@@ -138,5 +153,44 @@ describe('buildOverwatchComposeYml — tls_termination=upstream', () => {
     expect(yml).toMatch(/admin\.rule=Host\(`\$\{OVERWATCH_ADMIN_HOST\}`\)/);
     expect(yml).toMatch(/admin\.entrypoints=web/);
     expect(yml).not.toMatch(/admin\.tls=true/);
+  });
+});
+
+describe('buildInfraComposeYml — database engine', () => {
+  const http = { log_level: 'INFO', cert_resolvers: [{ name: 'le', challenge: 'http', acme_email: 'a@b.c', entrypoint: 'web' }] } as TraefikGlobal;
+
+  it('pins MariaDB 10.11 and Traefik v3.6 (the reference versions)', () => {
+    const yml = buildInfraComposeYml(makeConfig(http));
+    expect(yml).toContain('image: mariadb:10.11');
+    expect(yml).toContain('image: traefik:v3.6');
+    expect(yml).toContain('traefik-letsencrypt:/letsencrypt');
+  });
+
+  it('emits a postgres service, volume and password env for database.type=postgres', () => {
+    const cfg = makeConfig(http);
+    cfg.database.type = 'postgres';
+    const yml = buildInfraComposeYml(cfg);
+    expect(yml).toContain('image: postgres:16');
+    expect(yml).toContain('postgres-data:/var/lib/postgresql/data');
+    expect(yml).toContain('POSTGRES_PASSWORD');
+    expect(yml).not.toContain('mariadb');
+    const ow = buildOverwatchComposeYml(cfg);
+    expect(ow).toContain('POSTGRES_PASSWORD');
+    expect(ow).not.toContain('MYSQL_ROOT_PASSWORD');
+  });
+});
+
+describe('overwatch service env_file', () => {
+  const entry = /env_file:\s*\n\s*- path: \.env\s*\n\s*required: false/;
+
+  it('generator passes the whole .env through as an optional env_file', () => {
+    const yml = buildOverwatchComposeYml(makeConfig({ log_level: 'INFO', tls_termination: 'upstream' }));
+    expect(yml).toMatch(entry);
+    expect(yml).toContain('OVERWATCH_TRUST_PROXY');
+  });
+
+  it('static template has the same env_file entry', () => {
+    const tpl = readFileSync(path.resolve(__dirname, '..', '..', 'templates', 'overwatch', 'docker-compose.yml'), 'utf-8');
+    expect(tpl).toMatch(entry);
   });
 });

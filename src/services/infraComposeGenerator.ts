@@ -54,23 +54,40 @@ export function buildInfraComposeYml(config: OverwatchConfig): string {
     networks: ['shared'],
   };
 
-  const mariadbSvc: any = {
-    image: 'mariadb:10.11',
-    container_name: '${PROJECT_PREFIX}-mariadb',
-    restart: 'unless-stopped',
-    environment: { MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD}' },
-    volumes: [
-      'mariadb-data:/var/lib/mysql',
-      './mariadb/init:/docker-entrypoint-initdb.d:ro',
-    ],
-    networks: ['shared'],
-    healthcheck: {
-      test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized'],
-      interval: '10s',
-      timeout: '5s',
-      retries: 5,
-    },
-  };
+  const isPostgres = config.database.type === 'postgres';
+  const dbSvcName = isPostgres ? 'postgres' : 'mariadb';
+  const dbSvc: any = isPostgres
+    ? {
+        image: 'postgres:16',
+        container_name: '${PROJECT_PREFIX}-postgres',
+        restart: 'unless-stopped',
+        environment: { POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}' },
+        volumes: ['postgres-data:/var/lib/postgresql/data'],
+        networks: ['shared'],
+        healthcheck: {
+          test: ['CMD-SHELL', 'pg_isready -U postgres'],
+          interval: '10s',
+          timeout: '5s',
+          retries: 5,
+        },
+      }
+    : {
+        image: 'mariadb:10.11',
+        container_name: '${PROJECT_PREFIX}-mariadb',
+        restart: 'unless-stopped',
+        environment: { MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD}' },
+        volumes: [
+          'mariadb-data:/var/lib/mysql',
+          './mariadb/init:/docker-entrypoint-initdb.d:ro',
+        ],
+        networks: ['shared'],
+        healthcheck: {
+          test: ['CMD', 'healthcheck.sh', '--connect', '--innodb_initialized'],
+          interval: '10s',
+          timeout: '5s',
+          retries: 5,
+        },
+      };
 
   // Preserve key order to match v1.6.9 output for existing deploys (with
   // cert_resolvers). For upstream-only deploys the letsencrypt volume is
@@ -80,15 +97,15 @@ export function buildInfraComposeYml(config: OverwatchConfig): string {
     volumes['traefik-letsencrypt'] = null;
   }
   volumes['traefik-logs'] = null;
-  volumes['mariadb-data'] = null;
+  volumes[`${dbSvcName}-data`] = null;
 
   const out: any = {
-    services: { traefik: traefikSvc, mariadb: mariadbSvc },
+    services: { traefik: traefikSvc, [dbSvcName]: dbSvc },
     networks: { shared: { name: '${NETWORK_NAME}', external: true } },
     volumes,
   };
 
-  return banner('Shared infrastructure stack — Traefik + MariaDB. Generated from overwatch.yaml.') +
+  return banner('Shared infrastructure stack — Traefik + database. Generated from overwatch.yaml.') +
     yaml.dump(out, { lineWidth: 120, noRefs: true, quotingType: '"' });
 }
 
@@ -120,23 +137,25 @@ export function buildOverwatchComposeYml(config: OverwatchConfig): string {
   const ow = config.traefik?.overwatch;
   const labels = ow ? buildOverwatchLabels(ow, config.traefik!) : legacyOverwatchLabels(config.traefik);
 
+  const dbPasswordEnv = config.database.type === 'postgres' ? 'POSTGRES_PASSWORD' : 'MYSQL_ROOT_PASSWORD';
+
   const overwatchSvc: any = {
     image: 'ghcr.io/marwain91/overwatch:latest',
     container_name: '${PROJECT_PREFIX}-overwatch',
     restart: 'unless-stopped',
+    // Whole .env passes through: operator-chosen *_env names are read at runtime.
+    // Optional so hosts without the file start; explicit entries below win.
+    env_file: [{ path: '.env', required: false }],
     environment: {
       OVERWATCH_UID: '${OVERWATCH_UID:-1001}',
       OVERWATCH_GID: '${OVERWATCH_GID:-1001}',
       PORT: 3002,
-      OVERWATCH_TRUST_PROXY: '${OVERWATCH_TRUST_PROXY:-loopback, linklocal, uniquelocal}',
-      MYSQL_ROOT_PASSWORD: '${MYSQL_ROOT_PASSWORD}',
+      OVERWATCH_TRUST_PROXY: '${OVERWATCH_TRUST_PROXY:-1}',
+      [dbPasswordEnv]: `\${${dbPasswordEnv}}`,
       GOOGLE_CLIENT_ID: '${GOOGLE_CLIENT_ID}',
-      GOOGLE_CLIENT_SECRET: '${GOOGLE_CLIENT_SECRET}',
+      ALLOWED_ADMIN_EMAILS: '${ALLOWED_ADMIN_EMAILS:-}',
       JWT_SECRET: '${JWT_SECRET}',
       GHCR_TOKEN: '${GHCR_TOKEN}',
-      GITHUB_APP_ID: '${GITHUB_APP_ID}',
-      GITHUB_INSTALLATION_ID: '${GITHUB_INSTALLATION_ID}',
-      GITHUB_APP_PRIVATE_KEY: '${GITHUB_APP_PRIVATE_KEY}',
       AUTH_SERVICE_SECRET: '${AUTH_SERVICE_SECRET}',
       RESTIC_PASSWORD: '${RESTIC_PASSWORD}',
       R2_ACCOUNT_ID: '${R2_ACCOUNT_ID}',
