@@ -48,7 +48,7 @@ vi.mock('../services/docker', () => ({
 }));
 
 // Behaviour switches for the docker/restic mock
-const behaviour = { lsError: null as null | string, cpError: null as null | string, restoreDir: '' };
+const behaviour = { lsError: null as null | string, cpError: null as null | string, restoreDir: '', loopData: false, noData: false };
 let metadata: any = {};
 let backedUpMetadata: any;
 
@@ -63,7 +63,8 @@ vi.mock('child_process', () => ({
         await fs.mkdir(path.join(dir, 't1'), { recursive: true });
         await fs.writeFile(path.join(dir, 'metadata.json'), JSON.stringify(metadata));
         await fs.writeFile(path.join(dir, 't1', 'database.sql'), '-- sql');
-        await fs.mkdir(path.join(dir, 't1', 'data'), { recursive: true });
+        if (behaviour.loopData) await fs.symlink('data', path.join(dir, 't1', 'data'));
+        else if (!behaviour.noData) await fs.mkdir(path.join(dir, 't1', 'data'), { recursive: true });
         return done(null, { stdout: '', stderr: '' });
       }
       if (cmd === 'restic' && args[0] === 'backup') {
@@ -107,7 +108,7 @@ describe('backup/restore integrity', () => {
   beforeEach(async () => {
     appsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bkint-'));
     vi.clearAllMocks();
-    behaviour.lsError = null; behaviour.cpError = null; backedUpMetadata = undefined;
+    behaviour.lsError = null; behaviour.cpError = null; behaviour.loopData = false; behaviour.noData = false; backedUpMetadata = undefined;
     metadata = { appId: 'gadgets', tenants: ['t1'] };
     process.env.RESTIC_PASSWORD = 'test';
     process.env.S3_ENDPOINT = 'https://s3';
@@ -145,11 +146,26 @@ describe('backup/restore integrity', () => {
   });
 
   it('returns a warning when a path fails to restore but the DB restored', async () => {
-    behaviour.cpError = 'container not running';
+    behaviour.cpError = 'container not running /tmp/acme-backups/restore-1 secret-stderr';
     const r = await restoreBackup('gadgets', 'abcd1234', 't1');
     expect(r.success).toBe(true);
     expect(r.warnings?.length).toBe(1);
-    expect(r.warnings![0]).toContain('/data');
+    expect(r.warnings).toEqual(['/data: not restored (copy failed; see server logs)']);
+    const text = JSON.stringify(r.warnings);
+    expect(text).not.toMatch(/Command failed|\/tmp\/|secret-stderr|docker cp/);
+  });
+
+  it('warns (fixed text) when backup data cannot be read, but skips a missing path silently', async () => {
+    behaviour.loopData = true;
+    const r = await restoreBackup('gadgets', 'abcd1234', 't1');
+    expect(r.success).toBe(true);
+    expect(r.warnings).toEqual(['/data: not restored (backup data unreadable; see server logs)']);
+  });
+
+  it('does not warn when the path is absent from the backup', async () => {
+    behaviour.noData = true;
+    const r = await restoreBackup('gadgets', 'abcd1234', 't1');
+    expect(r.warnings).toBeUndefined();
   });
 
   it('surfaces metadata.incomplete as a warning', async () => {

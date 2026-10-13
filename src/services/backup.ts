@@ -524,10 +524,13 @@ export async function restoreBackup(
 
     const warnings: string[] = [];
     if (metadata.incomplete) {
+      // Only fixed text plus well-formed container paths: metadata comes from the archive.
       const missing = Array.isArray(metadata.missingPaths)
-        ? metadata.missingPaths.map((m: any) => `${m.service}:${m.path}`).join(', ')
-        : 'unknown paths';
-      warnings.push(`The backup was incomplete when taken; missing: ${missing}`);
+        ? metadata.missingPaths
+            .map((m: any) => m?.path)
+            .filter((m: unknown): m is string => typeof m === 'string' && isValidContainerPath(m))
+        : [];
+      warnings.push(`The backup was incomplete when taken${missing.length ? `; missing paths: ${missing.join(', ')}` : ''}`);
     }
 
     // Restore paths to service containers
@@ -538,24 +541,28 @@ export async function restoreBackup(
         try {
           if (!isValidContainerPath(pathConfig.container)) {
             console.error(`Skipping unsafe container path: ${pathConfig.container}`);
-            warnings.push(`${service.name}:${pathConfig.container} skipped (unsafe path)`);
+            warnings.push(`${service.name}: a configured path was skipped (unsafe path)`);
             continue;
           }
           if (!isValidContainerPath(pathConfig.local)) {
             console.error(`Skipping unsafe local path: ${pathConfig.local}`);
-            warnings.push(`${service.name}:${pathConfig.local} skipped (unsafe path)`);
+            warnings.push(`${service.name}: a configured path was skipped (unsafe path)`);
             continue;
           }
           const localBackupDir = path.join(tenantBackupDir, pathConfig.local);
           try {
             await fs.access(localBackupDir);
-          } catch {
-            continue; // path was empty/absent when the backup was taken
+          } catch (accessErr: any) {
+            if (accessErr?.code === 'ENOENT') continue; // path was empty/absent when the backup was taken
+            console.error(`[Backup] Cannot read ${localBackupDir} from the backup: ${accessErr?.message || accessErr}`);
+            warnings.push(`${pathConfig.container}: not restored (backup data unreadable; see server logs)`);
+            continue;
           }
           await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
           await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`]);
         } catch (error: any) {
-          warnings.push(`${service.name}:${pathConfig.container} not restored: ${error?.message || error}`);
+          console.error(`[Backup] Failed to restore ${pathConfig.container} into ${containerName}: ${error?.message || error}`);
+          warnings.push(`${pathConfig.container}: not restored (copy failed; see server logs)`);
         }
       }
     }

@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { loadConfig, getAppsDir, resolveAppDbPrefix } from '../config';
+import { loadConfig, getAppsDir } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
@@ -20,7 +20,6 @@ import { eventBus } from './eventBus';
 import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { SLUG_RE } from '../utils/validators';
-import { parseEnv } from '../utils/env';
 import { resolveTenantDbId } from './tenantDb';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
@@ -274,7 +273,6 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   const tenantPath = getTenantPath(appId, tenantId);
   const app = await getApp(appId);
   const db = getDatabaseAdapter(app ?? undefined);
-  const effectivePrefix = resolveAppDbPrefix(app ?? undefined);
 
   // Check if tenant exists
   try {
