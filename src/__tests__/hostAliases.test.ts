@@ -95,6 +95,29 @@ describe('updateTenantTraefik host_aliases validation', () => {
   });
 });
 
+describe('alias checks fail closed', () => {
+  it('save-time: an unloadable config is an exposed error, not an allow', async () => {
+    await addTenant('shop', 't1', 't1.shop.example.com');
+    cfg = undefined;
+    vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir, loadConfig: () => { throw new Error('boom'); } }));
+    const { updateTenantTraefik } = await import('../services/traefikConfig');
+    await expect(updateTenantTraefik('shop', 't1', { host_aliases: ['a.shop.example.com'] })).rejects.toMatchObject({ expose: true });
+  });
+
+  it('save-time: a missing app is an error, not an unrestricted allow', async () => {
+    await addTenant('ghost', 't1', 't1.ghost.example.com');
+    const { updateTenantTraefik } = await import('../services/traefikConfig');
+    await expect(updateTenantTraefik('ghost', 't1', { host_aliases: ['www.anything.org'] })).rejects.toMatchObject({ expose: true });
+  });
+
+  it('generation-time: aliases are all dropped with a warning when the context cannot be built', async () => {
+    await addTenant('ghost', 't1', 't1.ghost.example.com', ['www.anything.org']);
+    const { readTenantTraefik } = await import('../services/tenantTraefik');
+    expect((await readTenantTraefik('ghost', 't1'))?.host_aliases).toEqual([]);
+    expect(console.warn).toHaveBeenCalled();
+  });
+});
+
 describe('updateTenantTraefik raw_labels validation', () => {
   it('rejects a foreign router label with ValidationError naming the key', async () => {
     await addTenant('shop', 't1', 't1.shop.example.com');

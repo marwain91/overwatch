@@ -125,3 +125,47 @@ describe('save-time helpers', () => {
     expect(() => assertTenantRawLabelsOwned('myapp', 't1', { api: { 'traefik.http.routers.myapp-t1-api.priority': '1' } })).not.toThrow();
   });
 });
+
+describe('middleware ownership is not a bare prefix match', () => {
+  const mw = (n: string) => `traefik.http.middlewares.${n}.compress`;
+  it('tenant t1 cannot address middlewares of tenant t1-web-x (hyphenated slugs)', () => {
+    const owner = rawLabelOwnerForRouter('shop-t1-web');
+    expect(rawLabelProblem(mw('shop-t1-web-x-web-rl'), 'true', owner)).toBeDefined();
+    expect(rawLabelProblem(mw('shop-t1-web-rate-limit'), 'true', owner)).toBeDefined();
+    expect(rawLabelProblem(mw('shop-t1-web'), 'true', owner)).toBeDefined();
+    expect(rawLabelProblem(mw('shop-t1-web-rate_limit'), 'true', owner)).toBeUndefined();
+    expect(rawLabelProblem(mw('shop-t1-web-extra'), 'true', owner)).toBeUndefined();
+  });
+  it('app shop cannot address middlewares of app shop-t1', () => {
+    const owner = rawLabelOwnerForRouter('shop-t1-web');
+    expect(rawLabelProblem(mw('shop-t1-x-web-rl'), 'true', owner)).toBeDefined();
+    const appOwner = rawLabelOwnerForAppService('shop', 'web');
+    expect(rawLabelProblem(mw('shop-t9-web-rl'), 'true', appOwner)).toBeUndefined();
+    expect(rawLabelProblem(mw('shop-t9-web-rate-limit'), 'true', appOwner)).toBeDefined();
+    expect(rawLabelProblem(mw('shop-t9-api-rl'), 'true', appOwner)).toBeDefined();
+    expect(rawLabelProblem(mw('other-t9-web-rl'), 'true', appOwner)).toBeDefined();
+  });
+  it('generation drops a hyphenated-suffix middleware label', () => {
+    const labels = labelsFor({
+      'traefik.http.middlewares.myapp-t1-web-x-web-rl.compress': 'true',
+      'traefik.http.middlewares.myapp-t1-web-own_one.compress': 'true',
+    });
+    expect(labels.join('\n')).not.toContain('x-web-rl');
+    expect(labels).toContain('traefik.http.middlewares.myapp-t1-web-own_one.compress=true');
+  });
+});
+
+describe('own service backend url', () => {
+  it('denies loadbalancer server url but keeps port and sticky options', () => {
+    const labels = labelsFor({
+      'traefik.http.services.myapp-t1-web.loadbalancer.server.url': 'http://overwatch:3002',
+      'traefik.http.services.myapp-t1-web.loadbalancer.servers[0].url': 'http://10.0.0.1',
+      'traefik.http.services.myapp-t1-web.loadbalancer.server.scheme': 'https',
+      'traefik.http.services.myapp-t1-web.loadbalancer.sticky.cookie': 'true',
+    });
+    const joined = labels.join('\n');
+    expect(joined).not.toMatch(/\.url=/);
+    expect(labels).toContain('traefik.http.services.myapp-t1-web.loadbalancer.server.scheme=https');
+    expect(labels).toContain('traefik.http.services.myapp-t1-web.loadbalancer.sticky.cookie=true');
+  });
+});

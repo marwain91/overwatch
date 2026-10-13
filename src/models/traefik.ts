@@ -159,12 +159,20 @@ export interface RawLabelOwner {
   isOwnMiddleware: (name: string) => boolean;
 }
 
+// Slugs may contain hyphens but never `_`, so a middleware named
+// `<router>-<token>` with a hyphen-free token cannot belong to a different
+// router whose name merely extends this one (tenant `t1-web-x` vs `t1`).
+const MIDDLEWARE_SUFFIX_RE = /^[a-z0-9_]+$/;
+function hasSingleTokenSuffix(name: string, prefix: string): boolean {
+  return name.startsWith(prefix) && MIDDLEWARE_SUFFIX_RE.test(name.slice(prefix.length));
+}
+
 /** Owner of one concrete router `${appId}-${tenantId}-${service}`; its middlewares are prefixed with that name. */
 export function rawLabelOwnerForRouter(routerName: string): RawLabelOwner {
   const own = routerName.toLowerCase();
   return {
     isOwnRouter: n => n === own,
-    isOwnMiddleware: n => n === own || n.startsWith(`${own}-`),
+    isOwnMiddleware: n => hasSingleTokenSuffix(n, `${own}-`),
   };
 }
 
@@ -179,7 +187,12 @@ export function rawLabelOwnerForAppService(appId: string, service: string): RawL
   const ownRouter = (n: string) => n.length > head.length + tail.length && n.startsWith(head) && n.endsWith(tail);
   return {
     isOwnRouter: ownRouter,
-    isOwnMiddleware: n => n.startsWith(head),
+    isOwnMiddleware: n => {
+      if (!n.startsWith(head)) return false;
+      const i = n.lastIndexOf('-');
+      // `<app>-<tenant>-<service>-<token>`: strip the token, the rest must be a router name.
+      return i > head.length && MIDDLEWARE_SUFFIX_RE.test(n.slice(i + 1)) && ownRouter(n.slice(0, i));
+    },
   };
 }
 
@@ -224,6 +237,9 @@ export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwne
     if (!own) return `"${name}" is not one of this tenant's own ${kind}`;
   }
   const field = rest.join('.').replace(/\[\d+\]/g, '');
+  if (kind === 'services' && /^loadbalancer\.servers?\.url$/.test(field)) {
+    return 'a backend url would route the tenant host to an arbitrary address';
+  }
   if (kind === 'routers') {
     if (RESERVED_ROUTER_FIELDS.test(field)) return 'reserved by Overwatch (use the typed fields instead)';
     if (field === 'service') {

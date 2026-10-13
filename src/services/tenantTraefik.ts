@@ -6,7 +6,7 @@ import { loadConfig } from '../config/loader';
 import { TraefikTenantSchema, type TraefikTenant } from '../models/traefik';
 import { withFileLock } from './fileLock';
 import { getApp } from './app';
-import { ValidationError } from '../utils/httpErrors';
+import { HttpError, ValidationError } from '../utils/httpErrors';
 
 /**
  * Per-tenant Traefik overrides — host aliases, middleware overrides,
@@ -48,7 +48,14 @@ export async function readTenantTraefik(
   // Generation-time re-check: stored aliases may predate the rules, or another
   // tenant may have claimed the host since. Drop what is no longer allowed
   // rather than failing the update.
-  const ctx = await loadAliasContext(appId, tenantId);
+  let ctx: AliasContext;
+  try {
+    ctx = await loadAliasContext(appId, tenantId);
+  } catch (err: any) {
+    // Cannot tell what is safe: fail closed for the aliases, keep the rest.
+    console.warn(`[traefik] dropped all host aliases for ${appId}/${tenantId}: ${err?.message || err}`);
+    return { ...data, host_aliases: [] };
+  }
   const kept: string[] = [];
   for (const alias of data.host_aliases) {
     const problem = aliasProblem(alias, ctx);
@@ -128,8 +135,13 @@ async function readIfExists(file: string): Promise<string | undefined> {
  * traefik.yaml), so no Docker access is needed.
  */
 export async function loadAliasContext(appId: string, tenantId: string): Promise<AliasContext> {
-  let config: ReturnType<typeof loadConfig> | undefined;
-  try { config = loadConfig(); } catch { config = undefined; }
+  // Fails closed: without the config the reserved hosts are unknown.
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig();
+  } catch {
+    throw new HttpError(500, 'Cannot check host aliases: the Overwatch configuration could not be loaded', { expose: true });
+  }
 
   const reserved = new Set<string>();
   for (const h of [hostOf(config?.mcp?.public_url), config?.traefik?.overwatch?.host, config?.traefik?.dashboard?.host]) {
@@ -160,10 +172,11 @@ export async function loadAliasContext(appId: string, tenantId: string): Promise
   }
 
   const app = await getApp(appId);
+  if (!app) throw new HttpError(500, `Cannot check host aliases: app '${appId}' is not defined`, { expose: true });
   return {
     reservedHosts: reserved,
     foreignHosts: foreign,
-    domainTemplate: app?.domain_template,
+    domainTemplate: app.domain_template,
     allowedAliasDomains: config?.traefik?.allowed_alias_domains ?? [],
   };
 }

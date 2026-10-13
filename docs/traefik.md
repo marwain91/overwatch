@@ -90,9 +90,11 @@ For a service `web` of app `myapp` on tenant `acme`, the router is named `myapp-
 
 - `traefik.http.routers.myapp-acme-web.*`
 - `traefik.http.services.myapp-acme-web.*`
-- `traefik.http.middlewares.myapp-acme-web-<name>.*` (the prefix Overwatch gives the service's own middlewares)
+- `traefik.http.middlewares.myapp-acme-web-<name>.*`, where `<name>` is a single token of letters, digits and `_` (no hyphen). Slugs may contain hyphens but never `_`, so this cannot collide with the middlewares of another tenant whose router name extends this one (e.g. tenant `acme-web-x`). Use `rate_limit`, not `rate-limit`.
 
-Everything under `traefik.tcp.` / `traefik.udp.` and every other `traefik.*` key (other routers, services or middlewares, `serverstransports`, ...) is dropped at generation time with a `[traefik] dropped raw label` warning, and rejected with HTTP 400 when saved. App-level raw labels are rendered once per tenant, so the same per-tenant names apply; at save time any `myapp-<tenant>-web` is accepted for service `web`. A router's `service` field may only name its own service. Labels that are not `traefik.*` (for example `com.example.*`) are passed through.
+Everything under `traefik.tcp.` / `traefik.udp.` and every other `traefik.*` key (other routers, services or middlewares, `serverstransports`, ...) is dropped at generation time with a `[traefik] dropped raw label` warning, and rejected with HTTP 400 when saved. App-level raw labels are rendered once per tenant, so the same per-tenant names apply; at save time any `myapp-<tenant>-web` is accepted for service `web`. A router's `service` field may only name its own service, and `loadbalancer.server(s).url` on the own service is denied (it would point the tenant's host at an arbitrary backend; `port`, `scheme`, `sticky` etc. are fine). Labels that are not `traefik.*` (for example `com.example.*`) are passed through.
+
+Host alias checks fail closed: if the configuration or the app cannot be read, saving an alias fails and generation drops all of the tenant's aliases with a warning.
 
 Stored data is not rejected on load: non-conforming labels already on disk are simply not emitted.
 
