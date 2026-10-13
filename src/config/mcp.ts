@@ -10,5 +10,3 @@ export const McpConfigSchema = z.object({
   access_token_ttl: z.string().default('1h').describe('Access token lifetime (jsonwebtoken expiresIn syntax)'),
   refresh_token_ttl: z.string().default('30d').describe('Refresh token lifetime (jsonwebtoken expiresIn syntax)'),
 });
-
-export type McpConfig = z.infer<typeof McpConfigSchema>;

@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Creating an app from the web UI no longer fails with a 400.** The wizard sent the default health-check `interval` as the number `30`; the API expects a duration string and now receives `'30s'`.
+- **"AWS ECR" registry auth can be selected again.** The UI sent `aws_ecr`, which the API rejects; it now sends `aws_iam`, the value the schema, docs and adapters use.
+- **Tenant, env-var and backup requests run their middleware once.** `/api/apps/:appId/*` requests passed through the `/api/apps` chain and then the app-scoped chain, so every mutation wrote two identical audit lines and the API / destructive rate limits were effectively halved.
+- **Health checks and metrics work for hyphenated app IDs.** The health checker and metrics collector identified containers by splitting the name on `-`, so `customer-portal` was read as app `customer`: health checks were silently skipped (no `health_check_failed` alerts) and metrics were filed under the wrong app. Both now read the container's ownership labels first, as the container list already did.
+- **Two CPU or memory alert rules on the same container no longer cancel each other.** Threshold timers were keyed by container only, so a stricter rule (e.g. 95%) reset a looser rule's (80%) timer on every snapshot and the looser rule never fired.
+- **`/api/status/health` reports `database: "disconnected"` during a DB outage** instead of failing with a 500 and hiding the status grid.
+- **The Docker event listener can no longer crash the process.** A failure while listing apps on (re)connect was an unhandled promise rejection; it now logs and retries.
+- **Postgres: a dropped idle connection no longer crashes Overwatch.** The pool had no `error` listener, so a database restart or `pg_terminate_backend` on an idle pooled client threw an uncaught error.
+- **Deleting a tenant keeps its env-var overrides if teardown fails.** Overrides were removed before `docker compose down`, so a failed delete (which refuses to drop the database and asks you to retry) had already lost them.
+- **Database counts no longer include other prefixes' databases.** `_` in a `db_prefix` is a LIKE wildcard, so `a_b` also matched `aXb_…`.
+- **`overwatch infra deploy` honours `DEPLOY_DIR`**, like every other command (the undocumented `OVERWATCH_DEPLOY_DIR` still works). The `overwatch update` example in docs/updating.md pointed `DEPLOY_DIR` one level too deep.
+- **Creating a tenant from a backup uses the app's `default_image_tag`** when no tag is given, instead of forcing `latest`.
+- **`/api/audit-logs` handles a repeated `?user=` and a negative `limit`** instead of returning an empty list.
+- **Running from a `.env` file (`npm run dev` / `npm start`) loads it before modules read `JWT_SECRET`.** Container deployments, which pass env vars directly, were not affected.
+
+### Security
+
+- **Traefik label values can no longer start a new line in a tenant's `docker-compose.yml`.** Raw line breaks in `raw_labels` and middleware fields (editor-settable) are folded to a space, which is what YAML already did to a break inside a quoted value.
+- **Editing a sensitive env var without re-sending the `sensitive` flag keeps it masked.** Previously the flag defaulted to `false`, exposing the stored secret to every viewer.
+- **Viewers no longer receive notification-channel credentials.** `GET /api/monitoring/notifications` now returns only the webhook URL's origin and masks header values for non-admins; admins still get the full config they need to edit it.
+- **Startup rejects the `.env.example` placeholder `JWT_SECRET`.** It passed the length check while being public. **Deployments still using it will refuse to start until `JWT_SECRET` is replaced** (e.g. `openssl rand -hex 32`); all existing sessions are then invalidated.
+- **Container restarts via `/api/status` are now audit-logged.**
+- **MCP tools validate `appId` / `tenantId` with the same slug rule as the REST API.**
+- **`overwatch init` writes `infrastructure/.env` and `overwatch/.env` with mode 0600**, and the legacy-format migration writes tenant `.env` files the same way tenant creation does (0600, atomic).
+- **The tenant "access" link opens with `noopener`**, so the tenant app gets no `window.opener` handle on the admin tab.
+
+### Changed
+
+- `npm run build:all` (the CI gate) now runs the full `npm run build`, including template embedding, instead of bare `tsc`.
+- Removed dead code: unused exports and types, an unused `services/index.ts` barrel, and two unused UI hooks. CLI commands share one set of colour constants and output helpers.
+
 ## [1.7.1] — 2026-08-06
 
 ### Fixed

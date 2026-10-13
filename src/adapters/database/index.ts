@@ -45,13 +45,6 @@ export function getDatabaseAdapter(app?: Pick<AppDefinition, 'db_prefix'>): Data
 }
 
 /**
- * Clear all cached adapters (useful for testing or config changes)
- */
-export function clearAdapterCache(): void {
-  adapterCache.clear();
-}
-
-/**
  * Convert Overwatch config to adapter config
  */
 function getAdapterConfigFromOverwatch(): DatabaseAdapterConfig {

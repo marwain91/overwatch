@@ -223,7 +223,5 @@ export type UpdateAppInput = z.infer<typeof UpdateAppSchema>;
 export type AppService = z.infer<typeof AppServiceSchema>;
 export type AppRegistry = z.infer<typeof AppRegistrySchema>;
 export type AppBackup = z.infer<typeof AppBackupSchema>;
-export type AppManifest = z.infer<typeof AppManifestSchema>;
-export type AppEnvVarDeclaration = z.infer<typeof AppEnvVarDeclarationSchema>;
 
 export type ApplyResult = 'created' | 'updated' | 'noop';

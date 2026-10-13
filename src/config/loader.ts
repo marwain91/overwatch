@@ -253,13 +253,6 @@ export function clearConfigCache(): void {
 }
 
 /**
- * Get the container name prefix from config
- */
-export function getContainerPrefix(): string {
-  return loadConfig().project.prefix;
-}
-
-/**
  * Get the database name/user prefix from config
  */
 export function getDatabasePrefix(): string {

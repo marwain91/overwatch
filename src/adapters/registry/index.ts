@@ -1,4 +1,4 @@
-import { RegistryAdapter, RegistryAdapterConfig, toAdapterConfig } from './types';
+import { RegistryAdapter, RegistryAdapterConfig } from './types';
 import { GHCRAdapter } from './ghcr';
 import { GitLabAdapter } from './gitlab';
 import { DockerHubAdapter } from './dockerhub';

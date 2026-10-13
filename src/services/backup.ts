@@ -428,7 +428,6 @@ export async function restoreBackup(
     return { success: false, error: 'Backup not configured or initialized' };
   }
 
-  const config = loadConfig();
   const db = getDatabaseAdapter(app);
 
   // Get backup-enabled services from app definition

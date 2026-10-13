@@ -1,5 +1,3 @@
-import { RegistryConfig } from '../../config';
-
 /**
  * Interface for container registry adapters.
  * Each adapter handles authentication and tag fetching for a specific registry.
@@ -40,21 +38,4 @@ export interface RegistryAdapterConfig {
   token?: string;
   awsRegion?: string;
   tagPattern?: RegExp;
-}
-
-/**
- * Convert Overwatch config to adapter config
- */
-export function toAdapterConfig(config: RegistryConfig): RegistryAdapterConfig {
-  const auth = config.auth;
-  return {
-    type: config.type,
-    url: config.url,
-    apiUrl: config.api_url,
-    repository: config.repository,
-    username: auth.username_env ? process.env[auth.username_env] : undefined,
-    token: auth.token_env ? process.env[auth.token_env] : undefined,
-    awsRegion: auth.aws_region_env ? process.env[auth.aws_region_env] : undefined,
-    tagPattern: config.tag_pattern ? new RegExp(config.tag_pattern) : undefined,
-  };
 }

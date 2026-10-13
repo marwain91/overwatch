@@ -1,5 +1,5 @@
 import * as fs from 'fs/promises';
-import { existsSync, openSync, closeSync, fsyncSync } from 'fs';
+import { openSync, closeSync, fsyncSync } from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
@@ -52,9 +52,4 @@ export async function readJsonStrict<T = unknown>(filePath: string): Promise<T> 
       `File path: ${filePath}. Refusing to auto-reset.`
     );
   }
-}
-
-/** Convenience: check if a path exists (sync; for boot-time checks). */
-export function pathExistsSync(p: string): boolean {
-  return existsSync(p);
 }

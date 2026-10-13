@@ -194,6 +194,4 @@ export const LegacyOverwatchConfigSchema = z.object({
 });
 
 export type LegacyOverwatchConfig = z.infer<typeof LegacyOverwatchConfigSchema>;
-export type RegistryConfig = z.infer<typeof RegistryConfigSchema>;
-export type ServiceConfig = z.infer<typeof ServiceConfigSchema>;
-export type BackupConfig = z.infer<typeof BackupConfigSchema>;
+

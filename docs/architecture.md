@@ -125,7 +125,6 @@ overwatch/
 │   │       ├── urlValidation.ts  # SSRF guard shared by gitlab + custom
 │   │       └── index.ts          # Factory function + per-app adapter cache
 │   ├── services/
-│   │   ├── index.ts              # Service barrel exports
 │   │   ├── app.ts                # App CRUD (data/apps.d/ + data/apps.runtime.json)
 │   │   ├── tenant.ts             # Tenant CRUD operations
 │   │   ├── docker.ts             # Container management (Docker API)
