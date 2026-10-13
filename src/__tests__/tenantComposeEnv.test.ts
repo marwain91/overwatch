@@ -41,6 +41,7 @@ describe('tenant compose calls', () => {
         cb(null, '', '');
       }),
     }));
+    vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
     vi.doMock('../config', () => ({
       loadConfig: () => ({ project: { name: 'T', prefix: 'test', db_prefix: 'test' } }),
       getAppsDir: () => appsDir,

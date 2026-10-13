@@ -1,4 +1,4 @@
-import { writeAuditEntry } from '../middleware/audit';
+import { writeAuditEntry } from '../services/auditLog';
 import { AdminRole, can } from '../services/users';
 import { HttpError } from '../utils/httpErrors';
 

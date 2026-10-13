@@ -12,6 +12,9 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // History appends are queued; let them land before the directory goes away.
+  const { jsonlLogFor } = await import('../utils/jsonlLog');
+  await jsonlLogFor(path.join(dataDir, 'alert-history.jsonl')).flush();
   vi.resetModules();
   vi.doUnmock('../config');
   vi.doUnmock('../notifications/webhook');

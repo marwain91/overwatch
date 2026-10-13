@@ -22,13 +22,21 @@ import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { SLUG_RE } from '../utils/validators';
 import { resolveTenantDbId } from './tenantDb';
 import { getDockerEnv } from '../utils/runDocker';
+import { writeFileAtomic } from '../utils/atomicJson';
+import { withTenantLock } from './fileLock';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const execFileAsync = promisify(execFile);
 // Compose resolves ${VAR} against its own environment, so docker runs with the
 // curated one rather than Overwatch's (which holds operator secrets).
-const execDocker = (args: string[]) => execFileAsync('docker', args, { env: getDockerEnv() });
+// Timeout and maxBuffer follow runDocker's pattern: a hung daemon or a registry
+// stall must not pin the tenant lock (and a request) forever.
+const DOCKER_MAX_BUFFER = 64 * 1024 * 1024;
+const COMPOSE_TIMEOUT_MS = 300_000;
+const COMPOSE_PULL_TIMEOUT_MS = 900_000;
+const execDocker = (args: string[], timeoutMs: number = COMPOSE_TIMEOUT_MS) =>
+  execFileAsync('docker', args, { env: getDockerEnv(), timeout: timeoutMs, maxBuffer: DOCKER_MAX_BUFFER });
 
 export interface CreateTenantInput {
   appId: string;
@@ -136,7 +144,11 @@ function toStaticAppDefinition(app: AppDefinition): AppDefinitionStatic {
   return staticDef as AppDefinitionStatic;
 }
 
-export async function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
+export function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
+  return withTenantLock(String(input.appId), String(input.tenantId), () => createTenantLocked(input));
+}
+
+async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfig> {
   const { domain, imageTag } = input;
   const config = loadConfig();
 
@@ -282,7 +294,11 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   };
 }
 
-export async function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
+export function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
+  return withTenantLock(appId, tenantId, () => deleteTenantLocked(appId, tenantId, keepData));
+}
+
+async function deleteTenantLocked(appId: string, tenantId: string, keepData: boolean): Promise<void> {
   const tenantPath = getTenantPath(appId, tenantId);
   const app = await getApp(appId);
   const db = getDatabaseAdapter(app ?? undefined);
@@ -335,7 +351,11 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   await fs.rm(tenantPath, { recursive: true, force: true });
 }
 
-export async function updateTenant(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
+export function updateTenant(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
+  return withTenantLock(String(rawAppId), String(rawTenantId), () => updateTenantLocked(rawAppId, rawTenantId, newTag));
+}
+
+async function updateTenantLocked(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
   // Extract IDs via regex match so subsequent path.join calls operate on the
   // captured strings, not the raw inputs. Route middleware already enforces;
   // this breaks taint flow visibly for static analysis and protects CLI callers.
@@ -430,7 +450,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     } else {
       await writeSecretFile(sharedEnvPath, originalSharedEnvContent);
     }
-    await fs.writeFile(composePath, originalComposeContent);
+    await writeFileAtomic(composePath, originalComposeContent);
     await restoreAppDefinitions();
   };
 
@@ -512,10 +532,10 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     try {
       const tenantTraefik = await readTenantTraefik(appId, tenantId);
       const composeContent = generateComposeFile({ app, tenantId, domain, config, tenantTraefik });
-      await fs.writeFile(composePath, composeContent);
+      await writeFileAtomic(composePath, composeContent);
     } catch (err) {
       console.warn('Failed to regenerate docker-compose.yml:', err);
-      await fs.writeFile(composePath, originalComposeContent);
+      await writeFileAtomic(composePath, originalComposeContent);
       throw err;
     }
     emit('config', 'completed');
@@ -531,7 +551,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // not found') leaves the tenant exactly as it was.
   emit('pull', 'started');
   try {
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull'], COMPOSE_PULL_TIMEOUT_MS);
     await ensureExternalVolumes(composePath);
     emit('pull', 'completed');
   } catch (error: any) {

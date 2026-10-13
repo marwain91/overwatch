@@ -16,15 +16,26 @@ export async function writeJsonAtomic(
   value: unknown,
   opts: { mode?: number; spaces?: number } = {}
 ): Promise<void> {
+  await writeFileAtomic(filePath, JSON.stringify(value, null, opts.spaces ?? 2), { mode: opts.mode });
+}
+
+/**
+ * Write a file atomically (tmp file in the same directory, fsync, rename).
+ * Not for files that are bind-mounted individually into containers: the rename
+ * swaps the inode and the container keeps seeing the old one.
+ */
+export async function writeFileAtomic(
+  filePath: string,
+  content: string,
+  opts: { mode?: number } = {}
+): Promise<void> {
   const mode = opts.mode ?? 0o644;
-  const spaces = opts.spaces ?? 2;
   const dir = path.dirname(filePath);
   const tmp = path.join(
     dir,
     `.${path.basename(filePath)}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`
   );
   await fs.mkdir(dir, { recursive: true });
-  const content = JSON.stringify(value, null, spaces);
   try {
     await fs.writeFile(tmp, content, { mode });
     // fsync the file so the contents hit disk before the rename commits the name.

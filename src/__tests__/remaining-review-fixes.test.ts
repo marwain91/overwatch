@@ -209,6 +209,7 @@ describe('tenant lifecycle rollback', () => {
       createDatabase: vi.fn(async () => { throw new Error('db create failed'); }),
       dropDatabase: vi.fn(async () => undefined),
     };
+    vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
     vi.doMock('../config', () => ({
       loadConfig: () => baseConfig(),
       getAppsDir: () => appsDir,
@@ -247,6 +248,8 @@ describe('tenant lifecycle rollback', () => {
     await fs.writeFile(sharedEnvPath, originalSharedEnv, { mode: 0o600 });
     await fs.writeFile(composePath, originalCompose);
     await fs.writeFile(appDefPath, originalAppDef);
+
+    vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
 
     vi.doMock('../config', () => ({
       loadConfig: () => baseConfig(),
@@ -340,6 +343,7 @@ describe('tenant lifecycle rollback', () => {
       changedKeys: ['id'],
     }));
     const writeTenantAppDef = vi.fn(async () => undefined);
+    vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
     vi.doMock('../config', () => ({
       loadConfig: () => baseConfig(),
       getAppsDir: () => appsDir,
@@ -422,6 +426,8 @@ describe('tenant update image cleanup', () => {
     await fs.writeFile(sharedEnvPath, 'SHARED=1\n', { mode: 0o600 });
     await fs.writeFile(composePath, 'services:\n  web-api:\n    image: ghcr.io/acme/customer-portal/web-api:1.0.0\n');
 
+    vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
+
     vi.doMock('../config', () => ({
       loadConfig: () => baseConfig(),
       getAppsDir: () => appsDir,
@@ -490,6 +496,8 @@ describe('tenant update image cleanup', () => {
     await fs.writeFile(envPath, 'APP_ID=customer-portal\nTENANT_ID=tenant-one\nTENANT_DOMAIN=t.example.test\nIMAGE_TAG=latest\n', { mode: 0o600 });
     await fs.writeFile(sharedEnvPath, 'SHARED=1\n', { mode: 0o600 });
     await fs.writeFile(composePath, 'services:\n  web-api:\n    image: ghcr.io/acme/customer-portal/web-api:latest\n');
+
+    vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
 
     vi.doMock('../config', () => ({
       loadConfig: () => baseConfig(),

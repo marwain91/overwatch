@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { getAppsDir, getDataDir } from '../config';
 import { withFileLock } from './fileLock';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
-import { NotFoundError, ValidationError } from '../utils/httpErrors';
+import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const EnvVarSchema = z.object({
   key: z.string(),
@@ -664,50 +664,81 @@ export async function reconcileDeclaredEnvVars(
  * Without a filter, this is the boot-time sweep that regenerates every
  * tenant's shared.env across every app.
  */
+export interface SharedEnvFailure { appId: string; tenantId: string }
+
+/**
+ * Some tenants' shared.env could not be regenerated. The client message lists
+ * tenant ids only; the underlying errors (paths, errno text) go to the log.
+ */
+export class SharedEnvRegenerationError extends HttpError {
+  constructor(readonly failures: SharedEnvFailure[], readonly regenerated: number) {
+    super(500, `shared.env regeneration failed for ${failures.length} tenant(s): ${failures.map(f => `${f.appId}/${f.tenantId}`).join(', ')}`, { expose: true });
+    this.name = 'SharedEnvRegenerationError';
+  }
+}
+
+/**
+ * Regenerate shared.env for all tenants, optionally scoped to a single app.
+ *
+ * When `onlyAppId` is provided, only that app's tenants are regenerated — this
+ * is the right choice for env-var mutations on a specific app, since env vars
+ * are per-app and a change in app A must not touch app B's tenant files.
+ * Without a filter, this is the boot-time sweep that regenerates every
+ * tenant's shared.env across every app.
+ *
+ * Only a missing apps/tenants directory or a directory without `.env` (not a
+ * tenant) is skipped. Any other failure is collected and thrown after the loop
+ * as a SharedEnvRegenerationError, so a save never reports success while a
+ * shared.env stays stale.
+ */
 export async function regenerateAllSharedEnvFiles(onlyAppId?: string): Promise<number> {
   const appsDir = getAppsDir();
   let count = 0;
+  const failures: SharedEnvFailure[] = [];
 
   async function regenerateAppTenants(appId: string): Promise<void> {
     const tenantsDir = path.join(appsDir, appId, 'tenants');
+    let tenantDirs;
     try {
-      const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
-      for (const tenantEntry of tenantDirs) {
-        if (!tenantEntry.isDirectory()) continue;
-        const tenantId = tenantEntry.name;
-
-        // Verify it's actually a tenant directory (has .env file)
-        try {
-          await fs.access(path.join(tenantsDir, tenantId, '.env'));
-          await generateSharedEnvFile(appId, tenantId);
-          count++;
-        } catch {
-          // Not a tenant directory, skip
-        }
+      tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
+    } catch (err: any) {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return; // No tenants dir for this app
+      throw err;
+    }
+    for (const tenantEntry of tenantDirs) {
+      if (!tenantEntry.isDirectory()) continue;
+      const tenantId = tenantEntry.name;
+      try {
+        await fs.access(path.join(tenantsDir, tenantId, '.env'));
+      } catch {
+        continue; // Not a tenant directory
       }
-    } catch {
-      // No tenants dir for this app
+      try {
+        await generateSharedEnvFile(appId, tenantId);
+        count++;
+      } catch (err: any) {
+        console.error(`[env-vars] shared.env regeneration failed for ${appId}/${tenantId}: ${err?.message || err}`);
+        failures.push({ appId, tenantId });
+      }
     }
   }
 
   if (onlyAppId) {
     await regenerateAppTenants(onlyAppId);
-    return count;
-  }
-
-  try {
-    const appDirs = await fs.readdir(appsDir, { withFileTypes: true });
+  } else {
+    let appDirs;
+    try {
+      appDirs = await fs.readdir(appsDir, { withFileTypes: true });
+    } catch (error: any) {
+      if (error.code === 'ENOENT') return 0; // Apps directory doesn't exist yet
+      throw error;
+    }
     for (const appEntry of appDirs) {
       if (!appEntry.isDirectory()) continue;
       await regenerateAppTenants(appEntry.name);
     }
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      // Apps directory doesn't exist yet
-      return 0;
-    }
-    throw error;
   }
 
+  if (failures.length > 0) throw new SharedEnvRegenerationError(failures, count);
   return count;
 }

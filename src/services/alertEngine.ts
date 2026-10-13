@@ -7,6 +7,7 @@ import type { OverwatchConfig } from '../config';
 import { sendWebhook } from '../notifications/webhook';
 import { NotificationChannel, AlertHistoryEntry } from '../notifications/types';
 import { writeSecretFile } from '../utils/security';
+import { jsonlLogFor } from '../utils/jsonlLog';
 import { readJsonStrict } from '../utils/atomicJson';
 
 type AlertRule = NonNullable<OverwatchConfig['alert_rules']>[number];
@@ -53,11 +54,10 @@ function getNotificationChannelsFile(): string {
   return path.join(getDataDir(), 'notification-channels.json');
 }
 
-async function appendAlertHistory(entry: AlertHistoryEntry): Promise<void> {
-  const line = JSON.stringify(entry);
-  await fs.appendFile(getAlertHistoryFile(), line + '\n', { mode: 0o600 }).catch((err) => {
-    console.error(`[AlertEngine] Failed to append alert history: ${err?.message || err}`);
-  });
+// Same serialized writer retention prunes through, so a prune cannot drop an
+// alert appended while it runs.
+function appendAlertHistory(entry: AlertHistoryEntry): void {
+  jsonlLogFor(getAlertHistoryFile(), 'AlertEngine').append(JSON.stringify(entry));
 }
 
 /** Missing file is "no channels"; anything unreadable throws so writers cannot clobber it. */

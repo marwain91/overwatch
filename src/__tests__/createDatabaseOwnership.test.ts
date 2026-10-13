@@ -154,6 +154,7 @@ describe('createTenant database ownership', () => {
     execFile[util.promisify.custom] = (c: string, args: string[]) =>
       new Promise((res, rej) => execFile(c, args, (e: any, stdout: string, stderr: string) => e ? rej(e) : res({ stdout, stderr })));
     vi.doMock('child_process', () => ({ execFile }));
+    vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
     vi.doMock('../config', () => ({
       loadConfig: () => ({
         project: { name: 'T', prefix: 'test', db_prefix: 'test' },

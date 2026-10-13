@@ -8,7 +8,7 @@ const { startTenant, stopTenant, restartTenant, writeAuditEntry } = vi.hoisted((
 }));
 
 vi.mock('../services/docker', () => ({ startTenant, stopTenant, restartTenant }));
-vi.mock('../middleware/audit', () => ({ writeAuditEntry: (...a: any[]) => writeAuditEntry(...a) }));
+vi.mock('../services/auditLog', () => ({ writeAuditEntry: (...a: any[]) => writeAuditEntry(...a) }));
 
 import { HttpError } from '../utils/httpErrors';
 import { startTenantHandler, stopTenantHandler, restartTenantHandler } from '../mcp/tools/lifecycle';

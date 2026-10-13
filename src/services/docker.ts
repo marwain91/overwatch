@@ -8,6 +8,7 @@ import type { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
 import { parseEnv } from '../utils/env';
 import { runDocker } from '../utils/runDocker';
+import { withTenantLock } from './fileLock';
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 export { docker };
 
@@ -300,7 +301,11 @@ export async function ensureExternalVolumes(composePath: string): Promise<void> 
   }
 }
 
-export async function startTenant(appId: string, tenantId: string): Promise<void> {
+export function startTenant(appId: string, tenantId: string): Promise<void> {
+  return withTenantLock(appId, tenantId, () => startTenantLocked(appId, tenantId));
+}
+
+async function startTenantLocked(appId: string, tenantId: string): Promise<void> {
   const appsDir = getAppsDir();
   const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
   await assertWithinDir(tenantPath, appsDir);
@@ -309,7 +314,11 @@ export async function startTenant(appId: string, tenantId: string): Promise<void
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: 300_000 });
 }
 
-export async function stopTenant(appId: string, tenantId: string): Promise<void> {
+export function stopTenant(appId: string, tenantId: string): Promise<void> {
+  return withTenantLock(appId, tenantId, () => stopTenantLocked(appId, tenantId));
+}
+
+async function stopTenantLocked(appId: string, tenantId: string): Promise<void> {
   const appsDir = getAppsDir();
   const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
   await assertWithinDir(tenantPath, appsDir);
@@ -317,7 +326,11 @@ export async function stopTenant(appId: string, tenantId: string): Promise<void>
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down'], { timeoutMs: 120_000 });
 }
 
-export async function restartTenant(appId: string, tenantId: string): Promise<void> {
+export function restartTenant(appId: string, tenantId: string): Promise<void> {
+  return withTenantLock(appId, tenantId, () => restartTenantLocked(appId, tenantId));
+}
+
+async function restartTenantLocked(appId: string, tenantId: string): Promise<void> {
   const appsDir = getAppsDir();
   const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
   await assertWithinDir(tenantPath, appsDir);

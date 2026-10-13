@@ -96,6 +96,8 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
     changedKeys: ['services'],
   }));
 
+  vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
+
   vi.doMock('../config', () => ({
     loadConfig: () => ({
       project: { name: 'Test', prefix: 'test', db_prefix: 'test' },
