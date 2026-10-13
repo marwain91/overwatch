@@ -26,7 +26,7 @@ const CURRENT_INPUT = {
       backup: { enabled: true, paths: [{ container: '/app/uploads', local: 'uploads' }] },
       routing: {
         path_prefix: '/api',
-        middlewares: ['api-limit'],
+        middlewares: ['api-auth'],
         raw_labels: { 'traefik.http.routers.shop.priority': '10', 'traefik.http.services.shop.loadbalancer.sticky': 'true' },
         tls_termination: 'traefik',
       },
@@ -34,13 +34,17 @@ const CURRENT_INPUT = {
     },
     { name: 'migrator', image_suffix: 'backend', is_init_container: true, command: ['npm', 'run', 'migrate'] },
     { name: 'frontend', image_suffix: 'frontend', required: true, ports: { internal: 80 } },
+    { name: 'metrics', image_suffix: 'backend', ports: { internal: 9100 }, routing: { enabled: false } },
   ],
   backup: { enabled: true, schedule: '0 3 * * *', provider: 's3' },
   admin_access: { enabled: true, secret_env: 'AUTH_SERVICE_SECRET' },
   credentials: { db_password_length: 32, jwt_secret_length: 64 },
   db_prefix: 'shop',
   traefik: {
-    middlewares: { 'api-limit': { type: 'rateLimit', average: 100 } },
+    middlewares: {
+      'api-limit': { type: 'rateLimit', average: 100 },
+      'api-auth': { type: 'basicAuth', users: ['admin:$apr1$abc$def'] },
+    },
     default_middlewares: ['api-limit'],
   },
   manifest: { image_suffix: 'backend', path: '/overwatch/app.json' },
@@ -74,7 +78,7 @@ describe('applyManifestPolicy', () => {
       backend.env_mapping = { DATABASE_URL: 'DB_URL', REDIS_URL: { static: 'redis://cache:6379' } };
       backend.depends_on = [];
       backend.routing.path_prefix = '/v2';
-      backend.routing.middlewares = [];
+      backend.routing.additional_path_prefixes = ['/v1'];
       backend.routing.priority = 50;
       backend.routing.strip_prefix = true;
       migrator.is_init_container = false;
@@ -125,11 +129,13 @@ describe('applyManifestPolicy', () => {
     expect(service(next, 'backend').ports).toEqual({ internal: 4000 });
   });
 
-  it('keeps routing raw_labels and tls_termination while applying the rest of routing', () => {
+  it('keeps protected routing fields of an existing service while applying the rest of routing', () => {
     const manifest = manifestFrom(m => {
       m.services[0].routing = {
         path_prefix: '/v2',
-        middlewares: [],
+        priority: 5,
+        strip_prefix: true,
+        middlewares: ['api-auth', 'api-limit'],
         raw_labels: { 'traefik.http.routers.shop.middlewares': 'none@internal' },
         tls_termination: 'upstream',
       };
@@ -140,13 +146,40 @@ describe('applyManifestPolicy', () => {
     const currentRouting = service(CURRENT, 'backend').routing!;
     expect(service(next, 'backend').routing).toEqual({
       ...service(manifest, 'backend').routing,
+      middlewares: currentRouting.middlewares,
       raw_labels: currentRouting.raw_labels,
       tls_termination: currentRouting.tls_termination,
     });
     expect(ignored).toEqual([
+      'services.backend.routing.middlewares',
       'services.backend.routing.raw_labels',
       'services.backend.routing.tls_termination',
     ]);
+  });
+
+  it('ignores a manifest that removes an auth middleware from an existing service', () => {
+    const manifest = manifestFrom(m => { m.services[0].routing.middlewares = []; });
+
+    const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
+
+    expect(service(next, 'backend').routing!.middlewares).toEqual(['api-auth']);
+    expect(ignored).toEqual(['services.backend.routing.middlewares']);
+  });
+
+  it.each([
+    ['hide', 'backend', false],
+    ['hide', 'frontend', false],
+    ['expose', 'metrics', true],
+  ])('does not let a manifest %s the existing service %s', (_verb: string, name: string, enabled: boolean) => {
+    const manifest = manifestFrom(m => {
+      const svc = m.services.find((s: any) => s.name === name);
+      svc.routing = { ...(svc.routing ?? {}), enabled };
+    });
+
+    const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
+
+    expect(service(next, name).routing!.enabled).toBe(!enabled);
+    expect(ignored).toEqual([`services.${name}.routing.enabled`]);
   });
 
   it('keeps protected values the manifest leaves out, without reporting them', () => {
@@ -155,6 +188,7 @@ describe('applyManifestPolicy', () => {
       const backend = m.services[0];
       delete backend.user; delete backend.command; delete backend.volumes; delete backend.networks; delete backend.backup;
       delete backend.routing;
+      delete m.services[3].routing;
     });
 
     const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
@@ -171,14 +205,18 @@ describe('applyManifestPolicy', () => {
     expect(nextBackend.volumes).toEqual(currentBackend.volumes);
     expect(nextBackend.networks).toEqual(currentBackend.networks);
     expect(nextBackend.backup).toEqual(currentBackend.backup);
-    // Routing itself is the manifest's (path_prefix and middlewares are gone),
-    // but the admin's labels and TLS mode survive with schema defaults.
+    // The manifest's routing paths are gone; the admin's routing fields
+    // survive on top of the schema defaults an absent block implies.
     expect(nextBackend.routing).toEqual({
       enabled: true,
       strip_prefix: false,
+      middlewares: currentBackend.routing!.middlewares,
       raw_labels: currentBackend.routing!.raw_labels,
       tls_termination: currentBackend.routing!.tls_termination,
     });
+    // An absent block would expose the hidden service; it stays hidden.
+    expect(service(next, 'metrics').routing).toEqual({ enabled: false, strip_prefix: false });
+    expect(service(next, 'frontend').routing).toBeUndefined();
     expect(ignored).toEqual([]);
   });
 
@@ -195,7 +233,12 @@ describe('applyManifestPolicy', () => {
         volumes: [{ name: 'docker-sock', container_path: '/var/run/docker.sock', name_template: '/var/run/docker.sock' }],
         networks: ['external'],
         backup: { enabled: true },
-        routing: { path_prefix: '/jobs', raw_labels: { 'traefik.http.routers.x.priority': '999' }, tls_termination: 'upstream' },
+        routing: {
+          path_prefix: '/jobs',
+          middlewares: ['api-limit'],
+          raw_labels: { 'traefik.http.routers.x.priority': '999' },
+          tls_termination: 'upstream',
+        },
       });
     });
 
@@ -216,9 +259,21 @@ describe('applyManifestPolicy', () => {
       'services.worker.volumes',
       'services.worker.networks',
       'services.worker.backup',
+      'services.worker.routing.middlewares',
       'services.worker.routing.raw_labels',
       'services.worker.routing.tls_termination',
     ]);
+  });
+
+  it('takes routing.enabled of a new service from the manifest', () => {
+    const manifest = manifestFrom(m => {
+      m.services.push({ name: 'internal-api', image_suffix: 'backend', ports: { internal: 7000 }, routing: { enabled: false } });
+    });
+
+    const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
+
+    expect(service(next, 'internal-api').routing).toEqual({ enabled: false, strip_prefix: false });
+    expect(ignored).toEqual([]);
   });
 
   it('drops every protected field for a new app with no current definition', () => {
@@ -233,16 +288,18 @@ describe('applyManifestPolicy', () => {
     for (const field of ['user', 'command', 'volumes', 'networks', 'backup']) {
       expect(backend).not.toHaveProperty(field);
     }
-    expect(backend.routing).toEqual({ enabled: true, strip_prefix: false, path_prefix: '/api', middlewares: ['api-limit'] });
+    expect(backend.routing).toEqual({ enabled: true, strip_prefix: false, path_prefix: '/api' });
+    expect(service(next, 'metrics').routing).toEqual({ enabled: false, strip_prefix: false });
     expect(service(next, 'migrator')).not.toHaveProperty('command');
-    expect(next.services.map(s => s.name)).toEqual(['backend', 'migrator', 'frontend']);
+    expect(next.services.map(s => s.name)).toEqual(['backend', 'migrator', 'frontend', 'metrics']);
     expect(next.env_vars).toEqual(manifest.env_vars);
     expect(next.manifest).toEqual(manifest.manifest);
     expect(ignored).toEqual([
       'admin_access', 'backup', 'credentials', 'db_prefix', 'traefik',
       'services.backend.user', 'services.backend.command', 'services.backend.volumes',
       'services.backend.networks', 'services.backend.backup',
-      'services.backend.routing.raw_labels', 'services.backend.routing.tls_termination',
+      'services.backend.routing.middlewares', 'services.backend.routing.raw_labels',
+      'services.backend.routing.tls_termination',
       'services.migrator.command',
     ]);
   });
@@ -299,7 +356,7 @@ describe('manifestPolicyBaseline', () => {
 
     expect(baseline.admin_access).toEqual(global.admin_access);
     expect(service(baseline, 'backend').user).toBe('2000:2000');
-    expect(baseline.services.map(s => s.name)).toEqual(['backend', 'migrator', 'frontend', 'legacy-worker']);
+    expect(baseline.services.map(s => s.name)).toEqual(['backend', 'migrator', 'frontend', 'metrics', 'legacy-worker']);
   });
 
   it('keeps settings of a service only this tenant still runs when its manifest carries it', () => {

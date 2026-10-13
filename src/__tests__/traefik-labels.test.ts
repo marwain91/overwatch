@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildTraefikLabels, resolveTlsTermination } from '../services/traefikLabels';
 import type { AppDefinition, AppService } from '../models/app';
 import type { TraefikGlobal, TraefikTenant } from '../models/traefik';
+import { HttpError } from '../utils/httpErrors';
 
 function baseApp(traefikOverride?: Partial<AppDefinition['traefik']>): AppDefinition {
   return {
@@ -275,6 +276,40 @@ describe('buildTraefikLabels', () => {
       traefik,
     });
     expect(labels.join('\n')).toMatch(/entrypoints=edge/);
+  });
+
+  it('names the missing middleware in an error the operator gets back', () => {
+    const build = () => buildTraefikLabels({
+      app: baseApp({ middlewares: {} }),
+      tenantId: 't1',
+      domain: 't1.app.example.com',
+      service: { ...baseService, routing: { ...baseService.routing, middlewares: ['api-auth'] } } as any,
+      certResolverName: 'cf-prod',
+    });
+
+    let caught: unknown;
+    try { build(); } catch (err) { caught = err; }
+
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).expose).toBe(true);
+    expect((caught as HttpError).clientMessage).toMatch(/Middleware "api-auth" referenced by myapp\/t1\/web is not defined/);
+  });
+
+  it('names the unknown middleware a chain references in an error the operator gets back', () => {
+    let caught: unknown;
+    try {
+      buildTraefikLabels({
+        app: baseApp({ middlewares: { secure: { type: 'chain', middlewares: ['api-auth'] } } }),
+        tenantId: 't1',
+        domain: 't1.app.example.com',
+        service: { ...baseService, routing: { ...baseService.routing, middlewares: ['secure'] } } as any,
+        certResolverName: 'cf-prod',
+      });
+    } catch (err) { caught = err; }
+
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).expose).toBe(true);
+    expect((caught as HttpError).clientMessage).toBe('Chain middleware "secure" references unknown middleware "api-auth"');
   });
 });
 

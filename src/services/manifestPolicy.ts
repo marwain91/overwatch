@@ -7,8 +7,9 @@ type Fields = Record<string, unknown>;
 // Anyone who can push a tag to an app's registry controls the image's
 // /overwatch/app.json, and it lands in the definition every tenant of the app
 // shares. The image may describe its own shape (services, ports, health
-// checks, env declarations, routing paths); who can get in, where data lives
-// and how containers run stay as an admin set them in Overwatch.
+// checks, env declarations, routing paths); who can get in (middlewares,
+// whether an existing service is exposed), where data lives and how
+// containers run stay as an admin set them in Overwatch.
 const PROTECTED_APP_FIELDS = [
   'admin_access', 'backup', 'credentials', 'db_prefix', 'traefik',
 ] as const satisfies readonly (keyof AppDefinitionStatic)[];
@@ -16,8 +17,11 @@ const PROTECTED_SERVICE_FIELDS = [
   'user', 'command', 'volumes', 'networks', 'backup',
 ] as const satisfies readonly (keyof AppService)[];
 const PROTECTED_ROUTING_FIELDS = [
-  'raw_labels', 'tls_termination',
+  'middlewares', 'raw_labels', 'tls_termination',
 ] as const satisfies readonly (keyof AppServiceRouting)[];
+
+// What an absent routing block means: routed, no prefix stripping.
+const ROUTING_DEFAULTS: AppServiceRouting = AppServiceRoutingSchema.parse({});
 
 export interface ManifestPolicyResult {
   next: AppDefinitionStatic;
@@ -71,26 +75,33 @@ function applyServicePolicy(service: AppService, current: AppService | undefined
   for (const field of PROTECTED_SERVICE_FIELDS) {
     keepCurrent(next, service, current, field, `${path}.${field}`, ignored);
   }
-  const routing = applyRoutingPolicy(service.routing, current?.routing, `${path}.routing`, ignored);
+  const routing = applyRoutingPolicy(service.routing, current, `${path}.routing`, ignored);
   if (routing) next.routing = routing;
   return next as AppService;
 }
 
 function applyRoutingPolicy(
   routing: AppServiceRouting | undefined,
-  current: AppServiceRouting | undefined,
+  currentService: AppService | undefined,
   path: string,
   ignored: string[],
 ): AppServiceRouting | undefined {
-  const hasProtected = PROTECTED_ROUTING_FIELDS.some(field => current?.[field] !== undefined);
-  if (!routing && !hasProtected) return undefined;
-  // Routing belongs to the image, but leaving the block out must not drop the
-  // admin's labels or TLS mode. An empty block parses to the same defaults an
-  // absent one implies (routed, no prefix stripping).
-  const next: Fields = { ...(routing ?? AppServiceRoutingSchema.parse({})) };
+  const current = currentService?.routing;
+  // Start from the defaults when the block is left out, so the admin's
+  // routing fields have somewhere to survive.
+  const next: Fields = { ...(routing ?? ROUTING_DEFAULTS) };
+  if (currentService) {
+    // An image must not expose or hide a service that already exists. A new
+    // service keeps the manifest's value: dropping an explicit `false` would
+    // expose something the image meant to keep internal.
+    const currentEnabled = { enabled: current?.enabled ?? ROUTING_DEFAULTS.enabled };
+    keepCurrent(next, routing, currentEnabled, 'enabled', `${path}.enabled`, ignored);
+  }
   for (const field of PROTECTED_ROUTING_FIELDS) {
     keepCurrent(next, routing, current, field, `${path}.${field}`, ignored);
   }
+  // Nothing beyond the defaults: keep the manifest's "no routing block".
+  if (!routing && isDeepStrictEqual(next, ROUTING_DEFAULTS)) return undefined;
   return next as AppServiceRouting;
 }
 

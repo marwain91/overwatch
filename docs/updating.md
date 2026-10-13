@@ -162,24 +162,27 @@ Make sure `overwatch/` isn't excluded by `.dockerignore` (add `!overwatch/` if y
 
 ### What a manifest may change
 
-Anyone who can push a tag to the app's registry controls the manifest, and it updates the definition every tenant of the app shares. So the manifest may only describe the app's own shape. Fields that decide who can get in, where data lives and how containers run stay as an admin set them.
+Anyone who can push a tag to the app's registry controls the manifest, and it updates the definition every tenant of the app shares. So the manifest may only describe the app's own shape. Fields that decide who can get in (including route middlewares and whether an existing service is exposed), where data lives and how containers run stay as an admin set them.
 
 The manifest may change:
 
 - `services`: add, remove and reorder them.
-- Per service: `name`, `required`, `is_init_container`, `image_suffix`, `ports`, `health_check`, `env_mapping`, `depends_on`, and `routing` except `routing.raw_labels` and `routing.tls_termination`.
+- Per service: `name`, `required`, `is_init_container`, `image_suffix`, `ports`, `health_check`, `env_mapping`, `depends_on`, and the routing paths: `routing.path_prefix`, `routing.additional_path_prefixes`, `routing.priority` and `routing.strip_prefix`.
+- `routing.enabled` of a service the manifest adds.
 - `env_vars` and `manifest`.
 
 Protected (the manifest's value is ignored):
 
 - `admin_access`, `backup`, `credentials`, `db_prefix` and `traefik` (the app's middleware library and default middlewares).
-- Per service: `user`, `command`, `volumes`, `networks`, `backup`, `routing.raw_labels` and `routing.tls_termination`.
+- Per service: `user`, `command`, `volumes`, `networks`, `backup`, `routing.middlewares`, `routing.raw_labels` and `routing.tls_termination`.
+- `routing.enabled` of a service that already exists: an image can't expose or hide it.
 
 How protected fields are resolved:
 
 - A protected field keeps its current value from the app definition in Overwatch. If the definition has no value for it, the manifest's value is dropped. This also applies to every protected field of a service that the manifest adds, so a new service that needs a volume, a `user` or a `command` has to get it from an admin.
 - If the app definition no longer lists a service that this tenant still runs (a newer image on another tenant removed it), the tenant keeps its own values for that service.
 - `id`, `name`, `domain_template`, `registry` and `default_image_tag` always come from the app definition in Overwatch, as before.
+- A manifest can't point a route at a middleware the app lacks, because route middlewares and the app's middleware library are both protected. If a route does reference a missing middleware (for example after an admin edit), the update fails at the `config` step and rolls back, and the error names the missing middleware.
 - When a manifest sets a protected field to a different value, Overwatch logs `[manifest] ignored protected fields from image <tag>: <paths>` (for example `admin_access, services.backend.volumes`) and adds the list to the `manifest` step of the tenant-update progress. A protected field the manifest leaves out is not reported.
 - To change a protected field, change the app definition in Overwatch: `overwatch apps apply <file>`, `PUT /api/apps/<appId>`, or the admin UI for the fields it exposes (for example backup and admin access in App Settings). An existing tenant picks the change up on its next update to an image that carries a manifest.
 
