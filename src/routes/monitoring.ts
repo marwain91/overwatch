@@ -260,7 +260,12 @@ router.post('/notifications/:id/test', requireRole('admin'), asyncHandler(async 
     return;
   }
 
-  await sendTestNotification(channel);
+  try {
+    await sendTestNotification(channel);
+  } catch (err: any) {
+    res.status(502).json({ error: `Test notification failed: ${err?.message || 'delivery error'}` });
+    return;
+  }
   res.json({ success: true });
 }));
 

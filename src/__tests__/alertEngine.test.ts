@@ -56,3 +56,169 @@ describe('alert engine threshold timers', () => {
     }
   });
 });
+
+async function loadEngine(rules: unknown[], extra: { sendWebhook?: any } = {}) {
+  vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.doMock('../config', () => ({ loadConfig: () => ({ alert_rules: rules }), getDataDir: () => dataDir }));
+  vi.doMock('../notifications/webhook', () => ({ sendWebhook: extra.sendWebhook ?? vi.fn(async () => undefined) }));
+  const { eventBus } = await import('../services/eventBus');
+  const engine = await import('../services/alertEngine');
+  return { eventBus, ...engine };
+}
+
+const downRule = { id: 'down', name: 'Down', condition: { type: 'container_down', duration: '1m' }, cooldown: '1s', severity: 'critical' };
+
+describe('alert engine container_down timers', () => {
+  it('does not fire when the container starts again before the duration', async () => {
+    vi.useFakeTimers();
+    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
+    const fired: any[] = [];
+    eventBus.on('alert:fired', (a) => fired.push(a));
+    startAlertEngine();
+    try {
+      eventBus.emit('container:event', { action: 'die', containerName: 'app-t1-web' });
+      await vi.advanceTimersByTimeAsync(30_000);
+      eventBus.emit('container:event', { action: 'start', containerName: 'app-t1-web' });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(fired).toHaveLength(0);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('a stop followed by a quick restart and a second stop only fires once, for the later outage', async () => {
+    vi.useFakeTimers();
+    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
+    const fired: any[] = [];
+    eventBus.on('alert:fired', (a) => fired.push(a));
+    startAlertEngine();
+    try {
+      eventBus.emit('container:event', { action: 'die', containerName: 'app-t1-web' });
+      await vi.advanceTimersByTimeAsync(30_000);
+      eventBus.emit('container:event', { action: 'start', containerName: 'app-t1-web' });
+      eventBus.emit('container:event', { action: 'die', containerName: 'app-t1-web' });
+      await vi.advanceTimersByTimeAsync(40_000); // old timer would fire at 60s from the first die
+      expect(fired).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(fired).toHaveLength(1);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('stopAlertEngine cancels pending down timers', async () => {
+    vi.useFakeTimers();
+    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
+    const fired: any[] = [];
+    eventBus.on('alert:fired', (a) => fired.push(a));
+    startAlertEngine();
+    eventBus.emit('container:event', { action: 'die', containerName: 'app-t1-web' });
+    stopAlertEngine();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(fired).toHaveLength(0);
+  });
+});
+
+describe('alert engine lifecycle', () => {
+  it('removes its eventBus listeners on stop and restarts cleanly without double firing', async () => {
+    vi.useFakeTimers();
+    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
+    const before = ['metrics:snapshot', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n));
+    startAlertEngine();
+    stopAlertEngine();
+    expect(['metrics:snapshot', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n))).toEqual(before);
+
+    const fired: any[] = [];
+    eventBus.on('alert:fired', (a) => fired.push(a));
+    startAlertEngine();
+    startAlertEngine(); // idempotent
+    try {
+      eventBus.emit('container:event', { action: 'die', containerName: 'app-t1-web' });
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(fired).toHaveLength(1);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+});
+
+describe('alert engine stale container eviction', () => {
+  it('resolves active alerts and drops state for containers absent for 10 minutes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([cpuRule('warn-80', 80)]);
+    const fired: any[] = [];
+    const resolved: any[] = [];
+    eventBus.on('alert:fired', (a) => fired.push(a));
+    eventBus.on('alert:resolved', (a) => resolved.push(a));
+    startAlertEngine();
+    try {
+      const hot = { containers: [{ name: 'app-t1-web', tenantId: 't1', cpuPercent: 99, memPercent: 1 }] };
+      eventBus.emit('metrics:snapshot', hot);
+      vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
+      eventBus.emit('metrics:snapshot', hot);
+      expect(fired).toHaveLength(1);
+
+      vi.setSystemTime(new Date('2026-01-01T00:05:00Z'));
+      eventBus.emit('metrics:snapshot', { containers: [] });
+      expect(resolved).toHaveLength(0); // absent for < 10 minutes
+
+      vi.setSystemTime(new Date('2026-01-01T00:12:03Z'));
+      eventBus.emit('metrics:snapshot', { containers: [] });
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0].ruleId).toBe('warn-80');
+
+      // state is gone: the container coming back hot restarts its duration (no immediate fire)
+      vi.setSystemTime(new Date('2026-01-01T00:20:00Z'));
+      eventBus.emit('metrics:snapshot', hot);
+      expect(fired).toHaveLength(1);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+});
+
+describe('alert notification channels', () => {
+  const channel = { id: '00000000-0000-4000-8000-000000000001', name: 'Hook', type: 'webhook', enabled: true, config: { url: 'https://example.test/h' } };
+
+  it('treats a missing file as no channels but a corrupt file as an error that blocks saving', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { getNotificationChannelsData, saveNotificationChannels } = await loadEngine([]);
+    expect(await getNotificationChannelsData()).toEqual([]);
+    expect(errSpy).not.toHaveBeenCalled();
+
+    const file = path.join(dataDir, 'notification-channels.json');
+    await fs.writeFile(file, '{"not": valid');
+    expect(await getNotificationChannelsData()).toEqual([]);
+    expect(errSpy).toHaveBeenCalled();
+    await expect(saveNotificationChannels([channel as any])).rejects.toThrow(/notification-channels\.json/);
+    expect(await fs.readFile(file, 'utf-8')).toBe('{"not": valid');
+  });
+
+  it('saves normally when the file is missing or valid', async () => {
+    const { getNotificationChannelsData, saveNotificationChannels } = await loadEngine([]);
+    await saveNotificationChannels([channel as any]);
+    await saveNotificationChannels([channel as any, { ...channel, id: 'x' } as any]);
+    expect(await getNotificationChannelsData()).toHaveLength(2);
+  });
+
+  it('logs a failed webhook delivery from alert dispatch instead of swallowing it', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await fs.writeFile(path.join(dataDir, 'notification-channels.json'), JSON.stringify([channel]));
+    const sendWebhook = vi.fn(async () => { throw new Error('Webhook returned 503'); });
+    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([cpuRule('warn-80', 80)], { sendWebhook });
+    startAlertEngine();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      const hot = { containers: [{ name: 'app-t1-web', tenantId: 't1', cpuPercent: 99, memPercent: 1 }] };
+      eventBus.emit('metrics:snapshot', hot);
+      vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
+      eventBus.emit('metrics:snapshot', hot);
+      await vi.waitFor(() => {
+        expect(errSpy.mock.calls.some(c => String(c.join(' ')).includes('Webhook returned 503'))).toBe(true);
+      });
+    } finally {
+      stopAlertEngine();
+    }
+  });
+});

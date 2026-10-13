@@ -60,6 +60,7 @@ class RingBuffer<T> {
 const metricsHistory = new Map<string, RingBuffer<ContainerMetrics>>();
 let scheduledTask: ScheduledTask | null = null;
 let collecting = false;
+const STALE_CONTAINER_MS = 10 * 60 * 1000;
 
 function calculateCpuPercent(stats: any): number {
   const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
@@ -167,6 +168,13 @@ async function collectMetrics(): Promise<void> {
       ...t,
       totalCpu: Math.round(t.totalCpu * 100) / 100,
     }));
+
+    // Containers that stopped or were removed would otherwise keep a ring buffer forever.
+    const now = Date.now();
+    for (const [name, history] of metricsHistory) {
+      const latest = history.latest();
+      if (!latest || now - Date.parse(latest.timestamp) >= STALE_CONTAINER_MS) metricsHistory.delete(name);
+    }
 
     eventBus.emit('metrics:snapshot', { containers: allMetrics, tenants: tenantMetrics });
   } catch (error: any) {

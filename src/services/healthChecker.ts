@@ -19,6 +19,7 @@ interface HealthState {
 const healthStates = new Map<string, HealthState>();
 let scheduledTask: ScheduledTask | null = null;
 let checking = false;
+const STALE_CONTAINER_MS = 10 * 60 * 1000;
 
 async function checkHTTP(host: string, port: number, path: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -128,6 +129,26 @@ async function runHealthChecks(): Promise<void> {
           previousState,
           newState,
           consecutiveFailures,
+          lastCheck: new Date().toISOString(),
+        });
+      }
+    }
+
+    // Containers no longer checked (stopped, removed) must not keep a stale
+    // state forever: report them as unknown, then forget them.
+    const now = Date.now();
+    for (const [name, state] of healthStates) {
+      if (state.lastCheck && now - Date.parse(state.lastCheck) < STALE_CONTAINER_MS) continue;
+      healthStates.delete(name);
+      if (state.state !== 'unknown') {
+        eventBus.emit('health:change', {
+          containerName: name,
+          appId: state.appId,
+          tenantId: state.tenantId,
+          service: state.service,
+          previousState: state.state,
+          newState: 'unknown',
+          consecutiveFailures: 0,
           lastCheck: new Date().toISOString(),
         });
       }

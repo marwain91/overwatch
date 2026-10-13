@@ -35,6 +35,14 @@ function isPrivateIP(ip: string): boolean {
   return false;
 }
 
+/**
+ * Same escape hatch the save-time check honours (isValidWebhookUrl in
+ * routes/monitoring.ts), so a URL accepted at save is not refused at send.
+ */
+function allowPrivateWebhooks(): boolean {
+  return process.env.OVERWATCH_ALLOW_PRIVATE_WEBHOOK === '1';
+}
+
 /** Validate webhook URL and return the resolved IP to use for the request (prevents DNS rebinding) */
 async function validateWebhookUrl(url: string): Promise<string | null> {
   const parsed = new URL(url);
@@ -44,10 +52,12 @@ async function validateWebhookUrl(url: string): Promise<string | null> {
     throw new Error('Webhook URL must use http or https');
   }
 
+  const allowPrivate = allowPrivateWebhooks();
+
   // Block localhost and common internal hostnames
   const hostname = parsed.hostname.toLowerCase();
   const blockedHostnames = ['localhost', 'metadata.google.internal', 'host.docker.internal', 'gateway.docker.internal'];
-  if (blockedHostnames.includes(hostname) || hostname.endsWith('.internal')) {
+  if (!allowPrivate && (blockedHostnames.includes(hostname) || hostname.endsWith('.internal'))) {
     throw new Error('Webhook URL cannot point to localhost or internal services');
   }
 
@@ -55,7 +65,7 @@ async function validateWebhookUrl(url: string): Promise<string | null> {
   // Return the resolved IP so the caller can connect to it directly (prevents DNS rebinding)
   try {
     const { address } = await dnsLookup(hostname);
-    if (isPrivateIP(address)) {
+    if (!allowPrivate && isPrivateIP(address)) {
       throw new Error('Webhook URL resolves to a private/internal IP address');
     }
     return address;
@@ -139,12 +149,13 @@ export async function sendWebhook(channel: NotificationChannel, alert: AlertHist
 
   try {
     await attempt();
-  } catch (firstError) {
+  } catch {
     // Retry once
     try {
       await attempt();
     } catch (retryError) {
-      console.error(`[Webhook] Failed to send to ${channel.name}: ${(retryError as Error).message}`);
+      // Callers decide what to do: the test endpoint reports it, alert dispatch logs it.
+      throw retryError;
     }
   }
 }
