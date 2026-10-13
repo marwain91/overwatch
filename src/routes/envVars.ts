@@ -40,6 +40,11 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
   // When value is omitted, keep the existing value (for sensitive field edits)
   let effectiveValue: string;
   if (value === undefined || value === null || value === '') {
+    // Masked secrets are never readable through the API, so clearing the flag
+    // without supplying a value would let the caller reveal one they can't see.
+    if (existing?.sensitive && sensitive === false) {
+      return res.status(400).json({ error: 'Re-enter the value to make a sensitive variable non-sensitive' });
+    }
     if (existing) {
       effectiveValue = existing.value;
     } else {

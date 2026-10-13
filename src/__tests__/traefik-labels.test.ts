@@ -148,6 +148,32 @@ describe('buildTraefikLabels', () => {
     expect(joined).toMatch(/traefik\.enable=true/);
   });
 
+  it('drops reserved raw label keys hidden by case or YAML escapes', () => {
+    const svc = {
+      ...baseService,
+      routing: {
+        enabled: true,
+        strip_prefix: false,
+        raw_labels: {
+          'traefik.HTTP.routers.evil.Rule': 'Host(`admin.example.com`)',
+          'traefik.http.routers.evil.rul\\x65': 'Host(`admin.example.com`)',
+          'traefik.http.middlewares.ok.headers.customrequestheaders.X-Re': '^https://(.*)\\.example\\.com',
+        },
+      },
+    };
+    const labels = buildTraefikLabels({
+      app: baseApp(),
+      tenantId: 't1',
+      domain: 't1.app.example.com',
+      service: svc as any,
+      certResolverName: 'cf-prod',
+    });
+    const joined = labels.join('\n');
+    expect(joined).not.toMatch(/admin\.example\.com/);
+    // Backslashes in values (regexes) are still passed through untouched.
+    expect(joined).toContain('customrequestheaders.X-Re=^https://(.*)\\.example\\.com');
+  });
+
   it('never emits a raw line break, so label values cannot add compose keys', () => {
     const svc = {
       ...baseService,

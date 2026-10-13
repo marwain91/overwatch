@@ -140,6 +140,20 @@ export function isDenylistedLabelKey(key: string): boolean {
   return RAW_LABEL_DENYLIST.some(rx => rx.test(key));
 }
 
+/**
+ * Emit-time filter for raw label keys. Stricter than the schema check:
+ * - Traefik matches label keys case-insensitively, so `...routers.x.Rule`
+ *   must be dropped too.
+ * - Labels are emitted inside double-quoted YAML, where `\` starts an escape:
+ *   `...routers.x.rul\x65` passes the denylist but decodes to `.rule`. No
+ *   legitimate label key contains a backslash.
+ * Kept out of the schema refinement on purpose: that schema is parsed at
+ * boot, so tightening it there would turn a stored key into a boot failure.
+ */
+export function isBlockedRawLabelKey(key: string): boolean {
+  return key.includes('\\') || isDenylistedLabelKey(key.toLowerCase());
+}
+
 const denylistRefinement = (labels: Record<string, string>, ctx: z.RefinementCtx) => {
   for (const key of Object.keys(labels)) {
     if (isDenylistedLabelKey(key)) {

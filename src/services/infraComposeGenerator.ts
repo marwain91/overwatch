@@ -1,7 +1,7 @@
 import * as yaml from 'js-yaml';
 import type { OverwatchConfig } from '../config/schema';
 import type { Entrypoint, TraefikGlobal, TraefikOverwatch } from '../models/traefik';
-import { isDenylistedLabelKey } from '../models/traefik';
+import { isBlockedRawLabelKey } from '../models/traefik';
 import { sanitizeTraefikValue } from './traefikLabels';
 
 /**
@@ -198,7 +198,7 @@ function buildOverwatchLabels(ow: TraefikOverwatch, traefik: TraefikGlobal): str
   out.push('traefik.http.services.admin.loadbalancer.server.port=3002');
 
   for (const [k, v] of Object.entries(ow.raw_labels ?? {})) {
-    if (isDenylistedLabelKey(k)) continue;
+    if (isBlockedRawLabelKey(k)) continue;
     out.push(`${k}=${v}`);
   }
   return out;

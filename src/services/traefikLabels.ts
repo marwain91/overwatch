@@ -1,6 +1,6 @@
 import type { AppDefinition, AppService } from '../models/app';
 import type { MiddlewareSpec, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
-import { isDenylistedLabelKey } from '../models/traefik';
+import { isBlockedRawLabelKey } from '../models/traefik';
 
 /**
  * Resolve the effective TLS termination mode for a single router.
@@ -153,7 +153,7 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
     tenantOverrides?.raw_labels?.[service.name],
   );
   for (const [k, v] of Object.entries(merged)) {
-    if (isDenylistedLabelKey(k)) continue;
+    if (isBlockedRawLabelKey(k)) continue;
     push(`${k}=${v}`);
   }
 

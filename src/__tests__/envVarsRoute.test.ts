@@ -41,6 +41,19 @@ describe('POST /api/apps/:appId/env-vars', () => {
     expect(res.body.envVar.value).toBe('••••••••');
   });
 
+  it('refuses to unmask a secret without the value being re-entered', async () => {
+    const setEnvVar = vi.fn();
+    const app = await makeApp(setEnvVar);
+
+    const res = await request(app)
+      .post('/api/apps/demo/env-vars')
+      .send({ key: 'API_TOKEN', sensitive: false })
+      .expect(400);
+
+    expect(res.body.error).toMatch(/re-enter the value/i);
+    expect(setEnvVar).not.toHaveBeenCalled();
+  });
+
   it('still honours an explicit sensitive flag', async () => {
     const setEnvVar = vi.fn(async (_appId: string, key: string, value: string, sensitive: boolean) => ({ key, value, sensitive }));
     const app = await makeApp(setEnvVar);
