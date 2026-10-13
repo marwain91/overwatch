@@ -78,7 +78,9 @@ afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
-describe('overwatch CLI help', () => {
+// Each test spawns the CLI through tsx (a cold compile of the CLI graph), which
+// alone takes 1-5s and more on a loaded machine; the 5s default is too tight.
+describe('overwatch CLI help', { timeout: 30_000 }, () => {
   it('prints update help without pulling images', async () => {
     const proc = runCli(['update', '--help']);
 

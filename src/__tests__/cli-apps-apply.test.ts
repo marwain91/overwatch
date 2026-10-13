@@ -65,7 +65,9 @@ afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
-describe('overwatch apps apply — end-to-end', () => {
+// Each test spawns the CLI through tsx (a cold compile of the CLI graph), which
+// alone takes 1-5s and more on a loaded machine; the 5s default is too tight.
+describe('overwatch apps apply — end-to-end', { timeout: 30_000 }, () => {
   it('creates an app from a file', async () => {
     const appFile = path.join(tmpRoot, 'acme.json');
     await fs.writeFile(appFile, JSON.stringify(validStatic('acme')));
