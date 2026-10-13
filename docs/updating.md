@@ -174,12 +174,13 @@ Protected (the manifest's value is ignored):
 
 - `admin_access`, `backup`, `credentials`, `db_prefix` and `traefik` (the app's middleware library and default middlewares).
 - Per service: `user`, `command`, `volumes`, `networks`, `backup`, `routing.middlewares`, `routing.raw_labels` and `routing.tls_termination`.
-- `routing.enabled`: an image can't expose or hide a service that already exists, and a service that is new to the app starts unrouted (see below).
+- Whether a service is routed (`routing.enabled`): a service that is routed today stays routed, and any other service stays unrouted (see below).
 
 How protected fields are resolved:
 
 - A protected field keeps its current value from the app definition in Overwatch. If the definition has no value for it, the manifest's value is dropped. This also applies to every protected field of a service that the manifest adds, so a new service that needs a volume, a `user`, a `command` or middlewares has to get them from an admin.
-- A service that is new to the app definition starts with its route disabled (`routing.enabled: false`), whatever the manifest says. Otherwise a manifest could rename a service, or remove it and add it back in a later release, and serve it without the middlewares an admin put on its route. When a release adds an HTTP service, enable its route once: set the service's `routing.enabled` to `true` (and add any middlewares) with `overwatch apps apply <file>` or `PUT /api/apps/<appId>`, then update the tenant again. A new service without ports, or one the manifest already leaves unrouted, is not reported.
+- A service that isn't routed today gets `routing.enabled: false`, whatever the manifest says. That covers a service that is new to the app definition, one without `ports.internal`, an init container, and one with `routing.enabled: false`. The manifest can still add ports or clear `is_init_container`; only the route is withheld. Otherwise a manifest could rename a service, remove it and add it back in a later release, or give a port-less service a port, and serve it without the middlewares an admin keeps on its route.
+- To route such a service, enable it once: set the service's `routing.enabled` to `true` (and add any middlewares) with `overwatch apps apply <file>` or `PUT /api/apps/<appId>`, then update the tenant again. The service is reported as `services.<name>.routing.enabled` only when the manifest would have routed it.
 - If the app definition no longer lists a service that this tenant still runs (a newer image on another tenant removed it), the tenant keeps its own values for that service.
 - `id`, `name`, `domain_template`, `registry` and `default_image_tag` always come from the app definition in Overwatch, as before.
 - A manifest can't point a route at a middleware the app lacks, because route middlewares and the app's middleware library are both protected. If a route does reference a missing middleware (for example after an admin edit), the update fails at the `config` step and rolls back, and the error names the missing middleware.

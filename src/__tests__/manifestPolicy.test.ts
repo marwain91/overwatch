@@ -68,7 +68,7 @@ function service(d: AppDefinitionStatic, name: string) {
 }
 
 describe('applyManifestPolicy', () => {
-  it('passes a manifest that only changes allowed fields through unchanged', () => {
+  it('applies a manifest that only changes allowed fields, keeping unrouted services unrouted', () => {
     const manifest = manifestFrom(m => {
       const [backend, migrator] = m.services;
       backend.image_suffix = 'api';
@@ -90,12 +90,13 @@ describe('applyManifestPolicy', () => {
 
     const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
 
-    // The new service starts unrouted; it has no ports, so nothing was lost
-    // and nothing is reported.
+    // The new worker and the former init container are not routed today, so
+    // they carry an explicit unrouted block. Neither has ports, so the
+    // manifest would not have routed them either and nothing is reported.
     expect(next).toEqual({
       ...manifest,
       services: manifest.services.map(s =>
-        s.name === 'worker' ? { ...s, routing: { enabled: false, strip_prefix: false } } : s),
+        ['worker', 'migrator'].includes(s.name) ? { ...s, routing: { enabled: false, strip_prefix: false } } : s),
     });
     expect(ignored).toEqual([]);
   });
@@ -194,7 +195,6 @@ describe('applyManifestPolicy', () => {
       const backend = m.services[0];
       delete backend.user; delete backend.command; delete backend.volumes; delete backend.networks; delete backend.backup;
       delete backend.routing;
-      delete m.services[3].routing;
     });
 
     const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
@@ -220,10 +220,61 @@ describe('applyManifestPolicy', () => {
       raw_labels: currentBackend.routing!.raw_labels,
       tls_termination: currentBackend.routing!.tls_termination,
     });
-    // An absent block would expose the hidden service; it stays hidden.
-    expect(service(next, 'metrics').routing).toEqual({ enabled: false, strip_prefix: false });
     expect(service(next, 'frontend').routing).toBeUndefined();
     expect(ignored).toEqual([]);
+  });
+
+  describe('an existing service that is not routed today', () => {
+    it('stays unrouted when the manifest drops its disabled routing block', () => {
+      const manifest = manifestFrom(m => { delete m.services[3].routing; });
+
+      const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
+
+      expect(service(next, 'metrics').routing).toEqual({ enabled: false, strip_prefix: false });
+      expect(ignored).toEqual(['services.metrics.routing.enabled']);
+    });
+
+    it('stays unrouted when a port-less service gains ports', () => {
+      const withWorker = def({ ...CURRENT_INPUT, services: [...CURRENT_INPUT.services, { name: 'worker', image_suffix: 'worker' }] });
+      const manifest = def({
+        ...CURRENT_INPUT,
+        services: [...CURRENT_INPUT.services, { name: 'worker', image_suffix: 'worker', ports: { internal: 9000 } }],
+      });
+
+      const { next, ignored } = applyManifestPolicy(withWorker, manifest);
+
+      expect(service(next, 'worker').ports).toEqual({ internal: 9000 });
+      expect(service(next, 'worker').routing).toEqual({ enabled: false, strip_prefix: false });
+      expect(ignored).toEqual(['services.worker.routing.enabled']);
+    });
+
+    it('stays unrouted when an init container becomes a regular service with ports', () => {
+      const manifest = manifestFrom(m => {
+        m.services[1].is_init_container = false;
+        m.services[1].ports = { internal: 8000 };
+      });
+
+      const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
+
+      const migrator = service(next, 'migrator');
+      expect(migrator.is_init_container).toBe(false);
+      expect(migrator.ports).toEqual({ internal: 8000 });
+      expect(migrator.routing).toEqual({ enabled: false, strip_prefix: false });
+      expect(ignored).toEqual(['services.migrator.routing.enabled']);
+    });
+
+    it('leaves a service that is routed today routed', () => {
+      const manifest = manifestFrom(m => {
+        m.services[0].ports = { internal: 4000 };
+        m.services[0].routing.path_prefix = '/v2';
+      });
+
+      const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
+
+      expect(service(next, 'backend').routing!.enabled).toBe(true);
+      expect(service(next, 'frontend').routing).toBeUndefined();
+      expect(ignored).toEqual([]);
+    });
   });
 
   it('strips protected fields from a service that is new in the manifest', () => {

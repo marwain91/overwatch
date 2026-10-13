@@ -32,9 +32,10 @@ export interface ManifestPolicyResult {
 /**
  * Apply an image manifest to the current app definition, keeping protected
  * fields at their current value (or dropping them when there is none: a new
- * app or a service the manifest adds). A service new to an existing app also
- * starts unrouted. Identity and registry fields are not handled here; callers
- * overlay those from the global definition. Inputs are not modified.
+ * app or a service the manifest adds). In an existing app, a service that is
+ * not routed today stays unrouted. Identity and registry fields are not
+ * handled here; callers overlay those from the global definition. Inputs are
+ * not modified.
  */
 export function applyManifestPolicy(
   current: AppDefinitionStatic | null,
@@ -97,14 +98,15 @@ function applyRoutingPolicy(
   // Start from the defaults when the block is left out, so the admin's
   // routing fields have somewhere to survive.
   const next: Fields = { ...(routing ?? ROUTING_DEFAULTS) };
-  if (currentService) {
-    // An image must not expose or hide a service that already exists.
-    const currentEnabled = { enabled: current?.enabled ?? ROUTING_DEFAULTS.enabled };
-    keepCurrent(next, routing, currentEnabled, 'enabled', `${path}.enabled`, ignored);
+  if (currentService && wouldBeRouted(currentService)) {
+    // Routed today: an image must not hide it.
+    keepCurrent(next, routing, { enabled: true }, 'enabled', `${path}.enabled`, ignored);
   } else if (appExists) {
-    // A service new to an existing app starts unrouted. Otherwise renaming a
-    // service, or removing and re-adding it, would shed its protected
-    // middlewares and serve it without them. An admin enables the route.
+    // Not routed today (new to the app, port-less, an init container or
+    // disabled): stays unrouted until an admin enables it, even when the
+    // manifest adds ports. Otherwise renaming a service, re-adding it or
+    // giving it ports would serve it without the middlewares an admin keeps
+    // on its route. Ports and is_init_container still change.
     if (wouldBeRouted(service)) ignored.push(`${path}.enabled`);
     next.enabled = false;
   }
