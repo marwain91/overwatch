@@ -1,6 +1,6 @@
 # API Reference
 
-All API endpoints require authentication via an Overwatch JWT except `/api/auth/google`, `/api/auth/config`, and `/health`. `/api/auth/verify` is public at the router level but expects an `Authorization: Bearer <token>` header.
+All API endpoints require authentication via an Overwatch JWT except `/api/auth/google`, `/api/auth/config`, and `/health`. `/api/auth/verify` is public at the router level but expects an `Authorization: Bearer <token>` header. Session tokens last 24h and carry `aud: overwatch-web` / `iss: overwatch`; tokens for other audiences (MCP, OAuth consent) are rejected, and a token whose user is no longer an admin user gets `401`. The WebSocket (`/ws`) authenticates with the same session token as its first message and is closed when the token expires or the user is removed (re-checked every 60s).
 
 ## Conventions
 

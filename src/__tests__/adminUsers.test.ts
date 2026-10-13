@@ -25,8 +25,7 @@ afterEach(async () => {
   vi.doUnmock('../config');
   vi.doUnmock('../services/fileLock');
   vi.doUnmock('../middleware/requireRole');
-  vi.doUnmock('../utils/jwt');
-  await fs.rm(tmpRoot, { recursive: true, force: true });
+    await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
 describe('services/users roles', () => {
@@ -100,13 +99,17 @@ describe('services/users roles', () => {
 
 describe('routes/adminUsers roles', () => {
   async function makeApp() {
-    vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'root@example.com' }));
-    // Real requireRole against the seeded file: caller identity is root@example.com.
+    // Stands in for authMiddleware: caller identity is root@example.com with its seeded role.
+    const { getUserRole } = await import('../services/users');
     const express = (await import('express')).default;
     const router = (await import('../routes/adminUsers')).default;
     const { errorHandler } = await import('../middleware/errorHandler');
     const app = express();
     app.use(express.json());
+    app.use(async (_req, res, next) => {
+      res.locals.user = { email: 'root@example.com', role: await getUserRole('root@example.com') };
+      next();
+    });
     app.use('/api/admin-users', router);
     app.use(errorHandler);
     return app;

@@ -141,7 +141,6 @@ describe('G8 audit queue — persists entries even with concurrent writes', () =
     const dataDir = path.join(tmpRoot, 'data');
     await fs.mkdir(dataDir, { recursive: true });
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
-    vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'a@b.c' }));
 
     const { auditLog } = await import('../middleware/audit');
     const { flushAuditLog } = await import('../services/auditLog');
@@ -149,7 +148,7 @@ describe('G8 audit queue — persists entries even with concurrent writes', () =
       method: 'DELETE', baseUrl: '/api/apps', path: `/${p}`,
       query: {}, body: {}, ip: '1.2.3.4', socket: { remoteAddress: '1.2.3.4' },
     });
-    const mkRes = () => ({ statusCode: 200, json: (b: any) => b });
+    const mkRes = () => ({ statusCode: 200, json: (b: any) => b, locals: { user: { email: 'a@b.c', role: 'admin' } } });
 
     for (const p of ['one', 'two', 'three']) {
       const res: any = mkRes();

@@ -95,7 +95,6 @@ describe('G4 audit describeAction — records force=true tag', () => {
     await fs.mkdir(dataDir, { recursive: true });
 
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
-    vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'a@b.c' }));
 
     // Re-import so audit picks up the mocks
     vi.resetModules();
@@ -110,7 +109,7 @@ describe('G4 audit describeAction — records force=true tag', () => {
       ip: '1.2.3.4',
       socket: { remoteAddress: '1.2.3.4' },
     };
-    const res: any = { statusCode: 200, json: (b: any) => b };
+    const res: any = { statusCode: 200, json: (b: any) => b, locals: { user: { email: 'a@b.c', role: 'admin' } } };
 
     mod.auditLog(req, res, () => {});
     res.json({ ok: true });
