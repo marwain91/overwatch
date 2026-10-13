@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] — 2026-10-13
+
 ### Fixed
 
 - **Creating an app from the web UI no longer fails with a 400.** The wizard sent the default health-check `interval` as the number `30`; the API expects a duration string and now receives `'30s'`.
@@ -23,14 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Creating a tenant from a backup uses the app's `default_image_tag`** when no tag is given, instead of forcing `latest`.
 - **`/api/audit-logs` handles a repeated `?user=` and a negative `limit`** instead of returning an empty list.
 - **Running from a `.env` file (`npm run dev` / `npm start`) loads it before modules read `JWT_SECRET`.** Container deployments, which pass env vars directly, were not affected.
+- **Env-var keys with leading or trailing whitespace are rejected.** The key was trimmed for validation but stored untrimmed, so `" FOO"` could shadow `FOO` in `shared.env`.
 
 ### Security
 
 - **Traefik label values can no longer start a new line in a tenant's `docker-compose.yml`.** Raw line breaks in `raw_labels` and middleware fields (editor-settable) are folded to a space, which is what YAML already did to a break inside a quoted value.
 - **Editing a sensitive env var without re-sending the `sensitive` flag keeps it masked.** Previously the flag defaulted to `false`, exposing the stored secret to every viewer. Clearing the flag now also requires re-entering the value, so a caller can't reveal a secret the API never shows them, and `sensitive` must be a real boolean.
-- **Reserved Traefik label keys can't be smuggled in through `raw_labels`.** Keys that differ from what compose and Traefik see passed the denylist: mixed case (`…routers.x.Rule`), a YAML escape (`…rul\x65`), an embedded `=` (compose splits there), or a non-ASCII look-alike that Traefik folds to ASCII. When labels are generated, raw label keys must now be plain ASCII (`A-Z a-z 0-9 . _ - [ ]`), and reserved keys are matched case-insensitively and dropped.
-- **Viewers no longer receive notification-channel credentials.** `GET /api/monitoring/notifications` now returns only the webhook URL's origin and masks header values for non-admins; admins still get the full config they need to edit it.
-- **Startup rejects the `.env.example` placeholder `JWT_SECRET`.** It passed the length check while being public. **Deployments still using it will refuse to start until `JWT_SECRET` is replaced** (e.g. `openssl rand -hex 32`); all existing sessions are then invalidated.
+- **Reserved Traefik label keys can't be smuggled in through `raw_labels`.** Keys that differ from what compose and Traefik see passed the denylist: mixed case (`…routers.x.Rule`), a YAML escape (`…rul\x65`), an embedded `=` (compose splits there), or a non-ASCII look-alike that Traefik folds to ASCII. When labels are generated, raw label keys must now be plain ASCII (`A-Z a-z 0-9 . _ - [ ]`), and reserved keys are matched case-insensitively and dropped. The `com.overwatch.*` ownership labels (which monitoring now trusts) and `com.docker.*` are reserved too.
+- **Viewers no longer receive notification-channel credentials.** `GET /api/monitoring/notifications` now returns only the webhook URL's scheme and masks header values for non-admins (and for any caller whose role can't be resolved); admins still get the full config they need to edit it.
+- **Startup rejects the documented placeholder `JWT_SECRET` values** from `.env.example` and `docs/development.md`. They passed the length check while being public. **Deployments still using it will refuse to start until `JWT_SECRET` is replaced** (e.g. `openssl rand -hex 32`); all existing sessions are then invalidated.
 - **Container restarts via `/api/status` are now audit-logged.**
 - **MCP tools validate `appId` / `tenantId` with the same slug rule as the REST API.**
 - **`overwatch init` writes `infrastructure/.env` and `overwatch/.env` with mode 0600**, and the legacy-format migration writes tenant `.env` files the same way tenant creation does (0600, atomic).
@@ -40,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `npm run build:all` (the CI gate) now runs the full `npm run build`, including template embedding, instead of bare `tsc`.
 - Removed dead code: unused exports and types, an unused `services/index.ts` barrel, and two unused UI hooks. CLI commands share one set of colour constants and output helpers.
+
+### Upgrade notes
+
+- **Rotate `JWT_SECRET` before upgrading if it is still the `.env.example` placeholder.** Overwatch now refuses to start with `replace-with-at-least-32-random-characters` (or the old `docs/development.md` example `dev-secret-at-least-32-characters`) as its secret. Generate a new one (e.g. `openssl rand -hex 32`) and set it in `.env` before starting v1.7.2. Changing the secret signs every admin and MCP session out, so users sign in again.
+- **Env-var writes are stricter.** `POST /api/apps/:appId/env-vars` returns 400 if `sensitive` is sent as anything other than a boolean. It also returns 400 for `sensitive: false` on an existing sensitive variable unless you send a new `value` in the same request. Callers that toggled the flag without a value need to re-send the value. A non-string `description`, and a non-boolean `sensitive` on tenant overrides, are also rejected with 400 (they used to be saved and then broke every later read of the env-var files).
+- **Non-conforming `raw_labels` keys are dropped.** When labels are generated, a raw label key containing anything outside `A-Z a-z 0-9 . _ - [ ]` is dropped, and so is any key that matches a reserved key (`traefik.enable`, `…routers.*.rule`, `…tls`, `…entrypoints`, `…tls.certresolver`) case-insensitively, as is any `com.overwatch.*` or `com.docker.*` key. Previously a mixed-case reserved key passed through. Check your tenants' `raw_labels` for dropped keys and move them to the typed fields (`cert_resolver`, `host_aliases`, `middlewares`) where one exists.
+- **MCP tools take slugs.** `appId` and `tenantId` must be lowercase slugs (`a-z`, `0-9`, `-`, max 63 characters), the same rule the REST API applies. MCP clients that passed other identifiers will get a validation error.
 
 ## [1.7.1] — 2026-08-06
 
