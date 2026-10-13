@@ -18,6 +18,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.resetModules();
   vi.doUnmock('../config');
+  vi.doUnmock('fs/promises');
   await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -60,13 +61,20 @@ describe('regenerateAllSharedEnvFiles', () => {
 
   it('collects a tenants-dir read failure for one app and still sweeps the others', async () => {
     await tenant('good', 'a');
-    await fs.mkdir(path.join(appsDir, 'broken'), { recursive: true });
-    await fs.chmod(path.join(appsDir, 'broken'), 0o000);
+    await tenant('broken', 'b');
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    vi.doMock('fs/promises', () => ({
+      ...actual,
+      readdir: (p: any, ...rest: any[]) =>
+        String(p) === path.join(appsDir, 'broken', 'tenants')
+          ? Promise.reject(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }))
+          : (actual.readdir as any)(p, ...rest),
+    }));
     const { regenerateAllSharedEnvFiles } = await import('../services/envVars');
+
     const err: any = await regenerateAllSharedEnvFiles().catch(e => e);
-    await fs.chmod(path.join(appsDir, 'broken'), 0o755);
-    if (process.getuid?.() === 0) return; // root ignores modes
+
     expect(err.failures.map((f: any) => f.appId)).toEqual(['broken']);
     await expect(fs.access(path.join(appsDir, 'good', 'tenants', 'a', 'shared.env'))).resolves.toBeUndefined();
   });
