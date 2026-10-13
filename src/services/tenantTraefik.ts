@@ -125,8 +125,24 @@ function hostOf(url: string | undefined): string | undefined {
   try { return normalizeHost(new URL(url).hostname); } catch { return undefined; }
 }
 
+const ABSENT = new Set(['ENOENT', 'ENOTDIR']);
+function failClosed(what: string, err: any): HttpError {
+  return new HttpError(500, `Cannot check host aliases: ${what} could not be read (${err?.code || err?.message || err})`, { expose: true });
+}
+
+/** A genuinely absent file/dir is "none"; any other failure must not read as "no foreign hosts". */
 async function readIfExists(file: string): Promise<string | undefined> {
-  try { return await fs.readFile(file, 'utf-8'); } catch { return undefined; }
+  try { return await fs.readFile(file, 'utf-8'); } catch (err: any) {
+    if (ABSENT.has(err?.code)) return undefined;
+    throw failClosed(path.basename(path.dirname(file)) + '/' + path.basename(file), err);
+  }
+}
+
+async function readDirIfExists(dir: string): Promise<string[]> {
+  try { return await fs.readdir(dir); } catch (err: any) {
+    if (ABSENT.has(err?.code)) return [];
+    throw failClosed('the apps directory', err);
+  }
 }
 
 /**
@@ -150,11 +166,9 @@ export async function loadAliasContext(appId: string, tenantId: string): Promise
 
   const foreign = new Set<string>();
   const appsDir = getAppsDir();
-  let appDirs: string[] = [];
-  try { appDirs = await fs.readdir(appsDir); } catch { /* no apps yet */ }
+  const appDirs = await readDirIfExists(appsDir);
   for (const a of appDirs) {
-    let tenantDirs: string[] = [];
-    try { tenantDirs = await fs.readdir(path.join(appsDir, a, 'tenants')); } catch { continue; }
+    const tenantDirs = await readDirIfExists(path.join(appsDir, a, 'tenants'));
     for (const t of tenantDirs) {
       if (a === appId && t === tenantId) continue;
       const dir = path.join(appsDir, a, 'tenants', t);
@@ -166,7 +180,7 @@ export async function loadAliasContext(appId: string, tenantId: string): Promise
         try {
           const aliases = (yaml.load(raw) as any)?.host_aliases;
           if (Array.isArray(aliases)) for (const x of aliases) if (typeof x === 'string') foreign.add(normalizeHost(x));
-        } catch { /* unreadable file: nothing to collide with */ }
+        } catch (err) { throw failClosed(`${a}/${t}/${TENANT_TRAEFIK_FILE}`, err); }
       }
     }
   }

@@ -42,7 +42,7 @@ afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   vi.resetModules();
   vi.restoreAllMocks();
-  for (const m of ['../config', '../config/loader', '../services/fileLock', '../services/app']) vi.doUnmock(m);
+  for (const m of ['../config', '../config/loader', '../services/fileLock', '../services/app', 'fs/promises']) vi.doUnmock(m);
 });
 
 describe('updateTenantTraefik host_aliases validation', () => {
@@ -114,6 +114,44 @@ describe('alias checks fail closed', () => {
     await addTenant('ghost', 't1', 't1.ghost.example.com', ['www.anything.org']);
     const { readTenantTraefik } = await import('../services/tenantTraefik');
     expect((await readTenantTraefik('ghost', 't1'))?.host_aliases).toEqual([]);
+    expect(console.warn).toHaveBeenCalled();
+  });
+});
+
+describe('alias checks fail closed on unreadable state', () => {
+  it('save-time: an unreadable tenant traefik.yaml is an exposed error', async () => {
+    await addTenant('shop', 't1', 't1.shop.example.com');
+    await addTenant('shop', 't2', 't2.shop.example.com');
+    await fs.writeFile(path.join(appsDir, 'shop', 'tenants', 't2', 'traefik.yaml'), 'host_aliases: [unterminated');
+    const { updateTenantTraefik } = await import('../services/traefikConfig');
+    await expect(updateTenantTraefik('shop', 't1', { host_aliases: ['a.shop.example.com'] })).rejects.toMatchObject({ expose: true });
+  });
+
+  it('save-time: a non-ENOENT readdir failure on the apps dir is an exposed error; a missing dir is not', async () => {
+    await addTenant('shop', 't1', 't1.shop.example.com');
+    vi.doMock('fs/promises', async () => {
+      const actual: any = await vi.importActual('fs/promises');
+      const readdir = async (...a: any[]) => {
+        if (String(a[0]) === appsDir) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return actual.readdir(...a);
+      };
+      return { ...actual, readdir, default: { ...actual, readdir } };
+    });
+    const { updateTenantTraefik } = await import('../services/traefikConfig');
+    await expect(updateTenantTraefik('shop', 't1', { host_aliases: ['a.shop.example.com'] })).rejects.toMatchObject({ expose: true });
+    vi.doUnmock('fs/promises');
+    vi.resetModules();
+    const { loadAliasContext } = await import('../services/tenantTraefik');
+    await fs.rm(path.join(appsDir, 'shop', 'tenants'), { recursive: true });
+    await expect(loadAliasContext('shop', 't1')).resolves.toBeDefined();
+  });
+
+  it('generation-time: aliases are dropped with a warning when another tenant file is unreadable', async () => {
+    await addTenant('shop', 't1', 't1.shop.example.com', ['ok.shop.example.com']);
+    await addTenant('shop', 't2', 't2.shop.example.com');
+    await fs.writeFile(path.join(appsDir, 'shop', 'tenants', 't2', 'traefik.yaml'), 'host_aliases: [unterminated');
+    const { readTenantTraefik } = await import('../services/tenantTraefik');
+    expect((await readTenantTraefik('shop', 't1'))?.host_aliases).toEqual([]);
     expect(console.warn).toHaveBeenCalled();
   });
 });

@@ -237,8 +237,18 @@ export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwne
     if (!own) return `"${name}" is not one of this tenant's own ${kind}`;
   }
   const field = rest.join('.').replace(/\[\d+\]/g, '');
-  if (kind === 'services' && /^loadbalancer\.servers?\.url$/.test(field)) {
-    return 'a backend url would route the tenant host to an arbitrary address';
+  if (kind === 'services') {
+    // weighted/mirroring/failover can name any service (another tenant's
+    // `<router>@docker`), a backend url points the host at any address, and
+    // serverstransport can reference a foreign transport: allow only the plain
+    // loadbalancer options.
+    if (!field.startsWith('loadbalancer.')) {
+      return 'only loadbalancer.* options are allowed on a service (weighted, mirroring and failover can reach other tenants\' services)';
+    }
+    if (/^loadbalancer\.servers?\.url$/.test(field)) {
+      return 'a backend url would route the tenant host to an arbitrary address';
+    }
+    if (field === 'loadbalancer.serverstransport') return 'serverstransport may reference a transport owned by someone else';
   }
   if (kind === 'routers') {
     if (RESERVED_ROUTER_FIELDS.test(field)) return 'reserved by Overwatch (use the typed fields instead)';

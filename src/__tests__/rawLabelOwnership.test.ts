@@ -169,3 +169,32 @@ describe('own service backend url', () => {
     expect(labels).toContain('traefik.http.services.myapp-t1-web.loadbalancer.sticky.cookie=true');
   });
 });
+
+describe('own service: only plain loadbalancer options', () => {
+  const S = 'traefik.http.services.myapp-t1-web';
+  it('drops weighted/mirroring/failover naming a foreign service and serverstransport', () => {
+    const bad = {
+      [`${S}.weighted.services[0].name`]: 'myapp-t2-web@docker',
+      [`${S}.mirroring.service`]: 'myapp-t2-web@docker',
+      [`${S}.failover.service`]: 'myapp-t2-web@docker',
+      [`${S}.loadbalancer.serverstransport`]: 'victim@file',
+    };
+    const joined = labelsFor(bad).join('\n');
+    expect(joined).not.toMatch(/weighted|mirroring|failover|serverstransport|myapp-t2-web/);
+    for (const [k, v] of Object.entries(bad)) {
+      expect(() => assertTenantRawLabelsOwned('myapp', 't1', { web: { [k]: v } })).toThrow(k);
+      expect(() => assertAppRawLabelsOwned('myapp', [{ name: 'web', routing: { raw_labels: { [k]: v } } }])).toThrow(k);
+    }
+  });
+  it('keeps port, scheme, sticky, healthcheck and passhostheader', () => {
+    const ok = {
+      [`${S}.loadbalancer.server.port`]: '8080',
+      [`${S}.loadbalancer.server.scheme`]: 'https',
+      [`${S}.loadbalancer.sticky.cookie`]: 'true',
+      [`${S}.loadbalancer.healthcheck.path`]: '/h',
+      [`${S}.loadbalancer.passhostheader`]: 'false',
+    };
+    const labels = labelsFor(ok);
+    for (const [k, v] of Object.entries(ok)) expect(labels).toContain(`${k}=${v}`);
+  });
+});
