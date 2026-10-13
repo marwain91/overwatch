@@ -55,7 +55,7 @@ export function BackupsPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-content-faint">Provider</span>
-              <span className="font-medium text-content-secondary">{backupConfig.provider.toUpperCase()}</span>
+              <span className="font-medium text-content-secondary">{(backupConfig.provider ?? 's3').toUpperCase()}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-content-faint">Schedule</span>

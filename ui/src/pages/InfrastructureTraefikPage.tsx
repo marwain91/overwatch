@@ -369,7 +369,7 @@ function DashboardTab() {
   if (!loaded && data !== undefined) {
     if (data) {
       setHost(data.host ?? '');
-      setEnabled(data.enabled);
+      setEnabled(data.enabled ?? true);
       setCertResolver(data.cert_resolver ?? '');
       setMiddlewares((data.middlewares ?? []).join(', '));
     }
