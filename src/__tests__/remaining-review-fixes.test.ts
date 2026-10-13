@@ -277,7 +277,7 @@ describe('tenant lifecycle rollback', () => {
     }));
     vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
     vi.doMock('child_process', () => ({
-      execFile: vi.fn((_cmd: string, args: string[], cb: (err: any, stdout: string, stderr: string) => void) => {
+      execFile: vi.fn((_cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
         if (args.includes('up')) {
           const err: any = new Error('compose up failed');
           err.stderr = 'Error: restart failed';
@@ -367,7 +367,7 @@ describe('tenant lifecycle rollback', () => {
     }));
     vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
     vi.doMock('child_process', () => ({
-      execFile: vi.fn((_cmd: string, _args: string[], cb: (err: any, stdout: string, stderr: string) => void) => {
+      execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
         cb(null, '', '');
       }),
     }));

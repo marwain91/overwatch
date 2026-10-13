@@ -2,8 +2,10 @@ import * as yaml from 'js-yaml';
 import { AppDefinition, AppService } from '../models/app';
 import { OverwatchConfig } from '../config/schema';
 import type { TraefikTenant } from '../models/traefik';
-import { resolveCertResolver } from '../config/loader';
+import { resolveCertResolver, loadConfig } from '../config/loader';
 import { buildTraefikLabels } from './traefikLabels';
+import { isReservedSecretEnv } from '../utils/reservedEnv';
+import { ValidationError } from '../utils/httpErrors';
 
 interface GenerateOptions {
   app: AppDefinition;
@@ -65,11 +67,13 @@ export function generateComposeFile(options: GenerateOptions): string {
   // For legacy installs (no traefik.cert_resolvers), the resolver helper still works against
   // the synthesized shim; the resulting name is what the legacy tenant.yml template carries.
   let certResolverName: string;
+  let certResolverIsRef = false;
   try {
     certResolverName = resolveCertResolver(domain, config.traefik, tenantTraefik?.cert_resolver).name;
   } catch (err) {
     // Fallback for misconfigured legacy installs — old behavior used the env var.
     certResolverName = '${CERT_RESOLVER}';
+    certResolverIsRef = true;
   }
   const externalNetwork = config.networking?.external_network || `${prefix}-network`;
   const internalNetworkTemplate = config.networking?.internal_network_template || `${prefix}-\${tenantId}-internal`;
@@ -116,7 +120,7 @@ export function generateComposeFile(options: GenerateOptions): string {
         certResolverName,
         traefik: config.traefik,
         tenantOverrides: tenantTraefik,
-      }),
+      }).map(l => escapeLabel(l, certResolverIsRef)),
     ];
 
     // Keys are written in this order; js-yaml omits the `undefined` ones.
@@ -152,6 +156,30 @@ export function generateComposeFile(options: GenerateOptions): string {
   return yaml.dump(compose, { lineWidth: -1, noRefs: true, quotingType: '"' });
 }
 
+/** `$` → `$$`: compose reads `$$` as a literal `$` and interpolates a bare `$`. */
+function escapeDollar(value: string): string {
+  return value.replace(/\$/g, '$$$$');
+}
+
+/**
+ * Escape a `key=value` label so the value reaches Traefik literally (an
+ * `$apr1$` htpasswd hash or a `$1` regex replacement would otherwise be
+ * interpolated away). basicauth users written with an already-doubled `$$`
+ * (the old manual workaround) are collapsed first so they keep working;
+ * `$$` is never valid inside an htpasswd hash.
+ */
+function escapeLabel(label: string, keepCertResolverRef: boolean): string {
+  const eq = label.indexOf('=');
+  if (eq < 0) return escapeDollar(label);
+  const key = label.slice(0, eq);
+  let value = label.slice(eq + 1);
+  if (key.endsWith('.basicauth.users')) value = value.replace(/\$\$/g, '$');
+  let escaped = escapeDollar(value);
+  // The legacy fallback resolver is deliberately a reference into the tenant .env.
+  if (keepCertResolverRef) escaped = escaped.split('$${CERT_RESOLVER}').join('${CERT_RESOLVER}');
+  return `${key}=${escaped}`;
+}
+
 /**
  * Build a YAML mapping from entries. Keys become own data properties, so a
  * name like `__proto__` stays a key. A repeated key throws rather than
@@ -178,9 +206,14 @@ function buildEnvironment(
   if (!service.env_mapping || Object.keys(service.env_mapping).length === 0) return undefined;
   const entries: Array<[string, string]> = [];
   for (const [key, value] of Object.entries(service.env_mapping)) {
+    // A reserved source would hand an Overwatch secret to the tenant container.
+    if (typeof value === 'string' && isReservedSecretEnv(value, ctx.config)) {
+      console.warn(`[compose] dropped env_mapping '${key}' on ${where}/${service.name}: source '${value}' is a reserved Overwatch secret`);
+      continue;
+    }
     entries.push([key, resolveEnvValue(value, ctx)]);
   }
-  return toMapping(entries, 'environment variable', where);
+  return entries.length > 0 ? toMapping(entries, 'environment variable', where) : undefined;
 }
 
 function resolveVolumeName(vol: AppServiceVolume, appId: string, tenantId: string): string {
@@ -207,25 +240,29 @@ function buildServiceVolumes(service: AppService, appId: string, tenantId: strin
   return volumes.length > 0 ? volumes : undefined;
 }
 
-/** Top-level named volume declarations, first declaration of a name wins. */
+/**
+ * Top-level named volume declarations, first declaration of a name wins.
+ * Backup volumes follow buildServiceVolumes: a service gets one for each backup
+ * path it does not already mount itself, so each one it mounts is declared.
+ */
 function buildVolumeDeclarations(app: AppDefinition, tenantId: string): Array<[string, ComposeVolume]> {
   const declarations: Array<[string, ComposeVolume]> = [];
   const isDeclared = (name: string) => declarations.some(([declared]) => declared === name);
-  const declaredPaths = new Set<string>();
   for (const service of app.services) {
+    const mountedPaths = new Set<string>();
     for (const vol of service.volumes ?? []) {
       const name = resolveVolumeName(vol, app.id, tenantId);
+      mountedPaths.add(vol.container_path);
       if (isDeclared(name)) continue;
       declarations.push([name, vol.external === true ? { external: true } : { name }]);
-      if (vol.container_path) declaredPaths.add(vol.container_path);
     }
     if (service.backup?.enabled && service.backup.paths) {
       for (const p of service.backup.paths) {
-        if (declaredPaths.has(p.container)) continue;
+        if (mountedPaths.has(p.container)) continue;
+        mountedPaths.add(p.container);
         const name = `${service.name}-${p.local}`;
         if (isDeclared(name)) continue;
         declarations.push([name, { name }]);
-        declaredPaths.add(p.container);
       }
     }
   }
@@ -299,11 +336,13 @@ function resolveEnvValue(
   value: string | { static: string },
   ctx: ResolveContext,
 ): string {
+  // Literal values are escaped so compose does not interpolate a `$` in them;
+  // only a named source is deliberately left as a `${NAME}` reference.
   if (typeof value === 'object' && 'static' in value) {
-    return value.static;
+    return escapeDollar(value.static);
   }
   const auto = getAutoResolvedValue(value, ctx);
-  if (auto !== undefined) return auto;
+  if (auto !== undefined) return escapeDollar(auto);
   return `\${${value}}`;
 }
 
@@ -327,5 +366,34 @@ function getAutoResolvedValue(
       return 'production';
     default:
       return undefined;
+  }
+}
+
+/**
+ * Save-time check for env_mapping sources, run by the API and CLI paths that
+ * store an app definition. Takes the unparsed `services` because it runs
+ * before/alongside schema parsing. Generation drops such entries too, so
+ * definitions stored earlier still load.
+ */
+export function assertAppEnvMappingAllowed(
+  services: unknown,
+  config?: Parameters<typeof isReservedSecretEnv>[1],
+): void {
+  if (!Array.isArray(services)) return;
+  // Without a config only the static reserved list applies (the DB root
+  // password env name is configurable).
+  if (config === undefined) {
+    try { config = loadConfig(); } catch { config = null; }
+  }
+  for (const svc of services) {
+    const mapping = svc?.env_mapping;
+    if (!mapping || typeof mapping !== 'object') continue;
+    for (const [key, source] of Object.entries(mapping as Record<string, unknown>)) {
+      if (typeof source === 'string' && isReservedSecretEnv(source, config)) {
+        throw new ValidationError(
+          `env_mapping "${key}" on service "${svc?.name}" cannot read "${source}": it is a reserved Overwatch secret`,
+        );
+      }
+    }
   }
 }

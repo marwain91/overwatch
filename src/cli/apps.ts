@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import { applyApp } from '../services/app';
 import { assertAppRawLabelsOwned } from '../services/traefikLabels';
+import { assertAppEnvMappingAllowed } from '../services/composeGenerator';
 import { writeAuditEntry, flushAuditLog } from '../middleware/audit';
 import { GREEN, YELLOW, RED, BOLD, NC } from './config/utils';
 
@@ -60,6 +61,7 @@ async function runApply(args: string[]): Promise<void> {
   try {
     const def = parsed as { id?: unknown; services?: unknown };
     if (typeof def?.id === 'string') assertAppRawLabelsOwned(def.id, def.services);
+    assertAppEnvMappingAllowed(def?.services);
     const { result, app, changedKeys } = await applyApp(parsed, actor);
     writeAuditEntry({
       user: actor,

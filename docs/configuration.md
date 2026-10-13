@@ -370,7 +370,9 @@ Maps environment variable names inside the container to their resolved values. V
 |------|--------|----------|
 | Auto-resolved | `"DB_HOST": "DB_HOST"` | Known variable names are resolved at compose generation time to literal values from config/context |
 | `${VAR}` fallback | `"CUSTOM_KEY": "CUSTOM_KEY"` | Unknown variable names produce `${VAR}` for Docker Compose interpolation from `.env` |
-| Static | `"DB_HOST": { "static": "custom-db" }` | Always emits the literal value as-is |
+| Static | `"DB_HOST": { "static": "custom-db" }` | Always emits the literal value as-is (a `$` in it is escaped, so `${X}` is not interpolated) |
+
+Compose runs with a curated environment (`PATH`, `HOME`, `DOCKER_*`, `COMPOSE_*`), not Overwatch's own, so a `${VAR}` source resolves only from the tenant's `.env`. A source that names a reserved Overwatch secret (`JWT_SECRET`, `MYSQL_ROOT_PASSWORD`, `POSTGRES_PASSWORD`, `RESTIC_PASSWORD`, `GHCR_TOKEN`, `GOOGLE_CLIENT_*`, `R2_*`, `AWS_*`, or the configured DB root password env) is rejected when the app is saved and dropped, with a warning, when the compose file is generated.
 
 **Auto-resolvable variable names:**
 

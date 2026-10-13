@@ -9,6 +9,7 @@ import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
 import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
 import { assertAppRawLabelsOwned } from '../services/traefikLabels';
+import { assertAppEnvMappingAllowed } from '../services/composeGenerator';
 
 const router = Router();
 
@@ -35,6 +36,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   }
 
   assertAppRawLabelsOwned(parseResult.data.id, parseResult.data.services);
+  assertAppEnvMappingAllowed(parseResult.data.services);
   const app = await createApp(parseResult.data);
   res.status(201).json(app);
 }));
@@ -53,6 +55,7 @@ router.get('/:appId', validateAppId, asyncHandler(async (req, res) => {
 router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
   const appId = (req.params as Record<string, string>).appId;
   assertAppRawLabelsOwned(appId, req.body?.services);
+  assertAppEnvMappingAllowed(req.body?.services);
   const app = await updateApp({ ...req.body, id: appId });
   res.json(app);
 }));

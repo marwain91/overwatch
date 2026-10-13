@@ -1,6 +1,27 @@
 import { execFile } from 'child_process';
 import { HttpError } from './httpErrors';
 
+// What the docker CLI and compose need to find the daemon, registry login state
+// and their own settings. Nothing else: Overwatch's process env holds operator
+// secrets (JWT_SECRET, DB root password, GHCR/R2 tokens), and compose resolves
+// `${VAR}` in a tenant's compose file against the env it runs with.
+const DOCKER_ENV_KEYS = [
+  'PATH', 'HOME', 'LANG', 'LC_ALL',
+  'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY', 'DOCKER_CONTEXT',
+] as const;
+
+/** Allowlisted environment for docker / docker compose child processes. */
+export function getDockerEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of DOCKER_ENV_KEYS) {
+    if (source[key] !== undefined) env[key] = source[key];
+  }
+  for (const [key, value] of Object.entries(source)) {
+    if (key.startsWith('COMPOSE_') && value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
 export interface RunDockerOptions {
   timeoutMs?: number;
   cwd?: string;
@@ -77,7 +98,7 @@ export async function runDocker(
 ): Promise<{ stdout: string; stderr: string }> {
   const timeoutMs = opts.timeoutMs ?? 120_000;
   return new Promise((resolve, reject) => {
-    const child = execFile(command, args, { cwd: opts.cwd, env: opts.env, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const child = execFile(command, args, { cwd: opts.cwd, env: opts.env ?? getDockerEnv(), timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         const anyErr = err as NodeJS.ErrnoException & { code?: number | string; signal?: NodeJS.Signals };
         const exitCode = typeof anyErr.code === 'number' ? anyErr.code : null;
