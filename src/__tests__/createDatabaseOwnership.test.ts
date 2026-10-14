@@ -142,7 +142,7 @@ describe('createTenant database ownership', () => {
     await fs.rm(tmpRoot, { recursive: true, force: true });
     vi.resetModules();
     for (const m of ['child_process', '../config', '../config/loader', '../adapters/database', '../services/app',
-      '../services/envVars', '../services/tenantAppDef', '../services/docker']) vi.doUnmock(m);
+      '../services/envVars', '../services/tenantAppDef', '../services/docker', '../services/tenantTraefik']) vi.doUnmock(m);
   });
 
   async function load(db: any, composeUpFails: boolean) {
@@ -166,6 +166,7 @@ describe('createTenant database ownership', () => {
     }));
     vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
     vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => db }));
+vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined), assertTenantDomainAllowed: vi.fn(async () => undefined) }));
     vi.doMock('../services/app', () => ({
       getApp: vi.fn(async () => ({
         id: 'demo', name: 'Demo', domain_template: '*.example.test',
