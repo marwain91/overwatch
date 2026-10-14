@@ -1,7 +1,6 @@
 import express, { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { randomBytes, randomUUID } from 'crypto';
-import { OAuth2Client } from 'google-auth-library';
 import { asyncHandler } from '../utils/asyncHandler';
 import { authorizationServerMetadata, protectedResourceMetadata } from '../oauth/metadata';
 import {
@@ -10,6 +9,7 @@ import {
   saveRefreshToken, consumeRefreshToken, revokeRefreshToken,
 } from '../oauth/store';
 import { isAdminEmail, getUserRole, normaliseRole } from '../services/users';
+import { resolveGoogleAdmin } from '../services/identity';
 import { issueAccessToken, generateRefreshToken, mcpResourceUrl } from '../oauth/tokens';
 import { verifyPkceS256 } from '../oauth/pkce';
 
@@ -172,21 +172,6 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
   }));
 
   const googleClientId = process.env.GOOGLE_CLIENT_ID || '';
-  const googleClient = new OAuth2Client(googleClientId);
-
-  // Google credential verification, kept separate from the OAuth flow so it can move
-  // into the shared sign-in code. Returns the verified, lowercased email or an error.
-  async function verifyGoogleCredential(credential: string): Promise<{ email: string } | { status: number; error: string; description: string }> {
-    let payload: import('google-auth-library').TokenPayload | undefined;
-    try {
-      const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: googleClientId });
-      payload = ticket.getPayload();
-    } catch {
-      return { status: 401, error: 'access_denied', description: 'invalid credential' };
-    }
-    if (!payload?.email || !payload.email_verified) return { status: 401, error: 'access_denied', description: 'email not verified' };
-    return { email: payload.email.toLowerCase() };
-  }
 
   // GET /oauth/authorize — validate params, render login page with a signed request token.
   router.get('/oauth/authorize', asyncHandler(async (req: Request, res: Response) => {
@@ -219,12 +204,14 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
       return res.status(400).json({ error: 'invalid_request', error_description: 'expired or invalid request' });
     }
 
-    const verified = await verifyGoogleCredential(credential);
-    if ('error' in verified) return res.status(verified.status).json({ error: verified.error, error_description: verified.description });
-    const { email } = verified;
-    if (!(await isAdminEmail(email))) {
-      return res.status(403).send('<h1>Access denied</h1><p>This Google account is not an Overwatch admin.</p>');
+    const verified = await resolveGoogleAdmin(credential);
+    if (!verified.ok) {
+      if (verified.reason === 'invalid_credential') return res.status(401).json({ error: 'access_denied', error_description: 'invalid credential' });
+      if (verified.reason === 'not_admin') return res.status(403).send('<h1>Access denied</h1><p>This Google account is not an Overwatch admin.</p>');
+      if (verified.reason === 'not_configured') return res.status(500).json({ error: 'server_misconfiguration', error_description: 'Google OAuth not configured' });
+      return res.status(401).json({ error: 'access_denied', error_description: 'email not verified' });
     }
+    const { email } = verified;
     const client = await getClient(params.client_id);
     if (!client) return res.status(400).json({ error: 'invalid_client' });
 

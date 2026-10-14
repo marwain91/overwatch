@@ -17,7 +17,6 @@ afterEach(() => {
   vi.resetModules();
   vi.doUnmock('../services/alertEngine');
   vi.doUnmock('../services/users');
-  vi.doUnmock('../utils/jwt');
 });
 
 async function getChannelsAs(email: string, role: 'viewer' | 'admin' | undefined) {
@@ -27,13 +26,10 @@ async function getChannelsAs(email: string, role: 'viewer' | 'admin' | undefined
     saveNotificationChannels: vi.fn(),
     sendTestNotification: vi.fn(),
   }));
-  vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => email }));
-  vi.doMock('../services/users', async () => ({
-    ...(await vi.importActual<typeof import('../services/users')>('../services/users')),
-    getUserRole: vi.fn(async () => role),
-  }));
   const { default: router } = await import('../routes/monitoring');
   const app = express();
+  // Stands in for authMiddleware, which resolves the caller once per request.
+  app.use((_req, res, next) => { if (role) res.locals.user = { email, role }; next(); });
   app.use('/api/monitoring', router);
   return request(app).get('/api/monitoring/notifications').expect(200);
 }
@@ -67,13 +63,9 @@ describe('POST /api/monitoring/notifications/:id/test', () => {
       saveNotificationChannels: vi.fn(),
       sendTestNotification,
     }));
-    vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'admin@example.test' }));
-    vi.doMock('../services/users', async () => ({
-      ...(await vi.importActual<typeof import('../services/users')>('../services/users')),
-      getUserRole: vi.fn(async () => 'admin'),
-    }));
     const { default: router } = await import('../routes/monitoring');
     const app = express();
+    app.use((_req, res, next) => { res.locals.user = { email: 'admin@example.test', role: 'admin' }; next(); });
     app.use('/api/monitoring', router);
     return request(app).post(`/api/monitoring/notifications/${CHANNEL.id}/test`);
   }
