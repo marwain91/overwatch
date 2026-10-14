@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { eventBus } from './eventBus';
+import { eventBus, type EventMap } from './eventBus';
 import { loadConfig, getDataDir } from '../config';
 import type { OverwatchConfig } from '../config';
 import { sendWebhook } from '../notifications/webhook';
@@ -193,13 +193,16 @@ export function startAlertEngine(): void {
     return;
   }
 
-  const subscribe = (event: string, handler: (data: any) => void) => {
+  const subscribe = <K extends keyof EventMap>(
+    event: K,
+    handler: (data: EventMap[K]) => void,
+  ) => {
     eventBus.on(event, handler);
     unsubscribe.push(() => eventBus.off(event, handler));
   };
 
   // Subscribe to metrics for threshold alerts
-  subscribe('metrics:snapshot', (data: any) => {
+  subscribe('metrics:snapshot', (data) => {
     const now = Date.now();
 
     for (const container of data.containers || []) lastSeen.set(container.name, now);
@@ -251,14 +254,14 @@ export function startAlertEngine(): void {
 
   // Existing-but-stopped containers are not "absent": their down alert stays
   // until a start event. Only containers missing from the full listing age out.
-  subscribe('containers:existence', (names: string[]) => {
+  subscribe('containers:existence', (names) => {
     const now = Date.now();
     for (const name of names) lastSeen.set(name, now);
     evictStaleContainers(rules, now);
   });
 
   // Subscribe to container events for container_down alerts
-  subscribe('container:event', (data: any) => {
+  subscribe('container:event', (data) => {
     lastSeen.set(data.containerName, Date.now());
     for (const rule of rules) {
       if (rule.condition.type === 'container_down') {
@@ -287,7 +290,7 @@ export function startAlertEngine(): void {
   });
 
   // Subscribe to health changes for health_check_failed alerts
-  subscribe('health:change', (data: any) => {
+  subscribe('health:change', (data) => {
     // 'unknown' is the health checker evicting the container; don't resurrect its state.
     if (data.newState !== 'unknown') lastSeen.set(data.containerName, Date.now());
     for (const rule of rules) {

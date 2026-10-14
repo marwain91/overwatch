@@ -135,12 +135,13 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
 
   const { eventBus } = await import('../services/eventBus');
   const progress: any[] = [];
+  const callbackProgress: any[] = [];
   const onProgress = (p: any) => progress.push(p);
   eventBus.on('tenant:update:progress', onProgress);
   let error: unknown;
   try {
     const { updateTenant } = await import('../services/tenant');
-    await updateTenant('shop', 'tenant-one', '1.2.0');
+    await updateTenant('shop', 'tenant-one', '1.2.0', (p: any) => callbackProgress.push(p));
   } catch (err) {
     error = err;
   } finally {
@@ -153,12 +154,21 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
     writeTenantAppDef,
     warn,
     progress,
+    callbackProgress,
     compose: await fs.readFile(composePath, 'utf-8'),
     env: await fs.readFile(envPath, 'utf-8'),
   };
 }
 
 describe('updateTenant manifest allowlist', () => {
+  it('reports progress to the onProgress callback as well as the global bus', async () => {
+    const { error, progress, callbackProgress } = await runUpdate(shopStatic());
+    expect(error).toBeUndefined();
+    expect(callbackProgress.length).toBeGreaterThan(0);
+    expect(callbackProgress).toEqual(progress);
+    expect(callbackProgress).toContainEqual(expect.objectContaining({ step: 'done', status: 'completed' }));
+  });
+
   it('keeps admin_access.secret_env and volumes the image manifest tries to change', async () => {
     const imageManifest = shopStatic();
     imageManifest.admin_access.secret_env = 'JWT_SECRET';

@@ -1,10 +1,10 @@
 import { Server as HTTPServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
-import { eventBus } from '../services/eventBus';
+import { eventBus, type BroadcastEvent } from '../services/eventBus';
 import { verifySession } from '../auth/session';
 import { isAdminEmail } from '../services/users';
-import { createWSMessage, WSMessage, WSMessageType } from './types';
+import { createWSMessage, WSMessage } from './types';
 
 const HEARTBEAT_INTERVAL = 30_000;
 const AUTH_TIMEOUT = 5_000; // 5 seconds to authenticate after connecting
@@ -15,7 +15,7 @@ const MEMBERSHIP_RECHECK_INTERVAL = 60_000; // removed admins lose the socket wi
 const MAX_TIMER_MS = 2_147_483_647;
 
 // eventBus events relayed verbatim to every authenticated client.
-const BROADCAST_EVENTS: WSMessageType[] = [
+const BROADCAST_EVENTS: BroadcastEvent[] = [
   'container:event',
   'metrics:snapshot',
   'health:change',

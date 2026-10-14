@@ -17,7 +17,7 @@ import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
 import { describeFailedInitContainers } from './initContainerDiagnostics';
 import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
 import { eventBus } from './eventBus';
-import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
+import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from './eventBus';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { tenantDir, tenantsDir, assertTenantDir } from './tenantStore';
 import { SLUG_RE } from '../utils/validators';
@@ -351,11 +351,21 @@ async function deleteTenantLocked(appId: string, tenantId: string, keepData: boo
   await fs.rm(tenantPath, { recursive: true, force: true });
 }
 
-export function updateTenant(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
-  return withTenantLock(String(rawAppId), String(rawTenantId), () => updateTenantLocked(rawAppId, rawTenantId, newTag));
+export function updateTenant(
+  rawAppId: string,
+  rawTenantId: string,
+  newTag: string,
+  onProgress?: (progress: TenantUpdateProgress) => void,
+): Promise<void> {
+  return withTenantLock(String(rawAppId), String(rawTenantId), () => updateTenantLocked(rawAppId, rawTenantId, newTag, onProgress));
 }
 
-async function updateTenantLocked(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
+async function updateTenantLocked(
+  rawAppId: string,
+  rawTenantId: string,
+  newTag: string,
+  onProgress?: (progress: TenantUpdateProgress) => void,
+): Promise<void> {
   // Extract IDs via regex match so subsequent path.join calls operate on the
   // captured strings, not the raw inputs. Route middleware already enforces;
   // this breaks taint flow visibly for static analysis and protects CLI callers.
@@ -386,6 +396,7 @@ async function updateTenantLocked(rawAppId: string, rawTenantId: string, newTag:
   const emit = (step: TenantUpdateStep, status: TenantUpdateStatus, detail?: string) => {
     const payload: TenantUpdateProgress = { appId, tenantId, newTag, step, status, detail };
     try { eventBus.emit('tenant:update:progress', payload); } catch { /* swallow */ }
+    try { onProgress?.(payload); } catch { /* swallow */ }
   };
 
   // Check if tenant exists
