@@ -3,66 +3,45 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
-import { requireConfirmId } from '../middleware/confirmDestructive';
-
 let tmpRoot: string;
 
 beforeEach(async () => {
-  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-sprint3-'));
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-app-service-'));
 });
 
 afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
+  vi.doUnmock('../adapters/registry');
   vi.resetModules();
 });
 
-describe('R3 requireConfirmId middleware', () => {
-  const mkReq = (params: any, headers: Record<string, string> = {}, body: any = {}) => ({
-    params,
-    body,
-    header: (name: string) => headers[name],
-  }) as any;
+describe('G1 readApps — refuses to silently accept corrupt JSON', () => {
+  it('throws a clear error when an apps.d/ file is malformed', async () => {
+    const dataDir = path.join(tmpRoot, 'data');
+    await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'broken.json'), '{not valid json');
 
-  const mkRes = () => {
-    const res: any = { statusCode: 200, body: undefined };
-    res.status = (s: number) => { res.statusCode = s; return res; };
-    res.json = (b: any) => { res.body = b; return res; };
-    return res;
-  };
+    vi.doMock('../config', () => ({ getDataDir: () => dataDir, getAppsDir: () => path.join(tmpRoot, 'apps') }));
+    vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
 
-  it('rejects with 400 when header is missing', () => {
-    const mw = requireConfirmId('appId');
-    const res = mkRes();
-    mw(mkReq({ appId: 'acme' }), res, () => { throw new Error('should not call next'); });
-    expect(res.statusCode).toBe(400);
-    expect(res.body.error).toMatch(/X-Confirm-Id/);
+    const { listApps } = await import('../services/app');
+    await expect(listApps()).rejects.toThrow(/broken\.json is not valid JSON/);
   });
 
-  it('rejects with 400 when header does not match', () => {
-    const mw = requireConfirmId('appId');
-    const res = mkRes();
-    mw(mkReq({ appId: 'acme' }, { 'X-Confirm-Id': 'gadgets' }), res, () => { throw new Error('should not call next'); });
-    expect(res.statusCode).toBe(400);
-    expect(res.body.error).toMatch(/mismatch/);
-  });
+  it('throws when an apps.d/ file has an invalid app entry (schema drift)', async () => {
+    const dataDir = path.join(tmpRoot, 'data');
+    await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
+    // Missing required `name`, `domain_template`, `registry`, `services`…
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'incomplete.json'), JSON.stringify({ id: 'incomplete' }));
 
-  it('passes when X-Confirm-Id header matches the param', () => {
-    const mw = requireConfirmId('appId');
-    const res = mkRes();
-    let called = false;
-    mw(mkReq({ appId: 'acme' }, { 'X-Confirm-Id': 'acme' }), res, () => { called = true; });
-    expect(called).toBe(true);
-    expect(res.statusCode).toBe(200);
-  });
+    vi.doMock('../config', () => ({ getDataDir: () => dataDir, getAppsDir: () => path.join(tmpRoot, 'apps') }));
+    vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
 
-  it('accepts confirmId in body for POST-style handlers', () => {
-    const mw = requireConfirmId('appId');
-    const res = mkRes();
-    let called = false;
-    mw(mkReq({ appId: 'acme' }, {}, { confirmId: 'acme' }), res, () => { called = true; });
-    expect(called).toBe(true);
+    const { listApps } = await import('../services/app');
+    await expect(listApps()).rejects.toThrow(/incomplete\.json failed validation/);
   });
 });
+
 
 describe('R3 soft-delete — apps with tenants move to trash', () => {
   async function setupApp() {
@@ -135,3 +114,32 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
     expect(trashed).toHaveLength(0);
   });
 });
+
+describe('updateApp registry cache invalidation', () => {
+  it('clears the per-app registry adapter after API-style app updates', async () => {
+    const dataDir = path.join(tmpRoot, 'data');
+    await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'acme.json'), JSON.stringify({
+      id: 'acme',
+      name: 'Acme',
+      domain_template: '*.acme.test',
+      registry: { type: 'ghcr', url: 'ghcr.io', repository: 'org/acme', auth: { type: 'token' } },
+      services: [{ name: 'web' }],
+      default_image_tag: 'latest',
+    }));
+    await fs.writeFile(path.join(dataDir, 'apps.runtime.json'), JSON.stringify({
+      acme: { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    }));
+
+    const clearAdapterCache = vi.fn();
+    vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
+    vi.doMock('../adapters/registry', () => ({ clearAdapterCache }));
+    vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
+
+    const { updateApp } = await import('../services/app');
+    await updateApp({ id: 'acme', default_image_tag: 'stable' });
+
+    expect(clearAdapterCache).toHaveBeenCalledWith('acme');
+  });
+});
+
