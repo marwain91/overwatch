@@ -24,7 +24,8 @@ import { SLUG_RE } from '../utils/validators';
 import { resolveTenantDbId } from './tenantDb';
 import { getDockerEnv } from '../utils/runDocker';
 import { writeFileAtomic } from '../utils/atomicJson';
-import { withTenantLock } from './fileLock';
+import { withFileLock, withTenantLock } from './fileLock';
+import { isDeepStrictEqual } from 'util';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
@@ -44,6 +45,11 @@ export interface CreateTenantInput {
   tenantId: string;
   domain: string;
   imageTag?: string;
+  /**
+   * false: create the containers (`compose create`) without starting them, so a
+   * caller can load data before the app first runs. Default true (`up -d`).
+   */
+  start?: boolean;
 }
 
 export interface TenantConfig {
@@ -149,7 +155,8 @@ export function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
   return withTenantLock(String(input.appId), String(input.tenantId), () => createTenantLocked(input));
 }
 
-async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfig> {
+/** Caller must hold the tenant lock (withTenantLock) for appId/tenantId. */
+export async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfig> {
   const { domain, imageTag } = input;
   const config = loadConfig();
 
@@ -169,7 +176,7 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
   const tenantId = tenantIdMatch[0];
   const domainValidation = validateTenantDomain(domain);
   if (!domainValidation.valid) {
-    throw new ValidationError(domainValidation.error || 'Invalid domain');
+    throw new ValidationError(domainValidation.error!);
   }
 
   // Load app definition first — adapter is scoped to the app's effective db_prefix
@@ -177,13 +184,10 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
   if (!app) {
     throw new NotFoundError(`App '${appId}' not found`);
   }
-  // Reserved Overwatch hosts and other tenants' domains/aliases (create-from-backup goes through here too).
-  await assertTenantDomainAllowed(appId, tenantId, domain);
-
   const tag = imageTag || app.default_image_tag || 'latest';
   const tagValidation = validateImageTag(tag);
   if (!tagValidation.valid) {
-    throw new ValidationError(tagValidation.error || 'Invalid image tag');
+    throw new ValidationError(tagValidation.error!);
   }
   const db = getDatabaseAdapter(app);
   const tenantPath = getTenantPath(appId, tenantId);
@@ -196,28 +200,39 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
   let composeWritten = false;
 
   try {
-    // Atomically create tenant directory — fails if already exists (prevents TOCTOU race)
     await fs.mkdir(appTenantsDir, { recursive: true });
-    try {
-      await fs.mkdir(tenantPath); // NOT recursive — fails if exists
-      tenantDirCreated = true;
-    } catch (err: any) {
-      if (err.code === 'EEXIST') {
-        throw new ConflictError(`Tenant '${tenantId}' already exists in app '${appId}'`);
-      }
-      throw err;
-    }
 
-    // Verify the path hasn't been manipulated via symlinks
-    await assertWithinDir(tenantPath, appTenantsDir);
-
-    // Get credential lengths from app or global config
+    // Credentials are generated up front so the tenant .env (which is what makes
+    // the domain visible to other creates) can be written inside the domain lock.
     const dbPasswordLength = app.credentials?.db_password_length || config.credentials?.db_password_length || 32;
     const jwtSecretLength = app.credentials?.jwt_secret_length || config.credentials?.jwt_secret_length || 64;
-
-    // Generate credentials
     const dbPassword = generatePassword(dbPasswordLength);
     const jwtSecret = generatePassword(jwtSecretLength);
+
+    // The domain check reads other tenants' .env files, so the check and the
+    // write of this tenant's .env must be one step: two concurrent creates of
+    // different tenants with the same domain would otherwise both pass.
+    await withFileLock('tenant-domains', async () => {
+      // Reserved Overwatch hosts and other tenants' domains/aliases (create-from-backup goes through here too).
+      await assertTenantDomainAllowed(appId, tenantId, domain);
+
+      // Atomically create tenant directory — fails if already exists (prevents TOCTOU race)
+      try {
+        await fs.mkdir(tenantPath); // NOT recursive — fails if exists
+        tenantDirCreated = true;
+      } catch (err: any) {
+        if (err.code === 'EEXIST') {
+          throw new ConflictError(`Tenant '${tenantId}' already exists in app '${appId}'`);
+        }
+        throw err;
+      }
+
+      // Verify the path hasn't been manipulated via symlinks
+      await assertWithinDir(tenantPath, appTenantsDir);
+
+      const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
+      await writeSecretFile(path.join(tenantPath, '.env'), envContent);
+    });
 
     // Initialize database adapter and create database.
     // Adapter prepends the app's effective db_prefix (empty prefix → no prepend).
@@ -230,12 +245,8 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
     dbCreated = dbResult.created;
     userCreated = dbResult.userCreated;
 
-    // Generate .env file
-    const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
-    await writeSecretFile(path.join(tenantPath, '.env'), envContent);
-
-    // Generate shared.env for this tenant
-    await generateSharedEnvFile(appId, tenantId);
+    // Generate shared.env for this tenant (we hold the tenant lock)
+    await generateSharedEnvFile(appId, tenantId, { alreadyLocked: true });
 
     // Generate docker-compose.yml from app service definitions.
     // Tenant overrides don't exist yet at create-time — they're added later via
@@ -260,7 +271,10 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
 
     // Create external volumes and start tenant
     await ensureExternalVolumes(composePath);
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], COMPOSE_LONG_TIMEOUT_MS);
+    await execDocker(
+      ['compose', '--project-directory', tenantPath, '-f', composePath, input.start === false ? 'create' : 'up', ...(input.start === false ? [] : ['-d'])],
+      COMPOSE_LONG_TIMEOUT_MS,
+    );
   } catch (error) {
     // Rollback in reverse order of creation. If compose was written and `up` was
     // attempted, containers may exist even when the original command failed —
@@ -278,10 +292,7 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
     if (dbCreated) {
       await db.dropDatabase(dbTenantId, { keepUser: !userCreated }).catch(() => {});
     }
-    if (!tenantDirCreated && error instanceof Error && error.message.includes(`Tenant '${tenantId}' already exists`)) {
-      throw error;
-    }
-    if (error instanceof ConflictError) {
+    if (error instanceof ConflictError || error instanceof ValidationError) {
       throw error;
     }
     const reason = extractComposeErrorMessage(error);
@@ -297,11 +308,31 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
   };
 }
 
+/**
+ * Start the containers of a tenant created with `start: false`. `--no-recreate`
+ * keeps the containers that data was copied into; `up` also runs the init
+ * containers. Caller must hold the tenant lock. Failure evidence from init
+ * containers is added to the error; the caller decides about rollback.
+ */
+export async function startCreatedTenantLocked(appId: string, tenantId: string): Promise<void> {
+  const tenantPath = await assertTenantDir(appId, tenantId);
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
+  try {
+    await ensureExternalVolumes(composePath);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--no-recreate'], COMPOSE_LONG_TIMEOUT_MS);
+  } catch (error) {
+    const app = await readTenantAppDef(appId, tenantId).catch(() => null);
+    const initFailures = app ? await describeFailedInitContainers(app, tenantId).catch(() => '') : '';
+    throw new HttpError(500, `${extractComposeErrorMessage(error)}${initFailures ? `\n\n${initFailures}` : ''}`, { expose: true });
+  }
+}
+
 export function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
   return withTenantLock(appId, tenantId, () => deleteTenantLocked(appId, tenantId, keepData));
 }
 
-async function deleteTenantLocked(appId: string, tenantId: string, keepData: boolean): Promise<void> {
+/** Caller must hold the tenant lock. */
+export async function deleteTenantLocked(appId: string, tenantId: string, keepData: boolean): Promise<void> {
   const tenantPath = getTenantPath(appId, tenantId);
   const app = await getApp(appId);
   const db = getDatabaseAdapter(app ?? undefined);
@@ -383,7 +414,7 @@ async function updateTenantLocked(
   const tenantId = tenantIdMatch[0];
   const tagValidation = validateImageTag(newTag);
   if (!tagValidation.valid) {
-    throw new ValidationError(tagValidation.error || 'Invalid image tag');
+    throw new ValidationError(tagValidation.error!);
   }
 
   const config = loadConfig();
@@ -447,12 +478,20 @@ async function updateTenantLocked(
   const originalTenantAppStatic = toStaticAppDefinition(app);
   const originalGlobalApp = await getApp(appId);
   const originalGlobalAppStatic = originalGlobalApp ? toStaticAppDefinition(originalGlobalApp) : null;
-  let manifestApplied = false;
+  // What this update wrote to the global definition (as stored), or null.
+  let appliedGlobalStatic: AppDefinitionStatic | null = null;
 
   const restoreAppDefinitions = async () => {
     await writeTenantAppDef(appId, tenantId, originalTenantAppStatic);
-    if (manifestApplied && originalGlobalAppStatic) {
-      await applyApp(originalGlobalAppStatic, `rollback:${appId}/${tenantId}`);
+    if (appliedGlobalStatic && originalGlobalAppStatic) {
+      // Compare-and-restore: another update (or an admin edit) may have changed
+      // the definition since this one applied it; rolling back would undo theirs.
+      const stored = await getApp(appId);
+      if (stored && isDeepStrictEqual(toStaticAppDefinition(stored), appliedGlobalStatic)) {
+        await applyApp(originalGlobalAppStatic, `rollback:${appId}/${tenantId}`);
+      } else {
+        console.warn('[tenant] skipped app-definition rollback: changed concurrently');
+      }
     }
   };
 
@@ -505,7 +544,7 @@ async function updateTenantLocked(
       }
       await writeTenantAppDef(appId, tenantId, allowedManifest);
       const result = await applyApp(allowedManifest, `manifest:${resolveManifestImageRef(app, newTag)}`);
-      manifestApplied = true;
+      appliedGlobalStatic = toStaticAppDefinition(result.app);
       if (result.result === 'updated') {
         console.log(`[manifest] Updated app '${appId}' from image ${newTag} for tenant '${tenantId}' (changed: ${result.changedKeys.join(', ')})`);
         emit('manifest', 'completed', `updated (changed: ${result.changedKeys.join(', ') || 'none'})${ignoredNote}`);
@@ -537,7 +576,7 @@ async function updateTenantLocked(
   // Regenerate shared.env + compose.
   emit('config', 'started');
   try {
-    await generateSharedEnvFile(appId, tenantId);
+    await generateSharedEnvFile(appId, tenantId, { alreadyLocked: true });
 
     const domainMatch = originalEnvContent.match(/^TENANT_DOMAIN=(.*)$/m);
     const domain = domainMatch ? domainMatch[1] : '';

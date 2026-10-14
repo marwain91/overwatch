@@ -1,8 +1,6 @@
-import { getApp } from './app';
-import { createTenant, deleteTenant } from './tenant';
-import { restartTenant } from './docker';
-import { restoreBackup } from './backup';
-import { getDatabaseAdapter } from '../adapters/database';
+import { createTenantLocked, startCreatedTenantLocked, deleteTenantLocked } from './tenant';
+import { restoreBackupLocked } from './backup';
+import { withTenantLock } from './fileLock';
 import type { LockInfo } from './backup';
 
 export interface TenantFromBackupOptions {
@@ -10,8 +8,6 @@ export interface TenantFromBackupOptions {
   domain: string;
   /** Omitted: createTenant falls back to the app's default_image_tag, then 'latest'. */
   imageTag?: string;
-  dbReadyTimeoutMs?: number;
-  dbPollIntervalMs?: number;
 }
 
 export interface TenantFromBackupResult {
@@ -22,22 +18,9 @@ export interface TenantFromBackupResult {
   lockInfo?: LockInfo;
 }
 
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-
-async function waitForDatabase(appId: string, timeoutMs: number, intervalMs: number): Promise<boolean> {
-  const app = await getApp(appId);
-  const db = getDatabaseAdapter(app ?? undefined);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (await db.testConnection()) return true;
-    if (Date.now() + intervalMs > deadline) return false;
-    await sleep(intervalMs);
-  }
-}
-
 async function rollback(appId: string, tenantId: string): Promise<void> {
   try {
-    await deleteTenant(appId, tenantId, false);
+    await deleteTenantLocked(appId, tenantId, false);
   } catch (error: any) {
     // Never mask the original failure; the operator needs to clean up by hand.
     console.error(`[TenantFromBackup] Rollback of ${appId}/${tenantId} failed: ${error?.message || error}`);
@@ -45,41 +28,53 @@ async function rollback(appId: string, tenantId: string): Promise<void> {
 }
 
 /**
- * Create a tenant and restore a backup snapshot into it. If anything after the
- * tenant exists fails, the tenant (containers, DB, files) is deleted again so a
- * retry does not hit a half-restored tenant. A failure of createTenant itself
- * is thrown as-is: it already cleans up after itself.
+ * Create a tenant and restore a backup snapshot into it, before the app has
+ * ever started: create stopped (DB, files, containers) -> restore the DB and
+ * the volume paths -> start (`up -d`, which runs the init containers against
+ * the restored data). If anything after the tenant exists fails, the tenant
+ * (containers, DB, files) is deleted again so a retry does not hit a
+ * half-restored tenant. A failure of createTenant itself is thrown as-is: it
+ * already cleans up after itself.
+ *
+ * The tenant lock is held for the whole sequence, so the unlocked variants of
+ * create/restore/delete are used inside it (the lock is not re-entrant).
  */
-export async function createTenantFromBackup(
+export function createTenantFromBackup(
   appId: string,
   snapshotId: string,
   options: TenantFromBackupOptions,
 ): Promise<TenantFromBackupResult> {
-  const { tenantId, domain, imageTag, dbReadyTimeoutMs = 60_000, dbPollIntervalMs = 1_000 } = options;
+  return withTenantLock(appId, options.tenantId, () => createTenantFromBackupLocked(appId, snapshotId, options));
+}
 
-  await createTenant({ appId, tenantId, domain, imageTag });
+async function createTenantFromBackupLocked(
+  appId: string,
+  snapshotId: string,
+  options: TenantFromBackupOptions,
+): Promise<TenantFromBackupResult> {
+  const { tenantId, domain, imageTag } = options;
+
+  await createTenantLocked({ appId, tenantId, domain, imageTag, start: false });
 
   try {
-    if (!(await waitForDatabase(appId, dbReadyTimeoutMs, dbPollIntervalMs))) {
-      await rollback(appId, tenantId);
-      return { success: false, error: 'Database did not become ready in time; the new tenant was removed.' };
-    }
-
-    const result = await restoreBackup(appId, snapshotId, tenantId, { createNew: true, newDomain: domain });
+    const result = await restoreBackupLocked(appId, snapshotId, tenantId, {
+      createNew: true,
+      newDomain: domain,
+      containersStopped: true,
+    });
     if (!result.success) {
       await rollback(appId, tenantId);
       return { success: false, error: result.error, isLocked: result.isLocked, lockInfo: result.lockInfo };
     }
 
-    // The app started against an empty database; restart so it picks up the restored data.
-    const warnings = [...(result.warnings ?? [])];
     try {
-      await restartTenant(appId, tenantId);
+      await startCreatedTenantLocked(appId, tenantId);
     } catch (error: any) {
-      console.error(`[TenantFromBackup] Restart of ${appId}/${tenantId} after restore failed: ${error?.message || error}`);
-      warnings.push('The tenant was restored but could not be restarted; restart it manually.');
+      console.error(`[TenantFromBackup] Start of ${appId}/${tenantId} after restore failed: ${error?.message || error}`);
+      await rollback(appId, tenantId);
+      return { success: false, error: `The backup was restored but the tenant failed to start; the new tenant was removed. ${error?.message || error}` };
     }
-    return warnings.length ? { success: true, warnings } : { success: true };
+    return result.warnings?.length ? { success: true, warnings: result.warnings } : { success: true };
   } catch (error) {
     await rollback(appId, tenantId);
     throw error;

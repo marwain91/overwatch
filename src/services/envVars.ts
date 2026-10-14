@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { z } from 'zod';
 import { getDataDir } from '../config';
-import { withFileLock } from './fileLock';
+import { withFileLock, withTenantLock } from './fileLock';
 import { writeSecretFile } from '../utils/security';
 import { tenantDir, assertTenantDir, listTenantDirs } from './tenantStore';
 import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
@@ -194,12 +194,13 @@ export function validateEnvVarValue(value: string): { valid: boolean; error?: st
  * interpolates `$VAR` / `${VAR}` in unquoted and double-quoted values, which
  * would blank or rewrite a password or URL holding `$`. Single quotes are read
  * literally; a value that also holds `'` falls back to double quotes with
- * `\`, `"` and `$` backslash-escaped. Values without `$` stay unquoted, as
- * before. The same rules apply to the project-level `.env` compose reads.
+ * `\`, `"` and `$` backslash-escaped. Values without `$` or edge whitespace
+ * stay unquoted, as before. The same rules apply to the project-level `.env` compose reads.
  */
 export function formatEnvValue(value: string | number): string {
   const v = String(value);
-  if (!v.includes('$')) return v;
+  // Compose trims unquoted leading/trailing whitespace, so such values need quotes too.
+  if (!v.includes('$') && !/^\s|\s$/.test(v)) return v;
   if (!v.includes("'")) return `'${v}'`;
   return `"${v.replace(/[\\"$]/g, c => `\\${c}`)}"`;
 }
@@ -412,7 +413,22 @@ export async function getEffectiveEnvVars(appId: string, tenantId: string): Prom
 
 // ─── File generation ─────────────────────────────────────────────────────────
 
-export async function generateSharedEnvFile(appId: string, tenantId: string): Promise<void> {
+/**
+ * Regenerate one tenant's shared.env under the tenant lock, so it cannot
+ * interleave with updateTenant's shared.env rollback. Callers that already
+ * hold the tenant lock (create/update) pass `alreadyLocked`: the lock is not
+ * re-entrant.
+ */
+export function generateSharedEnvFile(
+  appId: string,
+  tenantId: string,
+  opts: { alreadyLocked?: boolean } = {},
+): Promise<void> {
+  if (opts.alreadyLocked) return generateSharedEnvFileUnlocked(appId, tenantId);
+  return withTenantLock(appId, tenantId, () => generateSharedEnvFileUnlocked(appId, tenantId));
+}
+
+async function generateSharedEnvFileUnlocked(appId: string, tenantId: string): Promise<void> {
   const tenantPath = tenantDir(appId, tenantId);
 
   // Check tenant directory exists

@@ -14,6 +14,7 @@ import { writeJsonAtomic } from '../utils/atomicJson';
 import { invalidateBackupCache } from './backupCache';
 import { resolveTenantDbId } from './tenantDb';
 import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
+import { withTenantLock } from './fileLock';
 
 const rawExecFile = promisify(execFile);
 // Every restic/docker shell-out gets a timeout and a bounded buffer. Without
@@ -440,12 +441,31 @@ export async function backupAllTenants(appId?: string): Promise<BackupAllResult>
   };
 }
 
-export async function restoreBackup(
+export interface RestoreBackupOptions {
+  createNew?: boolean;
+  newDomain?: string;
+  /** The tenant's containers exist but are stopped (create-from-backup): copy without `exec`. */
+  containersStopped?: boolean;
+}
+export type RestoreBackupResult = { success: boolean; warnings?: string[]; error?: string; isLocked?: boolean; lockInfo?: LockInfo };
+
+/** Serialised with the tenant's other lifecycle operations. */
+export function restoreBackup(
   appId: string,
   snapshotId: string,
   targetTenantId: string,
-  options: { createNew?: boolean; newDomain?: string } = {}
-): Promise<{ success: boolean; warnings?: string[]; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
+  options: RestoreBackupOptions = {},
+): Promise<RestoreBackupResult> {
+  return withTenantLock(appId, targetTenantId, () => restoreBackupLocked(appId, snapshotId, targetTenantId, options));
+}
+
+/** Caller must hold the tenant lock (withTenantLock) for appId/targetTenantId. */
+export async function restoreBackupLocked(
+  appId: string,
+  snapshotId: string,
+  targetTenantId: string,
+  options: RestoreBackupOptions = {},
+): Promise<RestoreBackupResult> {
   const app = await getApp(appId);
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
@@ -456,8 +476,11 @@ export async function restoreBackup(
 
   const db = getDatabaseAdapter(app);
 
-  // Get backup-enabled services from app definition
-  const backupServices = app.services
+  // The tenant's own snapshot decides which services/paths exist for it (it may
+  // run a different image version than the global definition); falls back to
+  // the global definition when the tenant has none.
+  const tenantApp = (await readTenantAppDef(appId, targetTenantId)) ?? app;
+  const backupServices = tenantApp.services
     .filter(s => s.backup?.enabled && s.backup?.paths?.length)
     .map(s => ({
       name: s.name,
@@ -569,7 +592,10 @@ export async function restoreBackup(
             warnings.push(`${pathConfig.container}: not restored (backup data unreadable; see server logs)`);
             continue;
           }
-          await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
+          // A stopped container cannot exec; docker cp into its volume mount points works.
+          if (!options.containersStopped) {
+            await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
+          }
           await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
         } catch (error: any) {
           console.error(`[Backup] Failed to restore ${pathConfig.container} into ${containerName}: ${error?.message || error}`);
