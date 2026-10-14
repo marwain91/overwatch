@@ -45,6 +45,12 @@ export function useUpdateApp(appId: string) {
   });
 }
 
+export function useTestRegistry(appId: string) {
+  return useMutation({
+    mutationFn: () => api.post<{ success: boolean; tagsFound: number }>(`/apps/${appId}/registry/test`),
+  });
+}
+
 export function useDeleteApp() {
   const qc = useQueryClient();
   return useMutation({

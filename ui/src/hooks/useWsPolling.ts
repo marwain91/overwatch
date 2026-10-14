@@ -4,10 +4,12 @@ import { useWSStore } from '../stores/wsStore';
 /**
  * Polling interval to use for a query that the WebSocket keeps fresh: off while
  * the socket is open and authenticated, the given fallback while it is not.
+ * `liveMs` keeps a slow refetch going while live, for data that can change
+ * without a Docker event (e.g. CLI edits).
  */
-export function useWsAwareInterval(fallbackMs: number): number | false {
+export function useWsAwareInterval(fallbackMs: number, liveMs?: number): number | false {
   const connected = useWSStore((s) => s.connected);
-  return connected ? false : fallbackMs;
+  return connected ? (liveMs ?? false) : fallbackMs;
 }
 
 function isWindowActive(): boolean {
