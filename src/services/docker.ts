@@ -7,6 +7,7 @@ import type { AppDefinition } from '../models/app';
 import { assertTenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { runDocker } from '../utils/runDocker';
 import { withTenantLock } from './fileLock';
+import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 export { docker };
 
@@ -324,7 +325,7 @@ async function startTenantLocked(appId: string, tenantId: string): Promise<void>
   const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
-  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: 300_000 });
+  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }
 
 export function stopTenant(appId: string, tenantId: string): Promise<void> {
@@ -345,5 +346,5 @@ async function restartTenantLocked(appId: string, tenantId: string): Promise<voi
   const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
-  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: 300_000 });
+  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }
