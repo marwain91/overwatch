@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { findConfigPath } from '../config/loader';
 import { writeOverwatchConfig } from '../config/writer';
-import { LegacyOverwatchConfigSchema, LegacyOverwatchConfig, OverwatchConfig } from '../config/schema';
+import { LegacyOverwatchConfigSchema, OverwatchConfig } from '../config/schema';
 import { AppDefinition } from '../models/app';
 import { generateComposeFile } from './composeGenerator';
 import { writeJsonAtomic } from '../utils/atomicJson';

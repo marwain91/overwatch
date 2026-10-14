@@ -16,7 +16,7 @@ async function findManagedContainerId(containerId: string): Promise<string | nul
 }
 
 // Get all containers managed by Overwatch
-router.get('/containers', asyncHandler(async (req, res) => {
+router.get('/containers', asyncHandler(async (_req, res) => {
   const containers = await listContainers();
   res.json(containers);
 }));
@@ -52,7 +52,7 @@ router.post('/containers/:containerId/restart', requireRole('admin'), asyncHandl
 }));
 
 // Get system health
-router.get('/health', asyncHandler(async (req, res) => {
+router.get('/health', asyncHandler(async (_req, res) => {
   const db = getDatabaseAdapter();
 
   const appsPromise = listApps();
@@ -97,7 +97,7 @@ router.get('/health', asyncHandler(async (req, res) => {
 }));
 
 // Get project configuration (for frontend)
-router.get('/config', asyncHandler(async (req, res) => {
+router.get('/config', asyncHandler(async (_req, res) => {
   const config = loadConfig();
   const apps = await listApps();
   res.json({
@@ -120,7 +120,7 @@ router.get('/config', asyncHandler(async (req, res) => {
 }));
 
 // Get backup summaries for all apps
-router.get('/backup-summaries', asyncHandler(async (req, res) => {
+router.get('/backup-summaries', asyncHandler(async (_req, res) => {
   const apps = await listApps();
 
   const entries = await Promise.all(apps.map(async (app) => {
@@ -157,7 +157,7 @@ router.get('/backup-summaries', asyncHandler(async (req, res) => {
 }));
 
 // Get all tenants across all apps (global view)
-router.get('/tenants', asyncHandler(async (req, res) => {
+router.get('/tenants', asyncHandler(async (_req, res) => {
   const tenants = await listTenants();
   res.json(tenants);
 }));

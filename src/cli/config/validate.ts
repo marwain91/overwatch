@@ -1,39 +1,12 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { OverwatchConfigSchema } from '../../config/schema';
 import { validateEnvironment } from '../../config/validate';
-import { loadConfig, findConfigPath } from '../../config/loader';
+import { findConfigPath } from '../../config/loader';
 import { header, success, fail, warn, info, BOLD, DIM, GREEN, YELLOW, RED, NC } from './utils';
 
 function getConfigPath(): string {
   return findConfigPath();
-}
-
-function deepDiff(
-  current: Record<string, unknown>,
-  defaults: Record<string, unknown>,
-  prefix = '',
-): Array<{ path: string; value: unknown; defaultValue: unknown }> {
-  const diffs: Array<{ path: string; value: unknown; defaultValue: unknown }> = [];
-
-  for (const [key, value] of Object.entries(current)) {
-    const fullPath = prefix ? `${prefix}.${key}` : key;
-    const defaultValue = defaults[key];
-
-    if (typeof value === 'object' && value !== null && !Array.isArray(value) &&
-        typeof defaultValue === 'object' && defaultValue !== null && !Array.isArray(defaultValue)) {
-      diffs.push(...deepDiff(
-        value as Record<string, unknown>,
-        defaultValue as Record<string, unknown>,
-        fullPath,
-      ));
-    } else if (JSON.stringify(value) !== JSON.stringify(defaultValue)) {
-      diffs.push({ path: fullPath, value, defaultValue });
-    }
-  }
-
-  return diffs;
 }
 
 export async function runConfigValidate(args: string[]): Promise<void> {

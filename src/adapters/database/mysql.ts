@@ -1,11 +1,8 @@
 import mysql from 'mysql2/promise';
-import { execFile, spawn } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { createReadStream, createWriteStream } from 'fs';
-import { DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
+import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
 import { BaseDatabaseAdapter } from './base';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * MySQL/MariaDB database adapter

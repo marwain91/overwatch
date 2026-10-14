@@ -30,7 +30,7 @@ function classifyTagError(error: any): string {
 }
 
 // List all apps
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', asyncHandler(async (_req, res) => {
   const apps = await listApps();
   res.json(apps);
 }));

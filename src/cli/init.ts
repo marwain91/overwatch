@@ -6,7 +6,7 @@ import { execFileSync } from 'child_process';
 import * as yaml from 'js-yaml';
 import { OverwatchConfigSchema, type OverwatchConfig } from '../config/schema';
 import { renderInfraFiles, type InfraDeployVars } from '../services/infraTemplates';
-import { GREEN, YELLOW, RED, CYAN, BOLD, DIM, NC, header, success, warn, fail, info } from './config/utils';
+import { GREEN, YELLOW, CYAN, BOLD, DIM, NC, header, success, warn, fail, info } from './config/utils';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -220,7 +220,7 @@ async function collectDatabase(): Promise<Pick<InitConfig, 'dbType' | 'dbPasswor
 
 // ─── Step 4: SSL / Reverse Proxy ────────────────────────────────────────────────
 
-async function collectSsl(domain: string): Promise<Pick<InitConfig, 'dnsProvider' | 'dnsEnvVars' | 'adminEmail'>> {
+async function collectSsl(_domain: string): Promise<Pick<InitConfig, 'dnsProvider' | 'dnsEnvVars' | 'adminEmail'>> {
   header('Step 3: SSL & Reverse Proxy');
 
   info('Traefik will handle SSL via DNS challenge for wildcard certificates.');

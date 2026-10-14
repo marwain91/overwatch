@@ -81,7 +81,7 @@ router.get('/alerts', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/monitoring/alerts/rules — configured rules (from config)
-router.get('/alerts/rules', asyncHandler(async (req, res) => {
+router.get('/alerts/rules', asyncHandler(async (_req, res) => {
   const config = loadConfig();
   res.json(config.alert_rules ?? []);
 }));
@@ -103,7 +103,7 @@ function redactWebhookUrl(url: string): string {
 // GET /api/monitoring/notifications — list notification channels. Webhook URLs
 // and custom headers (e.g. Authorization) are credentials, so only admins — the
 // only role that can edit channels — get them unredacted.
-router.get('/notifications', asyncHandler(async (req, res) => {
+router.get('/notifications', asyncHandler(async (_req, res) => {
   const channels = await getNotificationChannelsData();
   // Role was resolved once by authMiddleware. Explicit check: can(undefined, ...)
   // treats a missing role as legacy admin, which would fail open.

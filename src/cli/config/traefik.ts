@@ -6,11 +6,11 @@ import { promisify } from 'util';
 import { findConfigPath, loadConfig, isUsingLegacyCertResolvers } from '../../config/loader';
 import { updateOverwatchConfig } from '../../config/writer';
 import { maskTraefikSecrets, upsertCertResolver, deleteCertResolver } from '../../services/traefikConfig';
-import type { CertResolver, TraefikGlobal } from '../../models/traefik';
+import type { CertResolver } from '../../models/traefik';
 import { listApps } from '../../services/app';
 import { getAppsDir } from '../../config';
 import { validateTraefik, collectPresentEnvVars, collectTenantOverrides } from '../../services/traefikDoctor';
-import { BOLD, CYAN, DIM, GREEN, NC, YELLOW, header, success, warn, info, fail } from './utils';
+import { BOLD, DIM, NC, header, success, warn, info, fail } from './utils';
 
 const execFileAsync = promisify(execFile);
 

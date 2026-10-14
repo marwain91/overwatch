@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { VERSION } from '../version';
-import { GREEN, YELLOW, RED, BOLD, DIM, NC } from './config/utils';
+import { GREEN, YELLOW, BOLD, DIM, NC } from './config/utils';
 
 const MAX_REDIRECTS = 5;
 

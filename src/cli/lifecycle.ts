@@ -264,7 +264,6 @@ export async function runStatus(): Promise<void> {
         // Find service name at the end
         const allServices = [...app.serviceNames, ...app.initContainerNames];
         let tenantId = '';
-        let serviceName = '';
         let isInit = false;
 
         for (const svc of allServices) {
@@ -272,7 +271,6 @@ export async function runStatus(): Promise<void> {
           const match = rest.match(pattern);
           if (match) {
             tenantId = match[1];
-            serviceName = svc;
             isInit = app.initContainerNames.includes(svc);
             break;
           }
