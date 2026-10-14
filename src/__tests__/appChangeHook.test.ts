@@ -45,3 +45,50 @@ describe('apps changed hook', () => {
     await expect(svc.createApp(input('b'))).resolves.toBeTruthy();
   });
 });
+
+describe('apps changed hook on apply / restore / purge', () => {
+  async function setup() {
+    const appsRoot = path.join(dir, 'appsroot');
+    await fs.mkdir(path.join(appsRoot, 'gone', 'tenants', 't1'), { recursive: true });
+    vi.doMock('../config', async (orig) => ({ ...(await orig<any>()), getDataDir: () => dir }));
+    vi.doMock('../config/loader', async (orig) => ({ ...(await orig<any>()), getAppsDir: () => appsRoot }));
+    const svc = await import('../services/app');
+    const hook = vi.fn();
+    svc.setAppsChangedHook(hook);
+    return { svc, hook };
+  }
+  const staticDef = (id: string) => {
+    const { createdAt, updatedAt, ...rest } = { ...input(id), createdAt: '', updatedAt: '' };
+    return rest;
+  };
+
+  afterEach(() => { vi.doUnmock('../config/loader'); });
+
+  it('fires after applyApp creates or updates, but not for a no-op apply', async () => {
+    const { svc, hook } = await setup();
+    await svc.applyApp(staticDef('a'), 'test');
+    expect(hook).toHaveBeenCalledTimes(1);
+    await svc.applyApp({ ...staticDef('a'), name: 'Renamed' }, 'test');
+    expect(hook).toHaveBeenCalledTimes(2);
+    await svc.applyApp({ ...staticDef('a'), name: 'Renamed' }, 'test');
+    expect(hook).toHaveBeenCalledTimes(2);
+  });
+
+  it('fires after restoreApp and purgeApp, but not when they fail', async () => {
+    const { svc, hook } = await setup();
+    await svc.createApp(input('gone'));
+    await svc.deleteApp('gone', true, 'tester'); // has a tenant -> soft-deleted into the trash
+    hook.mockClear();
+
+    await expect(svc.restoreApp('missing')).rejects.toThrow();
+    await expect(svc.purgeApp('missing')).rejects.toThrow();
+    expect(hook).not.toHaveBeenCalled();
+
+    await svc.restoreApp('gone');
+    expect(hook).toHaveBeenCalledTimes(1);
+    await svc.deleteApp('gone', true, 'tester');
+    hook.mockClear();
+    await svc.purgeApp('gone');
+    expect(hook).toHaveBeenCalledTimes(1);
+  });
+});
