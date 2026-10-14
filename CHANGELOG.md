@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **An unauthenticated client can no longer crash Overwatch through `/ws`.** A WebSocket upgrade whose request target does not parse, a `Host` header that is not a valid URL host (`host:x`), or a first frame over the 4 KB payload limit each raised an uncaught error and took the whole process down: UI, API, MCP and any tenant update or restore in flight.
+- **Editing a tenant override without re-sending `sensitive` no longer unmasks it.** An omitted flag keeps the stored one, and a new override of a sensitive global variable inherits its flag; previously both defaulted to non-sensitive and the value became visible to viewers.
+- **Client registration caps each `redirect_uris` entry at 2048 characters.** Registration is unauthenticated and every client is persisted, so one request could add about 1 MB to the OAuth store.
+
+### Fixed
+
+- **A database restore that stops early no longer crashes Overwatch.** When the `mysql`/`psql` client exits at the first SQL error while the dump is still streaming (EPIPE), or the dump file cannot be read, the restore now fails with the client's error instead of an uncaught exception that killed the process mid-restore (and skipped create-from-backup rollback).
+- **A database dump resolves only once the file is fully written**, so a failed final flush fails the backup instead of archiving a truncated dump; a dump whose output cannot be written also stops the dump client.
+- **Expired, malformed or revoked MCP access tokens get `401` with `WWW-Authenticate`** instead of a `500`, so MCP clients refresh their token instead of failing.
+- **`/oauth/token` and `/oauth/revoke` answer a missing or repeated token parameter** with `invalid_request` / `200` instead of a `500`.
+- **Adding an admin user with an email the user store rejects (for example `a..b@example.com`) is refused with `400`.** It was saved, after which every read of the store failed and every user was locked out until the file was edited by hand.
+
 ## [1.8.2] — 2026-10-14
 
 ### Changed
