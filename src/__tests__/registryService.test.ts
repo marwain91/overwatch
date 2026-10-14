@@ -34,4 +34,33 @@ describe('registry service never follows redirects', () => {
     expect(f).toHaveBeenCalledTimes(4);
     expect(f.mock.calls.some(c => String(c[0]).includes('evil.test'))).toBe(false);
   });
+
+  it('matches an absolute next link by origin when the registry carries an explicit default port', async () => {
+    const f = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: ['a'] }, { link: '<https://reg.example.com/v2/o/r/tags/list?last=a>; rel="next"' }))
+      .mockResolvedValueOnce(json({ tags: ['b'] }));
+    expect(await listImageTags('reg.example.com:443/o/r:1')).toEqual(['a', 'b']);
+    expect(f).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not treat a different port or scheme as the same origin', async () => {
+    const f = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: ['a'] }, { link: '<https://reg.example.com:8443/v2/o/r/tags/list?last=a>; rel="next"' }));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await listImageTags('reg.example.com/o/r:1')).toEqual(['a']);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs once when a foreign-origin next link is dropped, without the URL', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: ['a'] }, { link: '<https://evil.test/steal?key=SECRET>; rel="next"' }));
+    expect(await listImageTags('reg.example.com/o/r:1')).toEqual(['a']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toMatch(/Ignoring Link: next/);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRET');
+  });
 });
