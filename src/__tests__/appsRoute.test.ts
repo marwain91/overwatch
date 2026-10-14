@@ -166,3 +166,22 @@ describe('GET /api/apps/:appId/tags', () => {
     });
   }
 });
+
+describe('health check durations on the write path', () => {
+  const withHc = (hc: Record<string, unknown>) => validApp('demo', {
+    services: [{ name: 'web', image_suffix: 'web', ports: { internal: 80 }, health_check: { type: 'http', ...hc } }],
+  });
+
+  it('POST and PUT reject an invalid interval / start_period with 400', async () => {
+    const app = await mount();
+    const bad = await request(app).post('/api/apps').send(withHc({ interval: 'soon' })).expect(400);
+    expect(bad.body.error).toMatch(/health_check\.interval/);
+    await request(app).post('/api/apps').send(withHc({ start_period: '30' })).expect(400);
+
+    await request(app).post('/api/apps').send(withHc({ interval: '1m30s', start_period: '10s' })).expect(201);
+    const put = await request(app).put('/api/apps/demo').send({
+      services: [{ name: 'web', image_suffix: 'web', health_check: { type: 'http', interval: '5 minutes' } }],
+    }).expect(400);
+    expect(put.body.error).toMatch(/health_check\.interval/);
+  });
+});

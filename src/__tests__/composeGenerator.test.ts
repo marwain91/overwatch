@@ -428,18 +428,19 @@ describe('generateComposeFile treats every value as data', () => {
     const yml = render([{
       name: 'web', required: true, user: '1000:1000', command: ['sleep', '300', 'true'],
       env_mapping: env,
-      health_check: { type: 'tcp', port: 9000, interval: '30', tool: 'wget' },
+      health_check: { type: 'tcp', port: 9000, interval: '30s', tool: 'wget' },
     }]);
 
     const web = load(yml).services.web;
     expect(Object.values(web.environment)).toEqual(lookalikes);
     expect(web.user).toBe('1000:1000');
     expect(web.command).toEqual(['sleep', '300', 'true']);
-    expect(web.healthcheck.interval).toBe('30');
+    expect(web.healthcheck.interval).toBe('30s');
     // js-yaml reads YAML 1.2, but a YAML 1.1 reader takes a plain `no` for
-    // false and `1000:1000` for a base-60 number, so those must be quoted.
-    expect(yml).toContain('user: "1000:1000"');
-    expect(yml).toMatch(/^ +V1: "no"$/m);
+    // false and `1000:1000` for a base-60 number, so those must stay quoted.
+    // Either quote style is fine: only "not a plain scalar" matters.
+    expect(yml).toMatch(/^\s*user: (["'])1000:1000\1$/m);
+    expect(yml).toMatch(/^\s+V1: (["'])no\1$/m);
   });
 
   it('keeps a key named __proto__ as an ordinary key', () => {
@@ -493,5 +494,29 @@ describe('generated compose file consumers', () => {
 
     expect(calls).toContainEqual(['volume', 'inspect', 'shared-media']);
     expect(calls).not.toContainEqual(['volume', 'inspect', 'local-data']);
+  });
+});
+
+describe('healthcheck durations on stored definitions', () => {
+  it('passes valid Compose durations through', () => {
+    const web = load(render([{
+      name: 'web', required: true, ports: { internal: 3000 },
+      health_check: { type: 'http', interval: '1m30s', start_period: '500ms', tool: 'wget' },
+    }])).services.web;
+    expect(web.healthcheck.interval).toBe('1m30s');
+    expect(web.healthcheck.start_period).toBe('500ms');
+  });
+
+  it('warns and falls back instead of emitting a duration Compose would reject', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const web = load(render([{
+      name: 'web', required: true, ports: { internal: 3000 },
+      health_check: { type: 'http', interval: 'soon', start_period: '30', tool: 'wget' },
+    }])).services.web;
+    expect(web.healthcheck.interval).toBe('30s');
+    expect(web.healthcheck).not.toHaveProperty('start_period');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('health_check.interval'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('health_check.start_period'));
+    warn.mockRestore();
   });
 });
