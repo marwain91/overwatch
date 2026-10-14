@@ -1,9 +1,10 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { z } from 'zod';
-import { getAppsDir, getDataDir } from '../config';
+import { getDataDir } from '../config';
 import { withFileLock } from './fileLock';
-import { assertWithinDir, writeSecretFile } from '../utils/security';
+import { writeSecretFile } from '../utils/security';
+import { tenantDir, assertTenantDir, listTenantDirs } from './tenantStore';
 import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const EnvVarSchema = z.object({
@@ -412,8 +413,7 @@ export async function getEffectiveEnvVars(appId: string, tenantId: string): Prom
 // ─── File generation ─────────────────────────────────────────────────────────
 
 export async function generateSharedEnvFile(appId: string, tenantId: string): Promise<void> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
+  const tenantPath = tenantDir(appId, tenantId);
 
   // Check tenant directory exists
   try {
@@ -423,7 +423,7 @@ export async function generateSharedEnvFile(appId: string, tenantId: string): Pr
   }
 
   // Verify path hasn't been manipulated via symlinks
-  await assertWithinDir(tenantPath, appsDir);
+  await assertTenantDir(appId, tenantId);
 
   const effective = await getEffectiveEnvVars(appId, tenantId);
 
@@ -453,158 +453,6 @@ export async function generateSharedEnvFile(appId: string, tenantId: string): Pr
   }
 
   await writeSecretFile(sharedEnvPath, lines.join('\n'));
-}
-
-/**
- * Backfill COMPOSE_PROJECT_NAME into tenant .env files that don't have it.
- * This prevents Docker Compose project name collisions when two apps
- * have tenants with the same ID (e.g. both acme and widgets have "daktela").
- */
-export async function backfillComposeProjectNames(): Promise<number> {
-  const appsDir = getAppsDir();
-  let count = 0;
-
-  try {
-    const appDirs = await fs.readdir(appsDir, { withFileTypes: true });
-    for (const appEntry of appDirs) {
-      if (!appEntry.isDirectory()) continue;
-      const appId = appEntry.name;
-      const tenantsDir = path.join(appsDir, appId, 'tenants');
-
-      try {
-        const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
-        for (const tenantEntry of tenantDirs) {
-          if (!tenantEntry.isDirectory()) continue;
-          const tenantId = tenantEntry.name;
-          const envPath = path.join(tenantsDir, tenantId, '.env');
-
-          try {
-            let envContent = await fs.readFile(envPath, 'utf-8');
-            if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
-              envContent = envContent.replace(
-                /^(# App Identification)/m,
-                `# Docker Compose Project Name (must be unique across all apps)\nCOMPOSE_PROJECT_NAME=${appId}-${tenantId}\n\n$1`
-              );
-              // If the header wasn't found, just prepend it
-              if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
-                envContent = `COMPOSE_PROJECT_NAME=${appId}-${tenantId}\n${envContent}`;
-              }
-              await writeSecretFile(envPath, envContent);
-              count++;
-            }
-          } catch {
-            // No .env file, skip
-          }
-        }
-      } catch {
-        // No tenants dir for this app
-      }
-    }
-  } catch (error: any) {
-    if (error.code === 'ENOENT') return 0;
-    throw error;
-  }
-
-  return count;
-}
-
-/**
- * One-time cleanup for deployments created before perm-hardening.
- * Walks every known secret file and chmod 0600 if permissions are looser.
- * Covers apps/<appId>/tenants/<tenantId>/{shared.env,.env} and
- * data/{env-vars.json,tenant-env-overrides.json,notification-channels.json}.
- */
-export async function tightenSecretFilePermissions(): Promise<number> {
-  const appsDir = getAppsDir();
-  const dataDir = getDataDir();
-  let count = 0;
-
-  const tighten = async (filePath: string): Promise<void> => {
-    try {
-      const stat = await fs.stat(filePath);
-      if ((stat.mode & 0o777) !== 0o600) {
-        await fs.chmod(filePath, 0o600);
-        count++;
-      }
-    } catch (error: any) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-  };
-
-  await tighten(path.join(dataDir, 'env-vars.json'));
-  await tighten(path.join(dataDir, 'tenant-env-overrides.json'));
-  await tighten(path.join(dataDir, 'notification-channels.json'));
-
-  try {
-    const appDirs = await fs.readdir(appsDir, { withFileTypes: true });
-    for (const appEntry of appDirs) {
-      if (!appEntry.isDirectory()) continue;
-      const tenantsDir = path.join(appsDir, appEntry.name, 'tenants');
-      try {
-        const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
-        for (const tenantEntry of tenantDirs) {
-          if (!tenantEntry.isDirectory()) continue;
-          const tenantPath = path.join(tenantsDir, tenantEntry.name);
-          await tighten(path.join(tenantPath, '.env'));
-          await tighten(path.join(tenantPath, 'shared.env'));
-        }
-      } catch {
-        // no tenants dir for this app
-      }
-    }
-  } catch (error: any) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-
-  return count;
-}
-
-/**
- * One-time repair for hosts that ran older docker-compose.yml versions where
- * each data file was a separate bind mount. If the file didn't yet exist on
- * the host, Docker created the bind target as an empty directory — which then
- * looks like a directory to the container and breaks every JSON/log read.
- *
- * For each known file path under data/, if it exists as an EMPTY directory,
- * remove it so the app recreates it as a file on first write. A non-empty
- * directory is left alone with a loud warning — operator must intervene
- * rather than risk silent data loss.
- */
-export async function repairBindMountedDataFiles(dataDirOverride?: string): Promise<{ repaired: number; stranded: string[] }> {
-  const dataDir = dataDirOverride ?? getDataDir();
-  // Files that used to be individual bind targets in docker-compose.yml.
-  const KNOWN_FILES = [
-    'admin-users.json',
-    'env-vars.json',
-    'tenant-env-overrides.json',
-    'audit.log',
-    'alert-history.jsonl',
-    'notification-channels.json',
-  ];
-  let repaired = 0;
-  const stranded: string[] = [];
-
-  for (const name of KNOWN_FILES) {
-    const p = path.join(dataDir, name);
-    let stat;
-    try {
-      stat = await fs.stat(p);
-    } catch (err: any) {
-      if (err.code === 'ENOENT') continue;
-      throw err;
-    }
-    if (!stat.isDirectory()) continue;
-    const entries = await fs.readdir(p);
-    if (entries.length === 0) {
-      await fs.rmdir(p);
-      repaired++;
-      console.warn(`[startup] Removed stray empty directory at ${p} (was created by an older docker-compose bind-mount). App will recreate it as a file.`);
-    } else {
-      stranded.push(p);
-    }
-  }
-
-  return { repaired, stranded };
 }
 
 /**
@@ -692,55 +540,31 @@ export class SharedEnvRegenerationError extends HttpError {
  * shared.env stays stale.
  */
 export async function regenerateAllSharedEnvFiles(onlyAppId?: string): Promise<number> {
-  const appsDir = getAppsDir();
   let count = 0;
   const failures: SharedEnvFailure[] = [];
 
-  async function regenerateAppTenants(appId: string): Promise<void> {
-    const tenantsDir = path.join(appsDir, appId, 'tenants');
-    let tenantDirs;
-    try {
-      tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
-    } catch (err: any) {
-      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return; // No tenants dir for this app
+  const tenants = await listTenantDirs(onlyAppId, {
+    onError: (appId, err: any) => {
       console.error(`[env-vars] cannot list tenants of ${appId}: ${err?.message || err}`);
       failures.push({ appId, tenantId: '*' });
-      return;
-    }
-    for (const tenantEntry of tenantDirs) {
-      if (!tenantEntry.isDirectory()) continue;
-      const tenantId = tenantEntry.name;
-      try {
-        await fs.access(path.join(tenantsDir, tenantId, '.env'));
-      } catch (err: any) {
-        if (err.code === 'ENOENT') continue; // Not a tenant directory
-        console.error(`[env-vars] cannot read .env of ${appId}/${tenantId}: ${err?.message || err}`);
-        failures.push({ appId, tenantId });
-        continue;
-      }
-      try {
-        await generateSharedEnvFile(appId, tenantId);
-        count++;
-      } catch (err: any) {
-        console.error(`[env-vars] shared.env regeneration failed for ${appId}/${tenantId}: ${err?.message || err}`);
-        failures.push({ appId, tenantId });
-      }
-    }
-  }
+    },
+  });
 
-  if (onlyAppId) {
-    await regenerateAppTenants(onlyAppId);
-  } else {
-    let appDirs;
+  for (const { appId, tenantId, dir } of tenants) {
     try {
-      appDirs = await fs.readdir(appsDir, { withFileTypes: true });
-    } catch (error: any) {
-      if (error.code === 'ENOENT') return 0; // Apps directory doesn't exist yet
-      throw error;
+      await fs.access(path.join(dir, '.env'));
+    } catch (err: any) {
+      if (err.code === 'ENOENT') continue; // Not a tenant directory
+      console.error(`[env-vars] cannot read .env of ${appId}/${tenantId}: ${err?.message || err}`);
+      failures.push({ appId, tenantId });
+      continue;
     }
-    for (const appEntry of appDirs) {
-      if (!appEntry.isDirectory()) continue;
-      await regenerateAppTenants(appEntry.name);
+    try {
+      await generateSharedEnvFile(appId, tenantId);
+      count++;
+    } catch (err: any) {
+      console.error(`[env-vars] shared.env regeneration failed for ${appId}/${tenantId}: ${err?.message || err}`);
+      failures.push({ appId, tenantId });
     }
   }
 

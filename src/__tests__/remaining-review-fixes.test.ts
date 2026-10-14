@@ -604,7 +604,7 @@ describe('deployment and image build hardening', () => {
     await fs.mkdir(stranded);
     await fs.writeFile(path.join(stranded, 'something'), 'do not delete me');
 
-    const { repairBindMountedDataFiles } = await import('../services/envVars');
+    const { repairBindMountedDataFiles } = await import('../services/startupMaintenance');
     const result = await repairBindMountedDataFiles(dataDir);
 
     expect(result.repaired).toBe(2);

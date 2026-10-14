@@ -25,7 +25,8 @@ import databaseRouter from './routes/database';
 import traefikRouter from './routes/traefik';
 import { closeAllDatabaseAdapters } from './adapters/database';
 import { mountMcp } from './mcp/server';
-import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions, repairBindMountedDataFiles } from './services/envVars';
+import { regenerateAllSharedEnvFiles } from './services/envVars';
+import { backfillComposeProjectNames, tightenSecretFilePermissions, repairBindMountedDataFiles } from './services/startupMaintenance';
 import {
   startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns,
   reconcileBackupSchedulers, startSchedulerReconciler, stopSchedulerReconciler,
