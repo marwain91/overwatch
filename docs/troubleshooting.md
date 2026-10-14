@@ -43,6 +43,19 @@
 
 **Solution:** Use the "Unlock" button in the Backups section, or call `POST /api/apps/:appId/backups/unlock`. This removes stale locks from interrupted operations.
 
+## Operator Log Lines and Failure Modes
+
+Messages you may see in `docker logs overwatch`, and what they mean.
+
+- **`[traefik] dropped raw label "<key>" on <router>: <reason>`** — a service's `raw_labels` entry addresses something other than the tenant's own routers, services or middlewares (L4 labels, other tenants' objects, `forwardauth` / `chain` / `plugin` middlewares, `tls.*`, ...). The label is not emitted. Fix the label or use the typed field; see [traefik.md](./traefik.md). Saving such labels through the API or `overwatch apps apply` returns 400.
+- **`[manifest] ignored protected fields from image <tag>: <paths>`** — the image's `/overwatch/app.json` tried to change `admin_access`, `backup`, `credentials`, `db_prefix`, `traefik` or a service's `user`, `command`, `volumes`, `networks`, `backup` or routing security fields. They keep the admin-set value. Change them in Overwatch (UI, `PUT /api/apps/:id`, `overwatch apps apply`). See [updating.md](./updating.md).
+- **`Timed out acquiring file lock '<key>' after 30s`** — another operation holds the lock on a data file or tenant. Lock files from a dead process, or older than 60 seconds with a dead PID, are reclaimed automatically (including after an Overwatch restart), so this usually means a genuinely long-running operation. Retry once it finishes; if it persists, check for a stuck `docker compose` or restic process.
+- **`[<log>] <file> cannot be replaced by rename (...); pruning by rewriting it in place`** — warning only. The audit log or alert history file is bind-mounted on its own, so retention pruning rewrites it in place instead of via rename. Mount the `data/` directory instead of single files to avoid it.
+- **Tenant creation fails with 409 `A database for tenant '<id>' already exists on the database server`** — Overwatch never adopts a database it did not create. Drop or rename the existing database, then retry.
+- **Tenant creation fails with `Domain "<domain>" is not allowed` (400) or `is already used by another tenant` (409)** — the domain is the Overwatch, MCP or Traefik dashboard host, or a domain or alias of another tenant. Pick a different domain.
+- **`Cannot check host aliases: ... could not be read`** (500) — the alias check fails closed when tenant or app data cannot be read; fix the file permissions or corruption named in the message.
+- **`docker compose` pull/up for a tenant times out** — `compose up` and `pull` are bounded at 1 hour; other compose and restic calls have shorter limits.
+
 ## Container Health Shows Unhealthy
 
 **Symptom:** Tenant shows as unhealthy despite containers running.

@@ -20,7 +20,7 @@ Destructive endpoints marked `confirm` require either an `X-Confirm-Id` header o
 | Method | Endpoint | Role | Description |
 |--------|----------|------|-------------|
 | `POST` | `/api/auth/google` | `public` | Login with a Google OAuth credential and receive an Overwatch JWT |
-| `GET` | `/api/auth/verify` | `public` + Bearer token | Verify the current Overwatch JWT |
+| `GET` | `/api/auth/verify` | `public` + Bearer token | Verify the current Overwatch JWT. Returns `{ user: { email, name, picture, role } }`; `role` is the caller's current role (`viewer`, `editor` or `admin`), and a removed user gets `401` |
 | `GET` | `/api/auth/config` | `public` | Get Google Client ID and login configuration for the frontend |
 
 ## Apps

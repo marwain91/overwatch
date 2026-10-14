@@ -504,5 +504,6 @@ Who may sign in, and what they may do, is stored in `data/admin-users.json` and 
 |----------|---------|-------------|
 | `PORT` | `3002` | Overwatch HTTP port |
 | `ALLOWED_ADMIN_EMAILS` | (none) | Comma-separated initial admin emails |
+| `OVERWATCH_TRUST_PROXY` | `1` | Express `trust proxy` setting for the client IP behind Traefik (hop count, `true`/`false` or a subnet list). Set it to your proxy's subnet/IP if Overwatch is not directly behind one Traefik hop. The generated Overwatch compose passes it through. |
 | `OVERWATCH_DEPLOY_DIR` | (none) | Deploy root used by `overwatch infra deploy` only; a legacy alias of `DEPLOY_DIR`, which takes precedence when both are set. Without either, the root is the parent of the directory holding `overwatch.yaml`. Other CLI commands read `DEPLOY_DIR` only (see [updating.md](updating.md)). |
 | `OVERWATCH_SKIP_CHECKSUM` | (none) | `1` lets `overwatch self-update` install a CLI binary when the release has no `<asset>.sha256` companion file. **Security risk, leave unset.** The checksum is the only proof the downloaded binary is the one the maintainers published (TLS only shows the bytes came from GitHub), so skipping it means a tampered or corrupted release asset is installed and run as-is. It does not bypass a hash mismatch: a present checksum that does not match always aborts the update. |
