@@ -152,7 +152,7 @@ describe('busy tenants during shared.env regeneration', () => {
   const sharedEnv = (id: string) => path.join(appsDir, 'demo', 'tenants', id, 'shared.env');
   const exists = (p: string) => fs.access(p).then(() => true, () => false);
   async function until(cond: () => Promise<boolean>) {
-    for (let i = 0; i < 100; i++) { if (await cond()) return; await new Promise(r => setTimeout(r, 20)); }
+    for (let i = 0; i < 250; i++) { if (await cond()) return; await new Promise(r => setTimeout(r, 20)); }
     throw new Error('condition not met');
   }
   async function hold(id: string) {
@@ -199,9 +199,12 @@ describe('busy tenants during shared.env regeneration', () => {
     await regenerateAllSharedEnvFiles('demo', { busy: [], waitMs: 30 });
     release();
     await holder;
-    await until(() => exists(sharedEnv('a')));
-    await new Promise(r => setTimeout(r, 100));
-    expect(log.mock.calls.filter(c => /background shared\.env regeneration/.test(String(c[0])))).toHaveLength(1);
+    const backgroundRuns = () => log.mock.calls.filter(c => /background shared\.env regeneration/.test(String(c[0])));
+    // Wait for the first run's log (not a fixed sleep: it lands after the write and
+    // can be slow under load), then give a duplicate run time to show up.
+    await until(async () => backgroundRuns().length >= 1);
+    await new Promise(r => setTimeout(r, 300));
+    expect(backgroundRuns()).toHaveLength(1);
   });
 
   it('regenerateTenantSharedEnv reports busy instead of throwing, and is not busy when free', async () => {
