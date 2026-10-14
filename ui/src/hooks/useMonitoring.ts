@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { useWsAwareInterval } from './useWsPolling';
 import type { MetricsSnapshot, HealthState, AlertEntry, NotificationChannel } from '../lib/types';
 
 export function useMetrics(appId?: string, tenantId?: string) {
@@ -7,18 +8,20 @@ export function useMetrics(appId?: string, tenantId?: string) {
     ? `/monitoring/metrics/${appId}/${tenantId}`
     : `/monitoring/metrics${appId ? `?appId=${appId}` : ''}`;
 
+  const refetchInterval = useWsAwareInterval(15_000);
   return useQuery({
     queryKey: ['metrics', appId, tenantId],
     queryFn: () => api.get<MetricsSnapshot>(url),
-    refetchInterval: 15_000,
+    refetchInterval,
   });
 }
 
 export function useHealthStates(appId?: string) {
+  const refetchInterval = useWsAwareInterval(30_000);
   return useQuery({
     queryKey: ['health', appId],
     queryFn: () => api.get<HealthState[]>(`/monitoring/health${appId ? `?appId=${appId}` : ''}`),
-    refetchInterval: 30_000,
+    refetchInterval,
   });
 }
 

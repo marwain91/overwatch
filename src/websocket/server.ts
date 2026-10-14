@@ -52,12 +52,33 @@ function untrackConnection(email: string): void {
   }
 }
 
+const MAX_BUFFERED_BYTES = 1024 * 1024; // 1 MB of unsent data marks a client as slow
+const SLOW_CLIENT_TERMINATE_MS = 30_000;
+const slowSince = new WeakMap<WebSocket, number>();
+
+// Slow clients are skipped (their buffer only grows otherwise) and dropped if
+// they stay over the limit; the UI reconnects and refetches on its own.
+export function decideBackpressure(
+  bufferedAmount: number,
+  overSince: number | undefined,
+  now: number,
+): { action: 'send' | 'skip' | 'terminate'; overSince: number | undefined } {
+  if (bufferedAmount <= MAX_BUFFERED_BYTES) return { action: 'send', overSince: undefined };
+  const since = overSince ?? now;
+  if (now - since >= SLOW_CLIENT_TERMINATE_MS) return { action: 'terminate', overSince: since };
+  return { action: 'skip', overSince: since };
+}
+
 function broadcast(msg: WSMessage): void {
   const data = JSON.stringify(msg);
+  const now = Date.now();
   for (const client of clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(data);
-    }
+    if (client.readyState !== WebSocket.OPEN) continue;
+    const decision = decideBackpressure(client.bufferedAmount, slowSince.get(client), now);
+    if (decision.overSince === undefined) slowSince.delete(client);
+    else slowSince.set(client, decision.overSince);
+    if (decision.action === 'send') client.send(data);
+    else if (decision.action === 'terminate') client.terminate();
   }
 }
 
