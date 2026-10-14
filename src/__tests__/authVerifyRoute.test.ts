@@ -8,6 +8,12 @@ vi.mock('../services/users', async (orig) => {
   return { ...actual, getUserRole: (...a: unknown[]) => getUserRole(...a) };
 });
 
+const verifySessionSpy = vi.fn();
+vi.mock('../auth/session', async (orig) => {
+  const actual = await (orig as any)();
+  return { ...actual, verifySession: (...a: unknown[]) => { verifySessionSpy(...a); return actual.verifySession(...a); } };
+});
+
 import authRouter from '../routes/auth';
 import { signSession } from '../auth/session';
 
@@ -20,6 +26,7 @@ function app() {
 beforeEach(() => {
   process.env.JWT_SECRET = 'x'.repeat(40);
   getUserRole.mockReset();
+  verifySessionSpy.mockClear();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -30,6 +37,14 @@ describe('GET /api/auth/verify', () => {
       .set('Authorization', `Bearer ${signSession('a@b.c', { name: 'A', picture: 'p' })}`);
     expect(res.status).toBe(200);
     expect(res.body.user).toEqual({ email: 'a@b.c', name: 'A', picture: 'p', role: 'viewer' });
+  });
+
+  it('verifies the session token once per request', async () => {
+    getUserRole.mockResolvedValue('editor');
+    await request(app()).get('/api/auth/verify')
+      .set('Authorization', `Bearer ${signSession('a@b.c', { name: 'A', picture: 'p' })}`)
+      .expect(200);
+    expect(verifySessionSpy).toHaveBeenCalledTimes(1);
   });
 
   it('401s a valid token whose admin user was removed', async () => {

@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { verifySession } from '../auth/session';
+import { verifySession, type Session } from '../auth/session';
 import { getUserRole, AdminRole } from '../services/users';
 
 /** Authenticated caller, set on `res.locals.user` by authMiddleware. */
@@ -21,15 +21,16 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  let email: string;
+  let session: Session;
   try {
-    email = verifySession(authHeader.substring(7)).email;
+    session = verifySession(authHeader.substring(7));
   } catch (error: any) {
     const reason = error.name === 'TokenExpiredError' ? 'expired' : 'invalid';
     console.warn(`[Auth] JWT ${reason}: ${error.message}`);
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
+  const email = session.email;
   try {
     const role = await getUserRole(email);
     if (!role) {
@@ -38,6 +39,8 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
       return res.status(401).json({ error: 'Unauthorized' });
     }
     res.locals.user = { email, role } satisfies AuthUser;
+    // Decoded claims (name, picture) for handlers that need them, e.g. /auth/verify.
+    res.locals.session = session;
     return next();
   } catch (err: any) {
     console.error(`[Auth] Auth check failed: ${err?.message || err}`);
