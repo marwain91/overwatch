@@ -158,6 +158,7 @@ describe('createTenant database ownership', () => {
     vi.doMock('../config', () => ({
       loadConfig: () => ({
         project: { name: 'T', prefix: 'test', db_prefix: 'test' },
+        database: { type: 'mariadb', host: 'db', port: 3306 },
         networking: { external_network: 'n', internal_network_template: '${prefix}-${tenantId}-internal', apps_path: '/a' },
         traefik: { log_level: 'INFO', tls_termination: 'upstream', upstream_entrypoint: 'web' },
       }),
