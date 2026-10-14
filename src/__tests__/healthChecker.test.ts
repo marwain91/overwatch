@@ -118,4 +118,44 @@ describe('health checker retention', () => {
     vi.useRealTimers();
     vi.doUnmock('node-cron');
   });
+
+  it('evicts a state with no lastCheck as soon as its container no longer exists', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    let running: any[] = [{
+      Id: 'abcdef123456', Names: ['/app-t1-web'],
+      Labels: { 'com.overwatch.managed': 'true', 'com.overwatch.app-id': 'app', 'com.overwatch.tenant-id': 't1', 'com.overwatch.service': 'web' },
+    }];
+    vi.doMock('node-cron', () => ({
+      default: { validate: () => true, schedule: (_e: string, fn: () => void) => { (globalThis as any).__hcTick = fn; return { stop: () => {} }; } },
+    }));
+    vi.doMock('dockerode', () => ({ default: class { async listContainers() { return running; } } }));
+    vi.doMock('net', () => {
+      const createConnection = (_o: unknown, onConnect: () => void) => {
+        const socket = Object.assign(new EventEmitter(), { destroy: () => {} });
+        Promise.resolve().then(onConnect);
+        return socket;
+      };
+      return { default: { createConnection }, createConnection };
+    });
+    vi.doMock('../services/app', () => ({
+      listApps: vi.fn(async () => [{ id: 'app', services: [{ name: 'web', ports: { internal: 80 }, health_check: { type: 'tcp', port: 80 } }] }]),
+    }));
+
+    const mod = await import('../services/healthChecker');
+    mod.startHealthChecker();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mod.getHealthStates()).toHaveLength(1);
+
+    // A state that never recorded a check must not be exempt from eviction.
+    mod.getHealthStates()[0].lastCheck = null;
+    running = [];
+    vi.setSystemTime(new Date('2026-01-01T00:00:05Z'));
+    await (globalThis as any).__hcTick();
+    expect(mod.getHealthStates()).toHaveLength(0);
+    mod.stopHealthChecker();
+    vi.useRealTimers();
+    vi.doUnmock('node-cron');
+  });
 });

@@ -82,6 +82,7 @@ async function startListening(): Promise<void> {
     // handled in order through a chain (the pattern refresh is async).
     let buffer = '';
     let discarding = false; // skipping the rest of an oversized line
+    let overflowLogged = false; // one log line per stream, not one per runaway line
     let queue: Promise<void> = Promise.resolve();
     stream.on('data', (chunk: Buffer) => {
       let text = chunk.toString();
@@ -94,8 +95,12 @@ async function startListening(): Promise<void> {
       buffer += text;
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
-      if (buffer.length > MAX_BUFFER_BYTES) {
-        console.error('[DockerEvents] Event line exceeded 1 MB without a newline; discarding it');
+      // Bytes, not UTF-16 code units: multi-byte text would otherwise slip past the cap.
+      if (Buffer.byteLength(buffer) > MAX_BUFFER_BYTES) {
+        if (!overflowLogged) {
+          overflowLogged = true;
+          console.error('[DockerEvents] Event line exceeded 1 MB without a newline; discarding it (further overflows on this stream are not logged)');
+        }
         buffer = '';
         discarding = true;
       }
