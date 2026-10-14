@@ -17,10 +17,8 @@ import {
   updateDashboardConfig,
   getOverwatchRouting,
   updateOverwatchRouting,
-  redactTraefikCredentials,
-  redactMiddlewareCredentials,
-  redactRoutingCredentials,
 } from '../services/traefikConfig';
+import { redactTraefikCredentials, redactMiddlewareCredentials, redactRoutingCredentials } from '../services/traefikRedaction';
 import { TraefikGlobalSchema } from '../models/traefik';
 import { loadConfig } from '../config';
 

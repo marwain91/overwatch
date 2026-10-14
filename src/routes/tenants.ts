@@ -8,6 +8,7 @@ import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
 import { mintAdminAccess } from '../services/adminAccess';
 import { getTenantTraefik, updateTenantTraefik } from '../services/traefikConfig';
+import { redactTenantTraefik } from '../services/traefikRedaction';
 
 const router = Router({ mergeParams: true });
 
@@ -107,13 +108,14 @@ router.post('/:tenantId/access-token', validateTenantId, requireRole('admin'), a
 router.get('/:tenantId/traefik', validateTenantId, asyncHandler(async (req, res) => {
   const { appId, tenantId } = (req.params as Record<string, string>);
   const t = await getTenantTraefik(appId, tenantId);
-  res.json(t ?? null);
+  // Raw labels can hold auth users; only admins see them. A missing role must not read as admin.
+  res.json((res.locals.user?.role === 'admin' ? t : redactTenantTraefik(t)) ?? null);
 }));
 
 router.put('/:tenantId/traefik', validateTenantId, requireRole('editor'), asyncHandler(async (req, res) => {
   const { appId, tenantId } = (req.params as Record<string, string>);
   const t = await updateTenantTraefik(appId, tenantId, req.body);
-  res.json(t ?? null);
+  res.json((res.locals.user?.role === 'admin' ? t : redactTenantTraefik(t)) ?? null);
 }));
 
 export default router;
