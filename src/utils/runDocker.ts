@@ -9,6 +9,14 @@ const DOCKER_ENV_KEYS = [
   'PATH', 'HOME', 'LANG', 'LC_ALL',
 ] as const;
 
+// Explicit allowlist, not a DOCKER_* prefix: DOCKER_PASSWORD, DOCKER_AUTH_CONFIG
+// and similar registry credentials may sit in the process env and are not needed
+// by the CLI/compose calls Overwatch makes (login state comes from DOCKER_CONFIG).
+const DOCKER_CLI_KEYS = new Set([
+  'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY',
+  'DOCKER_API_VERSION', 'DOCKER_BUILDKIT', 'DOCKER_DEFAULT_PLATFORM',
+]);
+
 // Compose tuning only. Selection variables (COMPOSE_PROJECT_NAME, COMPOSE_FILE,
 // COMPOSE_PROFILES, COMPOSE_ENV_FILES, COMPOSE_PATH_SEPARATOR,
 // COMPOSE_REMOVE_ORPHANS, COMPOSE_IGNORE_ORPHANS) stay out: they would beat the
@@ -26,8 +34,7 @@ export function getDockerEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Pr
   }
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue;
-    // DOCKER_* configures the CLI (host, TLS, API version, context); none of it is an Overwatch secret.
-    if (key.startsWith('DOCKER_') || COMPOSE_TUNING_KEYS.has(key)) env[key] = value;
+    if (DOCKER_CLI_KEYS.has(key) || COMPOSE_TUNING_KEYS.has(key)) env[key] = value;
   }
   return env;
 }

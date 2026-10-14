@@ -36,18 +36,31 @@ describe('getDockerEnv', () => {
     expect(env.DOCKER_TLS_VERIFY).toBe('1');
   });
 
-  it('forwards non-selection COMPOSE_* tuning and DOCKER_* by prefix', () => {
+  it('forwards non-selection COMPOSE_* tuning and the allowlisted DOCKER_* variables', () => {
     process.env.COMPOSE_HTTP_TIMEOUT = '300';
     process.env.COMPOSE_PARALLEL_LIMIT = '2';
     process.env.COMPOSE_ANSI = 'never';
-    process.env.DOCKER_API_VERSION = '1.43';
-    process.env.DOCKER_CLI_EXPERIMENTAL = 'enabled';
+    const docker = {
+      DOCKER_HOST: 'tcp://d:2376', DOCKER_CONFIG: '/c', DOCKER_CONTEXT: 'remote', DOCKER_CERT_PATH: '/certs',
+      DOCKER_TLS_VERIFY: '1', DOCKER_API_VERSION: '1.43', DOCKER_BUILDKIT: '1', DOCKER_DEFAULT_PLATFORM: 'linux/amd64',
+    };
+    Object.assign(process.env, docker);
     const env = getDockerEnv();
     expect(env.COMPOSE_HTTP_TIMEOUT).toBe('300');
     expect(env.COMPOSE_PARALLEL_LIMIT).toBe('2');
     expect(env.COMPOSE_ANSI).toBe('never');
-    expect(env.DOCKER_API_VERSION).toBe('1.43');
-    expect(env.DOCKER_CLI_EXPERIMENTAL).toBe('enabled');
+    expect(env).toMatchObject(docker);
+  });
+
+  it('does not forward DOCKER_* variables outside the allowlist', () => {
+    process.env.DOCKER_CLI_EXPERIMENTAL = 'enabled';
+    process.env.DOCKER_PASSWORD = 'registry-secret';
+    process.env.DOCKER_AUTH_CONFIG = '{"auths":{}}';
+    const env = getDockerEnv();
+    expect(env).not.toHaveProperty('DOCKER_CLI_EXPERIMENTAL');
+    expect(env).not.toHaveProperty('DOCKER_PASSWORD');
+    expect(env).not.toHaveProperty('DOCKER_AUTH_CONFIG');
+    expect(env.DOCKER_HOST).toBe('tcp://docker:2376');
   });
 
   it('never forwards compose selection variables that would override per-tenant settings', () => {
