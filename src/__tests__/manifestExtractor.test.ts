@@ -145,4 +145,97 @@ describe('extractFileFromImage — docker interactions', () => {
     const { extractFileFromImage } = await import('../services/manifestExtractor');
     await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).resolves.toBe('{"id":"x"}');
   });
+
+  it('never follows a manifest that docker cp delivered as a symlink', async () => {
+    const fsSync = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const outside = fsSync.mkdtempSync(path.join(os.tmpdir(), 'ow-outside-'));
+    const secret = path.join(outside, 'admin-users.json');
+    fsSync.writeFileSync(secret, '{"secret":"host-file"}');
+    let dest = '';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockExecFile((args) => {
+      if (args[0] === 'image' && args[1] === 'inspect') return { stdout: '[{}]' };
+      if (args[0] === 'create') return { stdout: 'cid-791\n' };
+      if (args[0] === 'cp') { dest = args[2]; fsSync.symlinkSync(secret, dest); return { stdout: '' }; }
+      return { stdout: '' };
+    });
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).resolves.toBeNull();
+    expect(warn).toHaveBeenCalled();
+    expect(fsSync.readFileSync(secret, 'utf-8')).toBe('{"secret":"host-file"}');
+    expect(fsSync.existsSync(path.dirname(dest))).toBe(false);
+    warn.mockRestore();
+    fsSync.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('ignores a manifest path that is not a regular file', async () => {
+    const fsSync = await import('fs');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockExecFile((args) => {
+      if (args[0] === 'image' && args[1] === 'inspect') return { stdout: '[{}]' };
+      if (args[0] === 'create') return { stdout: 'cid-792\n' };
+      if (args[0] === 'cp') { fsSync.mkdirSync(args[2]); return { stdout: '' }; }
+      return { stdout: '' };
+    });
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).resolves.toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('does not block on a manifest that docker cp delivered as a FIFO', async () => {
+    const realCp = await vi.importActual<typeof import('child_process')>('child_process');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockExecFile((args) => {
+      if (args[0] === 'image' && args[1] === 'inspect') return { stdout: '[{}]' };
+      if (args[0] === 'create') return { stdout: 'cid-795\n' };
+      if (args[0] === 'cp') { realCp.execFileSync('mkfifo', [args[2]]); return { stdout: '' }; }
+      return { stdout: '' };
+    });
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).resolves.toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('copies into a private temp directory that is removed afterwards', async () => {
+    const fsSync = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    let dest = '';
+    let dirMode = 0;
+    mockExecFile((args) => {
+      if (args[0] === 'image' && args[1] === 'inspect') return { stdout: '[{}]' };
+      if (args[0] === 'create') return { stdout: 'cid-793\n' };
+      if (args[0] === 'cp') {
+        dest = args[2];
+        dirMode = fsSync.statSync(path.dirname(dest)).mode & 0o777;
+        fsSync.writeFileSync(dest, '{"id":"x"}');
+        return { stdout: '' };
+      }
+      return { stdout: '' };
+    });
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json');
+    expect(path.dirname(dest)).not.toBe(os.tmpdir());
+    expect(dirMode).toBe(0o700);
+    expect(fsSync.existsSync(path.dirname(dest))).toBe(false);
+  });
+
+  it('does not echo manifest content in the invalid-JSON error', async () => {
+    const fsSync = await import('fs');
+    mockExecFile((args) => {
+      if (args[0] === 'image' && args[1] === 'inspect') return { stdout: '[{}]' };
+      if (args[0] === 'create') return { stdout: 'cid-794\n' };
+      if (args[0] === 'cp') { fsSync.writeFileSync(args[2], 'SECRETVALUE not json'); return { stdout: '' }; }
+      return { stdout: '' };
+    });
+    const { readManifestFromAppImage } = await import('../services/manifestExtractor');
+    const err = await readManifestFromAppImage(buildApp(), 'v1').catch(e => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/not valid JSON/);
+    expect((err as Error).message).not.toContain('SECRETVALUE');
+  });
 });

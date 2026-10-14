@@ -1,6 +1,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
+import { constants as fsConstants } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { AppDefinition } from '../models/app';
@@ -31,11 +32,13 @@ export async function extractFileFromImage(
     await execFileAsync('docker', ['pull', imageRef]);
   }
 
-  const { stdout: createOut } = await execFileAsync('docker', ['create', imageRef]);
-  const cid = createOut.trim();
-
+  // A private directory, so nothing else can pre-create or swap the target path.
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-manifest-'));
+  let cid: string | undefined;
   try {
-    const tmpFile = path.join(os.tmpdir(), `ow-manifest-${process.pid}-${Date.now()}.json`);
+    const { stdout: createOut } = await execFileAsync('docker', ['create', imageRef]);
+    cid = createOut.trim();
+    const tmpFile = path.join(tmpDir, 'manifest.json');
     try {
       await execFileAsync('docker', ['cp', `${cid}:${pathInImage}`, tmpFile]);
     } catch (err: any) {
@@ -45,18 +48,37 @@ export async function extractFileFromImage(
       }
       throw err;
     }
+    // `docker cp` copies a symlink as a symlink; following it would read a file
+    // of Overwatch's own choosing (or /dev/zero past the size check). Only a
+    // regular file within the limit counts as a manifest. O_NONBLOCK keeps a
+    // FIFO from blocking the open; it is then rejected as not a regular file.
+    let handle: fs.FileHandle;
     try {
-      const { size } = await fs.stat(tmpFile);
-      if (size > MAX_MANIFEST_BYTES) {
-        console.warn(`[manifest] ${pathInImage} in ${imageRef} is ${size} bytes (limit ${MAX_MANIFEST_BYTES}); ignoring it`);
+      handle = await fs.open(tmpFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    } catch (err: any) {
+      if (err?.code === 'ELOOP' || err?.code === 'EISDIR') {
+        console.warn(`[manifest] ${pathInImage} in ${imageRef} is not a regular file; ignoring it`);
         return null;
       }
-      return await fs.readFile(tmpFile, 'utf-8');
+      throw err;
+    }
+    try {
+      const st = await handle.stat();
+      if (!st.isFile()) {
+        console.warn(`[manifest] ${pathInImage} in ${imageRef} is not a regular file; ignoring it`);
+        return null;
+      }
+      if (st.size > MAX_MANIFEST_BYTES) {
+        console.warn(`[manifest] ${pathInImage} in ${imageRef} is ${st.size} bytes (limit ${MAX_MANIFEST_BYTES}); ignoring it`);
+        return null;
+      }
+      return await handle.readFile('utf-8');
     } finally {
-      await fs.unlink(tmpFile).catch(() => {});
+      await handle.close().catch(() => {});
     }
   } finally {
-    await execFileAsync('docker', ['rm', '-f', cid]).catch(() => {});
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    if (cid) await execFileAsync('docker', ['rm', '-f', cid]).catch(() => {});
   }
 }
 
@@ -96,9 +118,8 @@ export async function readManifestFromAppImage(
   if (raw === null) return null;
   try {
     return JSON.parse(raw);
-  } catch (err: any) {
-    throw new Error(
-      `Manifest at ${imageRef}:${pathInImage} is not valid JSON: ${err?.message || err}`
-    );
+  } catch {
+    // The parser's message quotes the input; keep file content out of errors and logs.
+    throw new Error(`Manifest at ${imageRef}:${pathInImage} is not valid JSON`);
   }
 }
