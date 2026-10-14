@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { getDataDir } from '../config';
 import { withFileLock } from './fileLock';
 import { writeJsonAtomic } from '../utils/atomicJson';
-import { ConflictError, NotFoundError } from '../utils/httpErrors';
+import { ConflictError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 export type AdminRole = 'viewer' | 'editor' | 'admin';
 
@@ -130,6 +130,11 @@ export async function addAdminUser(email: string, addedBy: string, role: AdminRo
       addedBy,
       role,
     };
+    // Every read validates the whole file against this schema, so a record it
+    // rejects would make every read throw and lock out every user.
+    if (!AdminUserSchema.safeParse(newUser).success) {
+      throw new ValidationError('Invalid email format');
+    }
 
     users.push(newUser);
     await saveAdminUsers(users);

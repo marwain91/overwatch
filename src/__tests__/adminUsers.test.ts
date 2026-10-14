@@ -46,6 +46,16 @@ describe('services/users roles', () => {
     expect((await addAdminUser('e@example.com', 'root@example.com', 'editor')).role).toBe('editor');
   });
 
+  it.each(['a..b@example.com', 'user!x@example.com', 'jan@example.c0m', 'foo'])(
+    'addAdminUser refuses %s, which the stored-file schema rejects, and leaves the file readable',
+    async (email) => {
+      await seed([rec('root@example.com')]);
+      const { addAdminUser, listAdminUsers } = await import('../services/users');
+      await expect(addAdminUser(email, 'root@example.com')).rejects.toMatchObject({ status: 400 });
+      expect((await listAdminUsers()).map(u => u.email)).toEqual(['root@example.com']);
+    },
+  );
+
   it('a legacy record without a role stays admin', async () => {
     await seed([rec('legacy@example.com')]);
     const { getUserRole, listAdminUsers } = await import('../services/users');
