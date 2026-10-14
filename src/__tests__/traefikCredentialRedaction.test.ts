@@ -83,7 +83,7 @@ describe('credential-bearing raw labels and broader typed rules', () => {
     overwatch: { host: 'ow.example.com', raw_labels: {
       'traefik.http.middlewares.ow-sso.forwardauth.address': 'https://u:pw-secret@auth.example.com/v?signature=sg-secret&a=1',
       'traefik.http.middlewares.ow-h.headers.customrequestheaders.X-Api-Key': 'rawhdr-secret',
-      'traefik.http.middlewares.ow-h.headers.customresponseheaders.X-Frame': 'keep-me',
+      'traefik.http.middlewares.ow-h.headers.customresponseheaders.X-Frame': 'hdr-value',
       'traefik.http.routers.ow.priority': '5',
     } },
     dashboard: { enabled: true, host: 'd.example.com', raw_labels: {
@@ -122,7 +122,8 @@ describe('credential-bearing raw labels and broader typed rules', () => {
     expect(ow.searchParams.get('signature')).toBe('••••••••');
     expect(ow.searchParams.get('a')).toBe('1');
     expect(labels['traefik.http.middlewares.ow-h.headers.customrequestheaders.X-Api-Key']).toBe('••••••••');
-    expect(labels['traefik.http.middlewares.ow-h.headers.customresponseheaders.X-Frame']).toBe('keep-me');
+    // Fail-closed: a custom header name is not an allowlisted leaf, so its value is hidden too.
+    expect(labels['traefik.http.middlewares.ow-h.headers.customresponseheaders.X-Frame']).toBe('••••••••');
     expect(labels['traefik.http.routers.ow.priority']).toBe('5');
   });
 
@@ -142,5 +143,55 @@ describe('credential-bearing raw labels and broader typed rules', () => {
     const mw = redactMiddlewareCredentials(EXTRA.middlewares as any)!;
     expect(restoreMiddlewareCredentials(mw, EXTRA.middlewares as any)).toEqual(EXTRA.middlewares);
     expect(() => restoreMiddlewareCredentials(mw, undefined)).toThrow(/masked placeholder/);
+  });
+});
+
+describe('raw label values are masked fail-closed', () => {
+  const LABELS = {
+    'traefik.http.routers.ow.priority': '5',
+    'traefik.http.routers.ow.middlewares': 'a@docker,b@docker',
+    'traefik.http.services.ow.loadbalancer.server.port': '8080',
+    'traefik.http.middlewares.m.ratelimit.average': '10',
+    'traefik.http.middlewares.p.plugin.x.apikey': 'plugin-secret',
+    'traefik.http.middlewares.f.forwardauth.tls.key': '/certs/private.key',
+    'foo.bar.anything': 'unknown-value',
+    'traefik.http.middlewares.i[0].ipallowlist.sourcerange[0]': '10.0.0.0/8',
+  };
+
+  async function labelsAs(role: 'viewer' | 'admin') {
+    vi.doMock('../config/loader', () => ({ loadConfig: () => ({ traefik: { overwatch: { host: 'ow', raw_labels: LABELS } } }) }));
+    vi.doMock('../services/app', () => ({ getApp: async () => null, applyApp: async () => ({}) }));
+    const { default: router } = await import('../routes/traefik');
+    const app = express();
+    app.use((_req, res, next) => { res.locals.user = { email: 'u@example.test', role }; next(); });
+    app.use('/api/traefik', router);
+    return (await request(app).get('/api/traefik/overwatch').expect(200)).body.raw_labels;
+  }
+
+  it('hides unknown leaves from non-admins but keeps keys and allowlisted values', async () => {
+    const labels = await labelsAs('viewer');
+    expect(Object.keys(labels)).toEqual(Object.keys(LABELS));
+    expect(JSON.stringify(labels)).not.toMatch(/plugin-secret|private\.key|unknown-value/);
+    expect(labels['traefik.http.middlewares.p.plugin.x.apikey']).toBe('••••••••');
+    expect(labels['traefik.http.middlewares.f.forwardauth.tls.key']).toBe('••••••••');
+    expect(labels['foo.bar.anything']).toBe('••••••••');
+    expect(labels['traefik.http.routers.ow.priority']).toBe('5');
+    expect(labels['traefik.http.routers.ow.middlewares']).toBe('a@docker,b@docker');
+    expect(labels['traefik.http.services.ow.loadbalancer.server.port']).toBe('8080');
+    expect(labels['traefik.http.middlewares.m.ratelimit.average']).toBe('10');
+    expect(labels['traefik.http.middlewares.i[0].ipallowlist.sourcerange[0]']).toBe('10.0.0.0/8');
+  });
+
+  it('admins see every value', async () => {
+    expect(await labelsAs('admin')).toEqual(LABELS);
+  });
+
+  it('re-saving the masked labels restores each stored value by exact key', async () => {
+    const { redactRawLabels, restoreRawLabels } = await import('../services/traefikRedaction');
+    expect(restoreRawLabels(redactRawLabels(LABELS), LABELS)).toEqual(LABELS);
+    // A placeholder under a key with nothing stored is refused, never persisted.
+    expect(() => restoreRawLabels({ 'foo.bar.other': '••••••••' }, LABELS)).toThrow(/masked placeholder/);
+    // Another key's value is not borrowed.
+    expect(() => restoreRawLabels({ 'foo.bar.other': '••••••••' }, { 'foo.bar.anything': 'x' })).toThrow(/masked placeholder/);
   });
 });

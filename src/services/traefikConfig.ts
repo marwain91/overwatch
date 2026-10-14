@@ -164,13 +164,18 @@ export async function updateAppTraefik(appId: string, body: unknown): Promise<Tr
   const parsed = TraefikAppSchema.parse(body);
   const app = await getApp(appId);
   if (!app) throw new NotFoundError(`App '${appId}' not found`);
-  // A non-admin editor saves what the masked read returned; keep the stored hashes.
-  const validated = { ...parsed, middlewares: restoreMiddlewareCredentials(parsed.middlewares, app.traefik?.middlewares) };
-  if (!validated.middlewares) delete validated.middlewares;
   const { createdAt: _c, updatedAt: _u, ...staticPart } = app;
   void _c; void _u;
-  await applyApp({ ...staticPart, traefik: validated }, 'api:traefik-update');
-  return validated;
+  // A non-admin editor saves what the masked read returned; the stored hashes are
+  // restored inside applyApp's lock so a concurrent rotation is not reverted.
+  const { app: saved } = await applyApp({ ...staticPart, traefik: parsed }, 'api:traefik-update', {
+    restore: (candidate, stored) => {
+      const t = (candidate as { traefik: TraefikApp }).traefik;
+      const middlewares = restoreMiddlewareCredentials(t.middlewares, stored?.traefik?.middlewares);
+      return { ...(candidate as object), traefik: { ...t, ...(middlewares ? { middlewares } : {}) } };
+    },
+  });
+  return saved.traefik ?? {};
 }
 
 // ─── Per-tenant Traefik ─────────────────────────────────────────────────────
@@ -192,12 +197,15 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
     if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') throw new NotFoundError(`Tenant '${tenantId}' not found in app '${appId}'`);
     throw err;
   }
-  const parsed = restoreTenantTraefik(TraefikTenantSchema.parse(body), await readTenantTraefik(appId, tenantId, { raw: true }));
-  assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);
-  if (parsed.host_aliases && parsed.host_aliases.length > 0) {
-    const normalized = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
-    parsed.host_aliases = normalized;
-  }
-  await writeTenantTraefik(appId, tenantId, parsed);
+  const incoming = TraefikTenantSchema.parse(body);
+  // Restoring masked credentials reads the stored value, so it runs under the write lock.
+  await writeTenantTraefik(appId, tenantId, async (stored) => {
+    const parsed = restoreTenantTraefik(incoming, stored);
+    assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);
+    if (parsed.host_aliases && parsed.host_aliases.length > 0) {
+      parsed.host_aliases = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
+    }
+    return parsed;
+  });
   return readTenantTraefik(appId, tenantId, { raw: true });
 }

@@ -46,7 +46,8 @@ router.get('/', asyncHandler(async (_req, res) => {
 // Must be placed before the :appId sub-routes so it doesn't get shadowed.
 router.get('/.trashed', asyncHandler(async (_req, res) => {
   const trashed = await listTrashedApps();
-  res.json(trashed);
+  // Each entry carries the full app definition.
+  res.json(isAdmin(res) ? trashed : trashed.map(t => ({ ...t, app: redactAppDefinition(t.app) })));
 }));
 
 // Create a new app. Admin-only because the payload includes registry credentials

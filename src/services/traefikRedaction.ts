@@ -13,7 +13,22 @@ const SECRET_HEADER = /(auth|credential|signature|bearer|token|secret|key|passwo
 // Query parameters of an auth URL that carry credentials.
 const SECRET_QUERY_PARAM = /(auth|credential|signature|sig|token|secret|key|password)/i;
 const FORWARD_AUTH_LABEL = /\.forwardauth\.address$/i;
-const HEADER_LABEL = /\.headers\.custom(?:request|response)headers\.([^.]+)$/i;
+
+// Raw labels are masked fail-closed: a value is shown only when the label's last
+// key segment is a known non-secret option. An unknown leaf (plugin settings,
+// `forwardauth.tls.key`, anything a future Traefik adds) stays hidden.
+const SAFE_LABEL_LEAVES = new Set([
+  'enable', 'rule', 'entrypoints', 'priority', 'service', 'middlewares', 'tls', 'certresolver',
+  'port', 'scheme', 'permanent', 'prefixes', 'prefix', 'regex', 'replacement', 'path',
+  'average', 'burst', 'period', 'amount', 'depth', 'sourcerange', 'excludedips',
+  'sslredirect', 'stsseconds', 'stsincludesubdomains', 'stspreload', 'forcestsheader',
+  'framedeny', 'contenttypenosniff', 'browserxssfilter', 'referrerpolicy',
+  'accesscontrolallowmethods', 'accesscontrolalloworiginlist', 'accesscontrolmaxage', 'addvaryheader',
+  'attempts', 'initialinterval', 'maxrequestbodybytes', 'memrequestbodybytes', 'maxresponsebodybytes',
+  'excludedcontenttypes', 'minresponsebodybytes', 'passhostheader', 'sticky', 'cookie', 'name',
+  'secure', 'httponly', 'samesite', 'healthcheck', 'interval', 'timeout',
+]);
+const labelLeaf = (key: string) => (key.split('.').pop() ?? '').replace(/\[\d+\]$/, '').toLowerCase();
 
 type Labels = Record<string, string>;
 
@@ -51,12 +66,8 @@ function redactAddress(address: string): string {
 function redactLabelValue(key: string, value: string): string {
   if (CREDENTIAL_LABEL_KEY.test(key)) return maskUserList(value);
   if (FORWARD_AUTH_LABEL.test(key)) return redactAddress(value);
-  const header = HEADER_LABEL.exec(key);
-  if (header && SECRET_HEADER.test(header[1])) return MASK;
-  return value;
+  return SAFE_LABEL_LEAVES.has(labelLeaf(key)) ? value : MASK;
 }
-const isCredentialLabel = (key: string) =>
-  CREDENTIAL_LABEL_KEY.test(key) || FORWARD_AUTH_LABEL.test(key) || /\.headers\.custom(?:request|response)headers\./i.test(key);
 const carriesMask = (v: string) => v.includes(MASK) || v.includes(encodeURIComponent(MASK));
 
 // ─── Read side ──────────────────────────────────────────────────────────────
@@ -179,13 +190,13 @@ export function restoreRawLabels<T extends Labels | undefined>(incoming: T, stor
   if (!incoming) return incoming;
   const out: Labels = { ...incoming };
   for (const [k, v] of Object.entries(out)) {
-    if (!isCredentialLabel(k)) continue;
     if (CREDENTIAL_LABEL_KEY.test(k)) {
       if (!v.split(',').some(e => isMaskedUserEntry(e.trim()))) continue;
       const storedEntries = (stored?.[k] ?? '').split(',').map(e => e.trim());
       out[k] = v.split(',').map(e => restoreUsers([e.trim()], storedEntries, `${where}.${k}`)[0]).join(',');
       continue;
     }
+    // Exact key: the placeholder stands for the value stored under this same key.
     const keep = stored?.[k];
     if (keep !== undefined && redactLabelValue(k, keep) === v) out[k] = keep;
     else if (carriesMask(v)) throw refuse(`${where}.${k}`);

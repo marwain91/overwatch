@@ -46,11 +46,16 @@ const asRole = (role: Role): express.RequestHandler => (_req, res, next) => {
 };
 
 async function appsApp(role: Role) {
-  const applyApp = vi.fn(async (def: any) => def);
+  // Mirrors the real applyApp contract: the restore hook sees the stored app.
+  const applyApp = vi.fn(async (def: any, _actor: string, opts: any = {}) => {
+    const next = opts.restore ? opts.restore(def, JSON.parse(JSON.stringify(APP))) : def;
+    return { result: 'updated', app: next, changedKeys: [] };
+  });
   vi.doMock('../services/app', () => ({
     listApps: async () => [JSON.parse(JSON.stringify(APP))],
+    listTrashedApps: async () => [{ app: JSON.parse(JSON.stringify(APP)), deletedAt: '2026-01-01T00:00:00.000Z', deletedBy: 'a@b.c', tenantCount: 0 }],
     getApp: async () => JSON.parse(JSON.stringify(APP)),
-    createApp: vi.fn(), updateApp: vi.fn(async (d: any) => d), deleteApp: vi.fn(), listTrashedApps: vi.fn(),
+    createApp: vi.fn(), updateApp: vi.fn(async (d: any) => d), deleteApp: vi.fn(),
     restoreApp: vi.fn(), purgeApp: vi.fn(), applyApp,
   }));
   vi.doMock('../adapters/registry', () => ({ getImageTagsForApp: vi.fn() }));
@@ -116,6 +121,20 @@ describe('app definitions for non-admin readers', () => {
   });
 });
 
+describe('trashed apps for non-admin readers', () => {
+  it.each(['viewer', 'editor', undefined] as const)('GET /api/apps/.trashed masks the stored definition for %s', async (role) => {
+    const { app } = await appsApp(role);
+    const res = await request(app).get('/api/apps/.trashed').expect(200);
+    expectAppMasked(res.body[0].app);
+    expect(res.body[0]).toMatchObject({ deletedBy: 'a@b.c', tenantCount: 0 });
+  });
+
+  it('admins get the stored definition', async () => {
+    const { app } = await appsApp('admin');
+    expect((await request(app).get('/api/apps/.trashed').expect(200)).body[0].app).toEqual(APP);
+  });
+});
+
 describe('tenant Traefik overrides for non-admin readers', () => {
   it.each(['viewer', 'editor', undefined] as const)('mask raw label credentials for %s', async (role) => {
     const res = await request(await tenantsApp(role)).get('/api/apps/demo/tenants/t1/traefik').expect(200);
@@ -137,20 +156,19 @@ describe('the mask placeholder is never written back', () => {
     const { app, applyApp } = await appsApp('editor');
     const read = (await request(app).get('/api/apps/demo/traefik').expect(200)).body;
     await request(app).put('/api/apps/demo/traefik').send(read).expect(200);
-    const saved = applyApp.mock.calls[0][0].traefik;
+    const saved = applyApp.mock.results.length ? (await applyApp.mock.results[0].value).app.traefik : undefined;
     expect(saved.middlewares.gate.users).toEqual(APP.traefik.middlewares.gate.users);
     expect(saved.middlewares.hdr.custom_request_headers['X-Api-Key']).toBe('hdr-secret');
     expect(JSON.stringify(saved)).not.toContain(MASK);
   });
 
   it('a placeholder with nothing stored to keep is a 400', async () => {
-    const { app, applyApp } = await appsApp('editor');
+    const { app } = await appsApp('editor');
     const body = { middlewares: { fresh: { type: 'basicAuth', users: [`carol:${MASK}`] } } };
     const res = await request(app).put('/api/apps/demo/traefik').send(body).expect(400);
     expect(res.body.error).toMatch(/masked placeholder/);
     const renamed = { middlewares: { gate: { type: 'basicAuth', users: [`mallory:${MASK}`] } } };
     await request(app).put('/api/apps/demo/traefik').send(renamed).expect(400);
-    expect(applyApp).not.toHaveBeenCalled();
   });
 
   it('PUT /api/apps/:id refuses a placeholder even from an admin', async () => {

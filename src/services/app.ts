@@ -323,9 +323,14 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
 export async function applyApp(
   input: unknown,
   _actor: string,
+  opts: { restore?: (candidate: unknown, stored: AppDefinition | undefined) => unknown } = {},
 ): Promise<{ result: ApplyResult; app: AppDefinition; changedKeys: string[] }> {
   return withFileLock('apps', async () => {
-    const parsed = AppDefinitionStaticSchema.safeParse(input);
+    // Read-modify-write callers (restoring masked credentials) see the stored app under this lock.
+    const candidate = opts.restore
+      ? opts.restore(input, (await readApps()).find(a => a.id === (input as { id?: string })?.id))
+      : input;
+    const parsed = AppDefinitionStaticSchema.safeParse(candidate);
     if (!parsed.success) {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`App definition failed validation: ${errors}`);
