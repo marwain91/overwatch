@@ -79,6 +79,11 @@ function render(schema, names, indent, isRoot = false) {
     case 'ZodUnion': return def.options.map(sub).join(' | ');
     case 'ZodDiscriminatedUnion': return [...def.options.values()].map(sub).join(' | ');
     case 'ZodObject': {
+      // Interfaces here model a plain strip-mode object. Passthrough/catchall
+      // allow extra keys and strict rejects them; none of that is expressible
+      // faithfully in the generated shape, so fail the build instead of lying.
+      const mode = def.unknownKeys !== 'strip' ? def.unknownKeys : def.catchall?._def?.typeName !== 'ZodNever' ? 'catchall' : null;
+      if (mode) throw new Error(`gen-ui-types: ZodObject uses .${mode}(), which cannot be rendered faithfully; extend render()`);
       const pad = '  '.repeat(indent + 1);
       const lines = Object.entries(schema.shape).map(([key, value]) => {
         const k = IDENT.test(key) ? key : q(key);

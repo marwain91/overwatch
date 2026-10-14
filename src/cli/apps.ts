@@ -98,6 +98,15 @@ async function auditCli(action: string, appId: string): Promise<void> {
   await flushAuditLog();
 }
 
+// The mutation already happened; a failed audit write must not report it as failed.
+async function auditCliBestEffort(action: string, appId: string): Promise<void> {
+  try {
+    await auditCli(action, appId);
+  } catch (err: any) {
+    console.error(`${YELLOW}Warning:${NC} ${action} succeeded but the audit entry could not be written: ${err?.message || err}`);
+  }
+}
+
 function askTypedId(appId: string): Promise<boolean> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   return new Promise(resolve => {
@@ -116,12 +125,12 @@ async function runRestore(args: string[]): Promise<void> {
   }
   try {
     await restoreApp(appId);
-    await auditCli('apps.restore', appId);
-    console.log(`${GREEN}apps.restore${NC} ${appId} ${BOLD}restored${NC}`);
   } catch (err: any) {
     console.error(`${RED}apps.restore failed:${NC} ${err?.message || err}`);
     process.exit(2);
   }
+  await auditCliBestEffort('apps.restore', appId);
+  console.log(`${GREEN}apps.restore${NC} ${appId} ${BOLD}restored${NC}`);
 }
 
 async function runPurge(args: string[]): Promise<void> {
@@ -142,12 +151,12 @@ async function runPurge(args: string[]): Promise<void> {
   }
   try {
     await purgeApp(appId);
-    await auditCli('apps.purge', appId);
-    console.log(`${GREEN}apps.purge${NC} ${appId} ${BOLD}purged${NC}`);
   } catch (err: any) {
     console.error(`${RED}apps.purge failed:${NC} ${err?.message || err}`);
     process.exit(2);
   }
+  await auditCliBestEffort('apps.purge', appId);
+  console.log(`${GREEN}apps.purge${NC} ${appId} ${BOLD}purged${NC}`);
 }
 
 export async function runApps(args: string[]): Promise<void> {
