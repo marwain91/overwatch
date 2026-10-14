@@ -169,7 +169,14 @@ export async function loadAliasContext(appId: string, tenantId: string): Promise
   }
 
   const reserved = new Set<string>();
-  for (const h of [hostOf(config?.mcp?.public_url), config?.traefik?.overwatch?.host, config?.traefik?.dashboard?.host]) {
+  // OVERWATCH_ADMIN_HOST is the admin UI host on installs that route Overwatch
+  // via the legacy compose labels instead of traefik.overwatch.
+  for (const h of [
+    hostOf(config?.mcp?.public_url),
+    config?.traefik?.overwatch?.host,
+    config?.traefik?.dashboard?.host,
+    process.env.OVERWATCH_ADMIN_HOST,
+  ]) {
     if (h) reserved.add(normalizeHost(h));
   }
 

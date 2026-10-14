@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An unauthenticated client can no longer crash Overwatch through `/ws`.** A WebSocket upgrade whose request target does not parse, a `Host` header that is not a valid URL host (`host:x`), or a first frame over the 4 KB payload limit each raised an uncaught error and took the whole process down: UI, API, MCP and any tenant update or restore in flight.
 - **Editing a tenant override without re-sending `sensitive` no longer unmasks it.** An omitted flag keeps the stored one, and a new override of a sensitive global variable inherits its flag; previously both defaulted to non-sensitive and the value became visible to viewers.
 - **Deleting a backup snapshot checks that it belongs to the app.** Apps may share a restic repository, and `restic forget <id>` removed any snapshot in it, so an admin deleting through app A could remove app B's backup. An id that is not tagged for the app now answers `404`.
+- **A tenant can no longer claim the admin UI host on installs routed by the legacy `OVERWATCH_ADMIN_HOST` labels.** That host is now reserved like `traefik.overwatch.host`, so an editor cannot create a tenant on it or add it as an alias.
 - **Client registration caps each `redirect_uris` entry at 2048 characters.** Registration is unauthenticated and every client is persisted, so one request could add about 1 MB to the OAuth store.
 
 ### Fixed

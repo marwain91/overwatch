@@ -210,6 +210,22 @@ describe('assertTenantDomainAllowed (primary domain at create time)', () => {
     await expect(p).rejects.toThrow(re);
   });
 
+  it('rejects the legacy admin host from OVERWATCH_ADMIN_HOST, as a domain and as an alias', async () => {
+    const prev = process.env.OVERWATCH_ADMIN_HOST;
+    // Inside the app's alias template, so only the reserved-host rule can refuse it.
+    process.env.OVERWATCH_ADMIN_HOST = 'Admin.shop.example.com';
+    try {
+      await addTenant('shop', 't1', 't1.shop.example.com');
+      const { assertTenantDomainAllowed } = await import('../services/tenantTraefik');
+      const { updateTenantTraefik } = await import('../services/traefikConfig');
+      const { ValidationError } = await import('../utils/httpErrors');
+      await expect(assertTenantDomainAllowed('shop', 't9', 'admin.shop.example.com')).rejects.toBeInstanceOf(ValidationError);
+      await expect(updateTenantTraefik('shop', 't1', { host_aliases: ['admin.shop.example.com'] })).rejects.toThrow(/Overwatch/i);
+    } finally {
+      if (prev === undefined) delete process.env.OVERWATCH_ADMIN_HOST; else process.env.OVERWATCH_ADMIN_HOST = prev;
+    }
+  });
+
   it('rejects another tenant\'s domain and alias (case-insensitive) with an exposed conflict', async () => {
     await addTenant('shop', 't1', 't1.shop.example.com', ['alias.shop.example.com']);
     const { assertTenantDomainAllowed } = await import('../services/tenantTraefik');
