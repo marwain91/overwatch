@@ -40,6 +40,7 @@ describe('tenantDir', () => {
   ])('rejects %j / %j', async (appId, tenantId) => {
     const { tenantDir } = await load();
     expect(() => tenantDir(appId, tenantId)).toThrow(/Invalid (app|tenant) id/);
+    try { tenantDir(appId, tenantId); } catch (err: any) { expect(err.status).toBe(400); }
   });
 
   it('assertTenantDir rejects a tenant dir that is a symlink out of the apps dir', async () => {
@@ -70,6 +71,22 @@ describe('listTenantDirs', () => {
     const all = await listTenantDirs();
     expect(all.map(t => `${t.appId}/${t.tenantId}`).sort()).toEqual(['a/t1', 'a/t2', 'b/t3']);
     expect(all.find(t => t.tenantId === 't3')!.dir).toBe(path.join(appsDir, 'b', 'tenants', 't3'));
+  });
+
+  it('lists a tenant dir that is a symlink to a directory, and skips a symlink to a file', async () => {
+    const { listTenantDirs, listTenantDirsSync } = await load();
+    const target = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-link-'));
+    try {
+      await mkTenant('a', 'real');
+      await fs.symlink(target, path.join(appsDir, 'a', 'tenants', 'linked'));
+      await fs.writeFile(path.join(target, 'f'), 'x');
+      await fs.symlink(path.join(target, 'f'), path.join(appsDir, 'a', 'tenants', 'filelink'));
+      await fs.symlink(target, path.join(appsDir, 'a', 'tenants', '.dotlink'));
+      expect((await listTenantDirs('a')).map(t => t.tenantId).sort()).toEqual(['linked', 'real']);
+      expect(listTenantDirsSync(appsDir).map(t => t.tenantId).sort()).toEqual(['linked', 'real']);
+    } finally {
+      await fs.rm(target, { recursive: true, force: true });
+    }
   });
 
   it('scopes to one app and tolerates a missing tenants dir or apps dir', async () => {
@@ -117,6 +134,12 @@ describe('readTenantEnv', () => {
     // Surrounding whitespace is trimmed by the line parser, as before.
     expect(env.KEY).toBe(value.trim() === value || value.includes('$') ? value : value.trim());
     expect(env.OTHER).toBe('1');
+  });
+
+  it('reads a value wrapped in matching quotes without $ as compose does (quotes stripped)', async () => {
+    const { readTenantEnv, formatEnvLine } = await load();
+    await mkTenant('a', 't', `${formatEnvLine('KEY', '"foo"')}\n${formatEnvLine('K2', "'bar'")}\n`);
+    expect(await readTenantEnv('a', 't')).toEqual({ KEY: 'foo', K2: 'bar' });
   });
 
   it('parses comments, blanks and CRLF, and leaves hand-written unquoted values alone', async () => {

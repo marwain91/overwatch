@@ -67,8 +67,14 @@ export async function tightenSecretFilePermissions(): Promise<number> {
   for (const name of secretDataFiles()) await tighten(path.join(dataDir, name));
 
   for (const { dir } of await listTenantDirs(undefined, { onError: () => {} })) {
-    await tighten(path.join(dir, '.env'));
-    await tighten(path.join(dir, 'shared.env'));
+    // One unreadable tenant file must not leave the other tenants' secrets loose.
+    for (const file of ['.env', 'shared.env']) {
+      try {
+        await tighten(path.join(dir, file));
+      } catch (err: any) {
+        console.error(`[startup] Could not tighten permissions on ${path.join(dir, file)}: ${err?.message || err}`);
+      }
+    }
   }
 
   return count;

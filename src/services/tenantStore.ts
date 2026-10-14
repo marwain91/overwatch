@@ -4,6 +4,7 @@ import * as path from 'path';
 import { getAppsDir } from '../config';
 import { parseEnv, unquoteEnvValue } from '../utils/env';
 import { assertWithinDir } from '../utils/security';
+import { ValidationError } from '../utils/httpErrors';
 
 /**
  * The one place that knows the on-disk tenant layout:
@@ -12,7 +13,7 @@ import { assertWithinDir } from '../utils/security';
 
 function assertSegment(kind: 'app' | 'tenant', id: string): void {
   if (typeof id !== 'string' || id === '' || id === '.' || id === '..' || /[\\/\0]/.test(id)) {
-    throw new Error(`Invalid ${kind} id: ${JSON.stringify(id)}`);
+    throw new ValidationError(`Invalid ${kind} id: ${JSON.stringify(id)}`);
   }
 }
 
@@ -58,7 +59,16 @@ const ABSENT = new Set(['ENOENT', 'ENOTDIR']);
 
 async function subdirs(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
-  return entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name);
+  const out: string[] = [];
+  for (const e of entries) {
+    if (e.name.startsWith('.')) continue;
+    if (e.isDirectory()) out.push(e.name);
+    else if (e.isSymbolicLink()) {
+      // A symlinked tenant dir counts; callers that need containment use assertTenantDir.
+      try { if ((await fs.stat(path.join(dir, e.name))).isDirectory()) out.push(e.name); } catch { /* dangling */ }
+    }
+  }
+  return out;
 }
 
 /**
@@ -103,7 +113,11 @@ export function listTenantDirsSync(appsDir: string): TenantRef[] {
   const dirs = (dir: string): string[] => {
     try {
       return fsSync.readdirSync(dir, { withFileTypes: true })
-        .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+        .filter(e => {
+          if (e.name.startsWith('.')) return false;
+          if (e.isDirectory()) return true;
+          try { return e.isSymbolicLink() && fsSync.statSync(path.join(dir, e.name)).isDirectory(); } catch { return false; }
+        })
         .map(e => e.name);
     } catch {
       return [];

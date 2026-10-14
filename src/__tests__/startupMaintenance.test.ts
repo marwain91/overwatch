@@ -40,3 +40,30 @@ describe('backfillComposeProjectNames', () => {
     expect(await backfillComposeProjectNames()).toBe(0);
   });
 });
+
+describe('tightenSecretFilePermissions', () => {
+  it('logs and continues when one tenant file cannot be tightened', async () => {
+    const a = path.join(root, 'apps', 'acme', 'tenants', 'bad');
+    const b = path.join(root, 'apps', 'acme', 'tenants', 'good');
+    for (const d of [a, b]) {
+      await fs.mkdir(d, { recursive: true });
+      await fs.writeFile(path.join(d, '.env'), 'X=1', { mode: 0o644 });
+    }
+    vi.doMock('fs/promises', async () => {
+      const real = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+      const stat = (async (p: any, ...rest: any[]) => {
+        if (String(p).includes(path.join('bad', '.env'))) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return (real.stat as any)(p, ...rest);
+      }) as typeof real.stat;
+      return { ...real, stat, default: { ...real, stat } };
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { tightenSecretFilePermissions } = await import('../services/startupMaintenance');
+    const count = await tightenSecretFilePermissions();
+    expect(count).toBe(1);
+    expect((await fs.stat(path.join(b, '.env'))).mode & 0o777).toBe(0o600);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining('[startup]'));
+    err.mockRestore();
+    vi.doUnmock('fs/promises');
+  });
+});
