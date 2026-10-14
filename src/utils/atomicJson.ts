@@ -30,7 +30,12 @@ export async function writeFileAtomic(
   opts: { mode?: number } = {}
 ): Promise<void> {
   // Without an explicit mode an existing target keeps its own; new files get 0644.
-  const mode = opts.mode ?? (await fs.stat(filePath).then(st => st.mode & 0o777, () => 0o644));
+  // Only "does not exist" means new: any other stat failure (EACCES, EIO, ...)
+  // must surface instead of silently re-permissioning an existing file.
+  const mode = opts.mode ?? (await fs.stat(filePath).then(st => st.mode & 0o777, (err: any) => {
+    if (err?.code === 'ENOENT') return 0o644;
+    throw err;
+  }));
   const dir = path.dirname(filePath);
   const tmp = path.join(
     dir,
