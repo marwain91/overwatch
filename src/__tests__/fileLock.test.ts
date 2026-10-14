@@ -46,3 +46,39 @@ describe('R1 withFileLock — cross-process-safe lockfile + in-process serialisa
 });
 
 
+
+describe('stale lockfile reclamation', () => {
+  async function setup(content: string) {
+    const dataDir = path.join(tmpRoot, 'data');
+    await fs.mkdir(path.join(dataDir, '.locks'), { recursive: true });
+    await fs.writeFile(path.join(dataDir, '.locks', 'test.lock'), content, { mode: 0o600 });
+    vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
+    return (await import('../services/fileLock')).withFileLock;
+  }
+
+  // Overwatch is PID 1 on every container start, so a lock left by a killed
+  // previous run carries our own PID and must not look like a live holder.
+  it('reclaims immediately a lockfile that carries our own PID', async () => {
+    const withFileLock = await setup(`${process.pid}\n${Date.now()}\n`);
+    const started = Date.now();
+    expect(await withFileLock('test', async () => 'ok')).toBe('ok');
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('does not reclaim a lock held by a live other process', async () => {
+    const withFileLock = await setup(`${process.ppid}\n${Date.now() - 3_600_000}\n`);
+    let acquired = false;
+    const p = withFileLock('test', async () => { acquired = true; });
+    await new Promise(r => setTimeout(r, 400));
+    expect(acquired).toBe(false);
+    // Release the foreign lock so the pending acquire can finish.
+    await fs.unlink(path.join(tmpRoot, 'data', '.locks', 'test.lock'));
+    await p;
+    expect(acquired).toBe(true);
+  });
+
+  it('still reclaims an old lockfile whose PID is dead', async () => {
+    const withFileLock = await setup(`4194304\n${Date.now() - 3_600_000}\n`);
+    expect(await withFileLock('test', async () => 'ok')).toBe('ok');
+  });
+});

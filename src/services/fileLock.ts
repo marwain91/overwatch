@@ -45,8 +45,14 @@ async function tryAcquireLockfile(key: string): Promise<boolean> {
       const [pidStr, tsStr] = content.split('\n');
       const pid = Number(pidStr);
       const ts = Number(tsStr);
-      const alive = isPidAlive(pid);
-      const recent = Number.isFinite(ts) && Date.now() - ts < STALE_LOCK_MS;
+      // A lockfile carrying our own PID cannot belong to a live holder: every
+      // in-process holder of a key is serialised by `inProcess` before it gets
+      // here, so it is a leftover of a killed earlier run. That matters in a
+      // container, where Overwatch is PID 1 on every start and the PID check
+      // below would otherwise report the dead run as alive forever.
+      const ours = pid === process.pid;
+      const alive = !ours && isPidAlive(pid);
+      const recent = !ours && Number.isFinite(ts) && Date.now() - ts < STALE_LOCK_MS;
       if (!alive && !recent) {
         await fsp.unlink(lp).catch(() => {});
         return tryAcquireLockfile(key);
@@ -68,7 +74,7 @@ async function releaseLockfile(key: string): Promise<void> {
  * lockfile in <dataDir>/.locks/. Within a single process, an in-memory Map
  * serialises re-entrant calls so we don't deadlock on our own lockfile.
  *
- * Stale lockfiles (dead PID + older than STALE_LOCK_MS) are reclaimed.
+ * Stale lockfiles (own PID, or dead PID + older than STALE_LOCK_MS) are reclaimed.
  */
 export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   // In-process wait: if another async task in this process holds the lock, queue.
