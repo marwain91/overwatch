@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
-import { PassThrough } from 'stream';
+import { PassThrough, Writable } from 'stream';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -62,5 +62,61 @@ describe.each([
   it('passes a short stderr through unchanged', async () => {
     spawnMock.mockImplementation(() => failingProc('ERROR 1045: access denied', 1));
     await expect(make().restoreDatabase('t1', sqlFile)).rejects.toThrow('ERROR 1045: access denied');
+  });
+});
+
+/** A client that stops reading stdin (EPIPE on write), then exits with `code`. */
+function earlyExitProc(stderr: string, code: number) {
+  const proc: any = new EventEmitter();
+  proc.stdout = new PassThrough();
+  proc.stderr = new PassThrough();
+  proc.stdin = new Writable({
+    write(_chunk, _enc, cb) { cb(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })); },
+  });
+  proc.kill = vi.fn();
+  setTimeout(() => { proc.stderr.end(stderr); setImmediate(() => proc.emit('close', code)); }, 20);
+  return proc;
+}
+
+/** A client that writes `body` to stdout and exits 0. */
+function dumpingProc(body: string) {
+  const proc: any = new EventEmitter();
+  proc.stdout = new PassThrough();
+  proc.stderr = new PassThrough();
+  proc.kill = vi.fn();
+  setImmediate(() => { proc.stdout.end(body); proc.stderr.end(); setImmediate(() => proc.emit('close', 0)); });
+  return proc;
+}
+
+describe.each([
+  ['mysql', () => new MySQLAdapter(cfg('mariadb'))],
+  ['postgres', () => new PostgresAdapter(cfg('postgres'))],
+] as const)('%s dump/restore stream errors', (_name, make) => {
+  it('rejects with the client error when the client exits while the dump is still streaming', async () => {
+    await fs.writeFile(sqlFile, 'insert into t values (1);\n'.repeat(20_000));
+    spawnMock.mockImplementation(() => earlyExitProc('ERROR 1273: Unknown collation', 1));
+    await expect(make().restoreDatabase('t1', sqlFile)).rejects.toThrow('Unknown collation');
+  });
+
+  it('rejects and kills the client when the dump file cannot be read', async () => {
+    const proc = earlyExitProc('', 0);
+    spawnMock.mockImplementation(() => proc);
+    await expect(make().restoreDatabase('t1', path.join(tmpDir, 'missing.sql'))).rejects.toThrow(/ENOENT/);
+    expect(proc.kill).toHaveBeenCalled();
+  });
+
+  it('resolves a dump only once the file is fully written', async () => {
+    const body = 'INSERT INTO t VALUES (1);\n'.repeat(50_000);
+    spawnMock.mockImplementation(() => dumpingProc(body));
+    const out = path.join(tmpDir, 'out.sql');
+    await make().dumpDatabase('t1', out);
+    expect(await fs.readFile(out, 'utf-8')).toBe(body);
+  });
+
+  it('kills the dump client when the output file cannot be written', async () => {
+    const proc = dumpingProc('x');
+    spawnMock.mockImplementation(() => proc);
+    await expect(make().dumpDatabase('t1', path.join(tmpDir, 'no-such-dir', 'out.sql'))).rejects.toThrow(/ENOENT/);
+    expect(proc.kill).toHaveBeenCalled();
   });
 });

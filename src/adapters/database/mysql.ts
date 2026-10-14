@@ -164,13 +164,19 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       let stderr = '';
       proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
-      const fail = (err: Error) => { out.destroy(); reject(err); };
+      const fail = (err: Error) => { proc.kill(); out.destroy(); reject(err); };
       proc.on('error', fail);
       out.on('error', fail);
       proc.on('close', (code) => {
-        out.end();
-        if (code === 0) resolve();
-        else reject(new Error(`mysqldump exited ${code}: ${stderr.slice(0, 1000)}`));
+        if (code !== 0) {
+          out.end();
+          reject(new Error(`mysqldump exited ${code}: ${stderr.slice(0, 1000)}`));
+          return;
+        }
+        // Resolve only once the dump is on disk: a write that fails on the
+        // final flush must fail the backup, not archive a truncated dump.
+        if (out.writableFinished) resolve();
+        else { out.once('finish', () => resolve()); out.end(); }
       });
     });
   }
@@ -186,7 +192,12 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
         containerName, 'mysql', '-u', this.config.rootUser, dbName,
       ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
 
+      // Both streams need error listeners: an unhandled stream error is
+      // uncaught and kills the process. The client closes stdin early when it
+      // stops at a SQL error (EPIPE here; its exit code and stderr say why).
       const input = createReadStream(inputPath);
+      input.on('error', (err) => { proc.kill(); reject(err); });
+      proc.stdin.on('error', () => {});
       input.pipe(proc.stdin);
 
       let stderr = '';
