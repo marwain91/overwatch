@@ -1,6 +1,9 @@
 import { DatabaseAdapter, DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
 import { assertSafeIdentifier } from '../../utils/security';
 
+/** Restore errors keep only the tail of the client's stderr (where the actual failure is). */
+export const STDERR_TAIL_BYTES = 2048;
+
 /**
  * Abstract base class for database adapters.
  * Provides shared implementations for common operations.

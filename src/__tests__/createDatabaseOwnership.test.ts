@@ -76,6 +76,23 @@ describe('mysql createDatabase ownership', () => {
     expect(conn.queries.some(q => q.startsWith('DROP USER'))).toBe(false);
   });
 
+  it('rollback of a pre-existing user revokes the grant on the dropped database, before the drop', async () => {
+    const conn = fakeConn({ userExists: true, failOn: 'FLUSH PRIVILEGES' });
+    await expect(make(conn).createDatabase('t1', 'pw')).rejects.toThrow('boom');
+    const revoke = conn.queries.findIndex(q => q === "REVOKE ALL PRIVILEGES ON `p_t1`.* FROM 'p_t1'@'%'");
+    const drop = conn.queries.indexOf('DROP DATABASE IF EXISTS `p_t1`');
+    expect(revoke).toBeGreaterThan(-1);
+    expect(drop).toBeGreaterThan(revoke);
+    expect(conn.queries.some(q => q.startsWith('DROP USER'))).toBe(false);
+  });
+
+  it('rollback of a user this call created drops the user instead of revoking', async () => {
+    const conn = fakeConn({ failOn: 'FLUSH PRIVILEGES' });
+    await expect(make(conn).createDatabase('t1', 'pw')).rejects.toThrow('boom');
+    expect(conn.queries.some(q => q.startsWith('REVOKE'))).toBe(false);
+    expect(conn.queries).toContain("DROP USER IF EXISTS 'p_t1'@'%'");
+  });
+
   it('on partial failure never drops a pre-existing database', async () => {
     const conn = fakeConn({ dbExists: true, failOn: 'CREATE USER' });
     await expect(make(conn).createDatabase('t1', 'pw')).rejects.toThrow('boom');
