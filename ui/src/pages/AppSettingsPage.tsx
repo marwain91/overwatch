@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { useApp, useUpdateApp, useDeleteApp } from '../hooks/useApps';
+import { useApp, useUpdateApp, useDeleteApp, useTestRegistry } from '../hooks/useApps';
 import { useCan } from '../hooks/useRole';
 import type { AppService, AppRegistry, AppBackup, AppAdminAccess } from '../lib/types';
 import { RegistryForm } from '../components/RegistryForm';
-import { ServiceEditor } from '../components/ServiceEditor';
+import { ServiceEditor, useServiceKeys } from '../components/ServiceEditor';
 import { AppTraefikSection } from '../components/AppTraefikSection';
 
 export function AppSettingsPage() {
@@ -16,12 +16,17 @@ export function AppSettingsPage() {
   const deleteApp = useDeleteApp();
   // PUT/DELETE on the app definition are admin-only; others get a read-only form.
   const isAdmin = useCan('admin');
+  // The registry test route is editor+ and only reads saved config, so it
+  // lives outside the admin-only fieldset.
+  const canTestRegistry = useCan('editor');
+  const testRegistry = useTestRegistry(appId!);
 
   const [name, setName] = useState('');
   const [domainTemplate, setDomainTemplate] = useState('');
   const [defaultImageTag, setDefaultImageTag] = useState('latest');
   const [registry, setRegistry] = useState<AppRegistry | null>(null);
   const [services, setServices] = useState<AppService[]>([]);
+  const serviceKeys = useServiceKeys(0);
   const [backup, setBackup] = useState<AppBackup | null>(null);
   const [adminAccess, setAdminAccess] = useState<AppAdminAccess | null>(null);
   const [showDelete, setShowDelete] = useState(false);
@@ -34,6 +39,7 @@ export function AppSettingsPage() {
       setDefaultImageTag(app.default_image_tag ?? 'latest');
       setRegistry(app.registry);
       setServices(app.services);
+      serviceKeys.reset(app.services.length);
       setBackup(app.backup || { enabled: false, provider: 's3' });
       setAdminAccess(app.admin_access || { enabled: false });
     }
@@ -130,19 +136,46 @@ export function AppSettingsPage() {
         <div className="space-y-3">
           {services.map((svc, i) => (
             <ServiceEditor
-              key={i}
+              key={serviceKeys.keys[i]}
               service={svc}
               onChange={(updated) => setServices(services.map((s, j) => (j === i ? updated : s)))}
-              onRemove={() => setServices(services.filter((_, j) => j !== i))}
+              onRemove={() => {
+                serviceKeys.remove(i);
+                setServices(services.filter((_, j) => j !== i));
+              }}
             />
           ))}
-          <button className="btn btn-secondary btn-sm" onClick={() => setServices([...services, { name: '', required: false, is_init_container: false }])}>
+          <button className="btn btn-secondary btn-sm" onClick={() => {
+            serviceKeys.add();
+            setServices([...services, { name: '', required: false, is_init_container: false }]);
+          }}>
             + Add Service
           </button>
         </div>
       </div>
 
       </fieldset>
+
+      {canTestRegistry && (
+        <div className="card mb-4 flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-content-secondary">Registry connection</h2>
+            <p className="mt-1 text-xs text-content-faint">Checks the saved registry settings by listing image tags.</p>
+          </div>
+          <button
+            className="btn btn-secondary shrink-0"
+            disabled={testRegistry.isPending}
+            onClick={() =>
+              testRegistry.mutate(undefined, {
+                onSuccess: (r) => toast.success(`Registry reachable (${r.tagsFound} tag${r.tagsFound === 1 ? '' : 's'} found)`),
+                onError: (err) => toast.error(err.message),
+              })
+            }
+          >
+            {testRegistry.isPending ? 'Testing...' : 'Test connection'}
+          </button>
+        </div>
+      )}
 
       <AppTraefikSection appId={appId!} />
 
