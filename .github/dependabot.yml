@@ -6,6 +6,12 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    # zod stays on v3: the MCP SDK and scripts/gen-ui-types.mjs depend on zod v3
+    # internals. A v4 migration is a separate project.
+    ignore:
+      - dependency-name: zod
+        update-types:
+          - version-update:semver-major
     groups:
       dev-dependencies:
         dependency-type: development
