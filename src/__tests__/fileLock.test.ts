@@ -179,4 +179,16 @@ describe('in-process lock wait deadline', () => {
     await Promise.all([first, second]);
     expect(order).toEqual(['first', 'second']);
   });
+
+  it('a lockfile held by another live process times out with the same 409 busy error', async () => {
+    process.env.OVERWATCH_LOCK_TIMEOUT_MS = '200';
+    const { withFileLock } = await load();
+    const { ConflictError } = await import('../utils/httpErrors');
+    await fs.mkdir(path.join(tmpRoot, 'data', '.locks'), { recursive: true });
+    await fs.writeFile(path.join(tmpRoot, 'data', '.locks', 'k.lock'), `${process.ppid}\n${Date.now()}\n`, { mode: 0o600 });
+    const err = await withFileLock('k', async () => 'never').catch(e => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.status).toBe(409);
+    expect(err.message).toMatch(/busy/);
+  });
 });

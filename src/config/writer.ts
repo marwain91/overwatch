@@ -93,7 +93,8 @@ export async function updateOverwatchConfig<T = void>(
     const raw = (yaml.load(content) as Record<string, any>) ?? {};
     const before = dumpOverwatchYaml(raw);
     const result = await mutate(raw);
-    // A no-op mutation (e.g. deleting an absent key) must not rewrite the file.
+    // A no-op mutation (e.g. deleting an absent key) must not rewrite the file. It also
+    // skips validation, so an already-invalid file is left as is (nothing is written).
     if (dumpOverwatchYaml(raw) !== before) await writeUnlocked(raw);
     return result;
   });

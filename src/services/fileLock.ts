@@ -133,7 +133,7 @@ export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promis
   try {
     while (!(await tryAcquireLockfile(key))) {
       if (Date.now() > deadline) {
-        throw new Error(`Timed out acquiring file lock '${key}' after ${Math.round(waitMs / 1000)}s`);
+        throw busyError(key, waitMs);
       }
       await new Promise(r => setTimeout(r, delay));
       delay = Math.min(delay * 2, maxDelay);

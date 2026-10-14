@@ -132,24 +132,71 @@ describe('readApps cache', () => {
     expect((await listApps())[0].default_image_tag).toBe('v3');
   });
 
-  it('invalidates after the write, so a read racing the write cannot leave stale data cached', async () => {
-    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme', { default_image_tag: 'v1' })));
-    let duringWrite: (() => Promise<unknown>) | undefined;
+  // Constant stat results make the cache signature blind, so these tests see only invalidation.
+  function blindStat() {
+    vi.doMock('fs/promises', async (orig) => {
+      const actual = await orig<any>();
+      const stat = async () => ({ mtimeMs: 1, size: 1, ino: 1, mtime: new Date(0) });
+      return { ...actual, stat, default: { ...actual, stat } };
+    });
+  }
+
+  it('invalidates after the write, so a read racing the runtime write cannot leave stale data cached', async () => {
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme')));
+    blindStat();
+    let midWrite: (() => Promise<unknown>) | undefined;
+    let hookRan = false;
     vi.doMock('../utils/atomicJson', async (orig) => {
       const actual = await orig<typeof import('../utils/atomicJson')>();
       return {
         ...actual,
         writeJsonAtomic: async (...args: Parameters<typeof actual.writeJsonAtomic>) => {
-          await duringWrite?.();
+          if (String(args[0]).endsWith('apps.runtime.json') && midWrite) {
+            const hook = midWrite;
+            midWrite = undefined; // one race only
+            hookRan = true;
+            await hook();
+          }
+          return actual.writeJsonAtomic(...args);
+        },
+      };
+    });
+    const { listApps, updateApp } = await import('../services/app');
+    const first = await listApps();
+    await listApps();
+    // updateApp rewrites the static file, then the runtime store (new updatedAt). A reader
+    // that lands inside that last write caches the old runtime data.
+    midWrite = () => listApps();
+    const updated = await updateApp({ id: 'acme', name: 'Renamed' } as any);
+    expect(updated.updatedAt).not.toBe(first[0].updatedAt);
+    const after = (await listApps())[0];
+    expect(hookRan).toBe(true);
+    expect(after.updatedAt).toBe(updated.updatedAt);
+    expect(after.name).toBe('Renamed');
+    vi.doUnmock('../utils/atomicJson');
+  });
+
+  it('a throwing write still clears the cache', async () => {
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme', { default_image_tag: 'v1' })));
+    blindStat();
+    let failNext = false;
+    vi.doMock('../utils/atomicJson', async (orig) => {
+      const actual = await orig<typeof import('../utils/atomicJson')>();
+      return {
+        ...actual,
+        writeJsonAtomic: async (...args: Parameters<typeof actual.writeJsonAtomic>) => {
+          if (failNext) throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
           return actual.writeJsonAtomic(...args);
         },
       };
     });
     const { listApps, updateApp } = await import('../services/app');
     await listApps();
-    duringWrite = () => listApps(); // a reader lands mid-write and sees the old contents
-    await updateApp({ id: 'acme', default_image_tag: 'v2' } as any);
-    duringWrite = undefined;
+    await listApps();
+    await fs.writeFile(appFile('acme'), JSON.stringify(validStatic('acme', { default_image_tag: 'v2' })));
+    expect((await listApps())[0].default_image_tag).toBe('v1'); // blind signature: cached
+    failNext = true;
+    await expect(updateApp({ id: 'acme', name: 'x' } as any)).rejects.toThrow('ENOSPC');
     expect((await listApps())[0].default_image_tag).toBe('v2');
     vi.doUnmock('../utils/atomicJson');
   });

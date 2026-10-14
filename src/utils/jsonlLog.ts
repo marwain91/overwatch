@@ -41,13 +41,26 @@ export class JsonlLog {
   private errorLogged = false;
   private inPlaceLogged = false;
   private retryNotBefore = 0;
+  private dropLogged = false;
 
   constructor(private readonly getFile: () => string, private readonly tag: string) {}
 
   /** Queue one pre-serialised line (no trailing newline). Never throws. */
   append(line: string): void {
     this.queue.push(line + '\n');
+    this.capQueue();
     this.run(() => this.drain());
+  }
+
+  /** Drop the oldest lines beyond the cap; logs once per outage. */
+  private capQueue(): void {
+    const dropped = this.queue.length - MAX_QUEUED_LINES;
+    if (dropped <= 0) return;
+    this.queue.splice(0, dropped);
+    if (!this.dropLogged) {
+      this.dropLogged = true;
+      console.error(`[${this.tag}] dropped oldest queued line(s) during a write outage (cap ${MAX_QUEUED_LINES})`);
+    }
   }
 
   /** Resolves once everything queued so far has been written. */
@@ -86,21 +99,22 @@ export class JsonlLog {
           await fs.chmod(file, 0o600).catch(() => {});
         });
         this.errorLogged = false;
+        this.dropLogged = false;
         this.retryNotBefore = 0;
         attempts = 0;
       } catch (err: any) {
         // Keep the lines (one entry each, so the cap counts lines) and log once per outage.
         this.queue.unshift(...lines);
-        const dropped = this.queue.length - MAX_QUEUED_LINES;
-        if (dropped > 0) {
-          this.queue.splice(0, dropped);
-          console.error(`[${this.tag}] dropped ${dropped} oldest queued line(s) during a write outage`);
-        }
+        this.capQueue();
         if (!this.errorLogged) {
           console.error(`[${this.tag}] write failed: ${err?.message || err}. Retrying with backoff; up to ${MAX_QUEUED_LINES} lines are kept in memory meanwhile.`);
           this.errorLogged = true;
         }
         attempts++;
+        if (force) {
+          // Shutdown path: always say what was lost, even if the outage was logged before.
+          console.error(`[${this.tag}] ${this.queue.length} queued line(s) not written`);
+        }
         if (force || attempts >= MAX_DRAIN_ATTEMPTS) {
           this.retryNotBefore = Date.now() + RETRY_COOLDOWN_MS;
           return;

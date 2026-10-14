@@ -92,4 +92,31 @@ describe('JsonlLog during a write outage', () => {
     expect((log as any).queue.at(-1)).toBe('line 10049\n');
     expect(errorCalls().some(m => m.includes('dropped'))).toBe(true);
   });
+
+  it('enforces the cap at append time too, during the cooldown', async () => {
+    vi.useFakeTimers();
+    const { JsonlLog } = await import('../utils/jsonlLog');
+    const log = new JsonlLog(() => file, 'test');
+    log.append('first');
+    await vi.advanceTimersByTimeAsync(20_000); // gave up; cooldown active
+    const callsBefore = appendCalls;
+    for (let i = 0; i < 10_100; i++) log.append(`line ${i}`);
+    expect((log as any).queue.length).toBeLessThanOrEqual(10_000); // no waiting for a failed drain
+    expect((log as any).queue.at(-1)).toBe('line 10099\n');
+    expect(appendCalls).toBe(callsBefore);
+    expect(errorCalls().filter(m => m.includes('dropped'))).toHaveLength(1); // logged once
+  });
+
+  it('a failed forced flush logs how many lines were not written, even after the outage was logged', async () => {
+    vi.useFakeTimers();
+    const { JsonlLog } = await import('../utils/jsonlLog');
+    const log = new JsonlLog(() => file, 'test');
+    log.append('one');
+    log.append('two');
+    await vi.advanceTimersByTimeAsync(20_000);
+    const flushed = log.flush();
+    await vi.advanceTimersByTimeAsync(0);
+    await flushed;
+    expect(errorCalls().some(m => /2 queued line\(s\) not written/.test(m))).toBe(true);
+  });
 });
