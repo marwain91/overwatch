@@ -62,6 +62,10 @@ describe('notification channel storage', () => {
     } as any];
     await Promise.all([saveNotificationChannels(mk('A')), saveNotificationChannels(mk('B'))]);
     vi.doUnmock('../utils/security');
-    expect(events).toEqual(['start:A', 'end:A', 'start:B', 'end:B']);
+    // Either may go first; what matters is that the two writes never overlap.
+    expect(events).toHaveLength(4);
+    expect(events[1]).toBe(events[0].replace('start', 'end'));
+    expect(events[3]).toBe(events[2].replace('start', 'end'));
+    expect(events[2]).not.toBe(events[0]);
   });
 });
