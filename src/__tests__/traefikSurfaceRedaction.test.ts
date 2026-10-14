@@ -92,7 +92,7 @@ function expectAppMasked(def: any) {
   expect(JSON.stringify(def)).not.toMatch(SECRETS);
   expect(def.traefik.middlewares.gate.users).toEqual([`alice:${MASK}`, `bob:${MASK}`]);
   expect(def.traefik.middlewares.gate.realm).toBe('Private');
-  expect(def.traefik.middlewares.hdr.custom_request_headers).toEqual({ 'X-Api-Key': MASK, 'X-Env': 'prod' });
+  expect(def.traefik.middlewares.hdr.custom_request_headers).toEqual({ 'X-Api-Key': MASK, 'X-Env': MASK });
   const labels = def.services[0].routing.raw_labels;
   expect(labels['traefik.http.middlewares.demo-t1-web-gate.basicauth.users']).toBe(`erin:${MASK}`);
   expect(labels['traefik.http.routers.demo-t1-web.priority']).toBe('5');
