@@ -1,3 +1,4 @@
+import { fetchNoRedirect } from './safeFetch';
 import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 
@@ -62,7 +63,7 @@ export class GHCRAdapter implements RegistryAdapter {
     }
 
     const url = `https://api.github.com/repos/${this.config.repository}/tags?per_page=100`;
-    const response = await fetch(url, {
+    const response = await fetchNoRedirect(url, {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/vnd.github+json',

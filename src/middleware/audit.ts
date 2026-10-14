@@ -77,6 +77,15 @@ function describeAction(
     if (seg[2] && method === 'PATCH') return `change role of ${decode(seg[2])} to ${body?.role || ''}`;
   }
 
+  // Notification channel operations: /api/monitoring/notifications[/:id[/test]]
+  if (seg[1] === 'monitoring' && seg[2] === 'notifications') {
+    const id = seg[3];
+    if (!id && method === 'POST') return `add notification channel ${body?.name || ''}`;
+    if (id && !seg[4] && method === 'PUT') return `update notification channel ${id}`;
+    if (id && !seg[4] && method === 'DELETE') return `delete notification channel ${id}`;
+    if (id && seg[4] === 'test' && method === 'POST') return `test notification channel ${id}`;
+  }
+
   return `${method} ${fullPath}`;
 }
 
