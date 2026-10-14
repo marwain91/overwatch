@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as http from 'http';
+import * as net from 'net';
 import { AddressInfo } from 'net';
 import WebSocket from 'ws';
 import jwt from 'jsonwebtoken';
@@ -181,5 +182,47 @@ describe('websocket per-user connection count', () => {
     const again = connect(token);
     await authed(again);
     for (const c of [...five.slice(1), again]) c.ws.close();
+  });
+});
+
+describe('websocket hostile input before auth', () => {
+  /** Sends a raw upgrade request; resolves with the first reply chunk ('' if the server just hangs up). */
+  function rawUpgrade(target: string, host: string): Promise<string> {
+    return new Promise((resolve) => {
+      const sock = net.connect(port, '127.0.0.1', () => {
+        sock.write(
+          `GET ${target} HTTP/1.1\r\nHost: ${host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n',
+        );
+      });
+      sock.on('data', (d) => { resolve(d.toString()); sock.destroy(); });
+      sock.on('error', () => {});
+      sock.on('close', () => resolve(''));
+    });
+  }
+
+  it('survives an upgrade whose Host header is not a valid URL host', async () => {
+    await rawUpgrade('/ws', '127.0.0.1:x');
+    const c = connect(signSession('a@b.c'));
+    await authed(c);
+    c.ws.close();
+  });
+
+  it('drops an upgrade whose request target does not parse, and keeps serving', async () => {
+    expect(await rawUpgrade('//', '127.0.0.1')).toBe('');
+    const c = connect(signSession('a@b.c'));
+    await authed(c);
+    c.ws.close();
+  });
+
+  it('closes a socket whose first frame exceeds the payload limit and keeps serving', async () => {
+    const big = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    big.on('error', () => {});
+    const closed = new Promise<number>((resolve) => big.on('close', (code) => resolve(code)));
+    big.on('open', () => big.send('x'.repeat(16 * 1024)));
+    expect(await closed).toBe(1009);
+    const c = connect(signSession('a@b.c'));
+    await authed(c);
+    c.ws.close();
   });
 });

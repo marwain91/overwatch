@@ -170,8 +170,17 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
   wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
 
   server.on('upgrade', (request, socket, head) => {
-    // Only handle /ws path
-    const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
+    // Only handle /ws path. The request target is client-controlled and may
+    // not parse; a throw here is uncaught and would take the whole process
+    // down, so an unparseable request is dropped. The Host header is not used
+    // as the base: it is client-controlled too and need not be a valid host.
+    let pathname: string;
+    try {
+      pathname = new URL(request.url || '', 'http://localhost').pathname;
+    } catch {
+      socket.destroy();
+      return;
+    }
     if (pathname !== '/ws') {
       socket.destroy();
       return;
@@ -195,6 +204,11 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
     }
 
     wss!.handleUpgrade(request, socket, head, (ws) => {
+      // An 'error' with no listener is uncaught and kills the process, and an
+      // unauthenticated client can trigger one (a frame over maxPayload). ws
+      // closes the socket itself; the 'connection' listener releases the slot.
+      ws.on('error', () => {});
+
       // First-message auth only — token must be sent as first WS message (not in URL)
       const state = stateOf(ws);
 
