@@ -20,11 +20,13 @@ describe('isPrivateAddress', () => {
     '224.0.0.1', '239.255.255.255', '240.0.0.1', '255.255.255.255',
     '::', '::1', 'fe80::1', 'febf::1', 'fc00::1', 'fd12:3456::1', 'ff02::1',
     '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:7f00:1', '::ffff:a9fe:a9fe', '64:ff9b::a00:1',
+    '::7f00:1', '::127.0.0.1', '::a9fe:a9fe', '::10.0.0.1', '::ffff:0:7f00:1', '::ffff:0:127.0.0.1',
+    '2002:7f00:1::', '2002:a9fe:a9fe::1', '2002:c0a8:101::', '2001:0:4136:e378:8000:63bf:3fff:fdd2', '2001::1',
     '[::1]', 'fe80::1%eth0', 'not-an-ip', '',
   ];
   const allowed = [
     '8.8.8.8', '1.1.1.1', '172.15.255.255', '172.32.0.1', '100.63.255.255', '100.128.0.1',
-    '169.253.0.1', '223.255.255.255', '2606:4700:4700::1111', '2001:4860:4860::8888', '::ffff:8.8.8.8',
+    '169.253.0.1', '223.255.255.255', '2606:4700:4700::1111', '2001:4860:4860::8888', '::ffff:8.8.8.8', '::808:808', '::ffff:0:8.8.8.8', '2002:808:808::1', '2001:db9::1',
   ];
   it.each(blocked)('blocks %s', ip => expect(isPrivateAddress(ip)).toBe(true));
   it.each(allowed)('allows %s', ip => expect(isPrivateAddress(ip)).toBe(false));
@@ -60,6 +62,9 @@ describe('assertPublicUrl', () => {
     await expect(assertPublicUrl('http://metadata.google.internal/')).rejects.toThrow(/private|internal/);
     await expect(assertPublicUrl('file:///etc/passwd')).rejects.toThrow(/http/);
     await expect(assertPublicUrl('not a url')).rejects.toThrow(/Invalid/);
+    await expect(assertPublicUrl('')).rejects.toThrow(/Invalid/);
+    await expect(assertPublicUrl('http://localhost./x')).rejects.toThrow(/private|internal/);
+    await expect(assertPublicUrl('http://foo.internal./x')).rejects.toThrow(/private|internal/);
   });
 
   it('fails closed when the name does not resolve', async () => {

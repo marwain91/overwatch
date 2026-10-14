@@ -53,6 +53,10 @@ export function isPrivateAddress(ip: string): boolean {
   const embeddedV4 = [g[6] >> 8, g[6] & 0xff, g[7] >> 8, g[7] & 0xff];
   if (g.slice(0, 5).every(n => n === 0) && g[5] === 0xffff) return isPrivateIPv4(embeddedV4); // ::ffff:0:0/96
   if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every(n => n === 0)) return isPrivateIPv4(embeddedV4); // NAT64
+  if (g.slice(0, 6).every(n => n === 0)) return isPrivateIPv4(embeddedV4); // ::/96 IPv4-compatible (also ::, ::1)
+  if (g.slice(0, 4).every(n => n === 0) && g[4] === 0xffff && g[5] === 0) return isPrivateIPv4(embeddedV4); // ::ffff:0:0/96 IPv4-translated
+  if (g[0] === 0x2002) return isPrivateIPv4([g[1] >> 8, g[1] & 0xff, g[2] >> 8, g[2] & 0xff]); // 6to4
+  if (g[0] === 0x2001 && g[1] === 0) return true;        // Teredo: embeds client/server addresses, fail closed
   if (g.every(n => n === 0)) return true;                // ::
   if (g.slice(0, 7).every(n => n === 0) && g[7] === 1) return true; // ::1
   if ((g[0] & 0xfe00) === 0xfc00) return true;           // fc00::/7 unique-local
@@ -87,7 +91,7 @@ export async function assertPublicUrl(url: string, options: PublicUrlOptions = {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new ValidationError(`${label} must use http or https`);
   }
-  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase().replace(/\.$/, '');
   const allowPrivate = !!options.allowPrivateEnv && process.env[options.allowPrivateEnv] === '1';
   const refuse = (detail: string) => new ValidationError(`${label} points to a private/internal address (${detail})`);
 

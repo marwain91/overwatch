@@ -48,7 +48,7 @@ export function sanitizeValue(val: unknown, depth: number = 0): unknown {
     for (const key of Object.keys(obj)) {
       if (SENSITIVE_KEYS.some(s => key.toLowerCase().includes(s))) {
         sanitized[key] = '[redacted]';
-      } else if (key === 'headers' && isPlainObject(obj[key])) {
+      } else if (key.toLowerCase() === 'headers' && isPlainObject(obj[key])) {
         // Webhook header values routinely carry credentials under arbitrary names.
         sanitized[key] = Object.fromEntries(Object.keys(obj[key] as object).map(k => [k, '[redacted]']));
       } else if (key === 'config' && isPlainObject(obj[key]) && typeof (obj[key] as any).url === 'string') {

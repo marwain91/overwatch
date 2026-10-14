@@ -93,7 +93,20 @@ describe('monitoring mutations are audited without secrets', () => {
   });
 });
 
+describe('webhookUrlError', () => {
+  it('rejects a non-string url', async () => {
+    const { webhookUrlError } = await import('../routes/monitoring');
+    expect(await webhookUrlError(undefined)).toMatch(/Invalid/);
+  });
+});
+
 describe('audit sanitiser', () => {
+  it('masks headers regardless of key case', async () => {
+    const { sanitizeBody } = await import('../services/auditLog');
+    expect(sanitizeBody({ config: { url: 'https://a.test/x', Headers: { 'X-Hook': 'v' } } }))
+      .toEqual({ config: { url: 'https://a.test', Headers: { 'X-Hook': '[redacted]' } } });
+  });
+
   it('only rewrites config.url, leaving other url fields intact', async () => {
     const { sanitizeBody } = await import('../services/auditLog');
     expect(sanitizeBody({ url: 'https://registry.example.com/path', config: { url: 'https://a.test/p?q=1' } }))
