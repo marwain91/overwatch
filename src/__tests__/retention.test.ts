@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import type { MetricsSnapshot } from '../services/eventBus';
 
 let dataDir: string;
 // Mutable so a test can change the loaded config without re-mocking '../config'
@@ -77,7 +78,8 @@ describe('alert history appends', () => {
     vi.useFakeTimers();
     startAlertEngine();
     try {
-      const snap = { containers: [{ name: 'c', tenantId: 't', cpuPercent: 50, memPercent: 1 }] };
+      // The engine only reads a few fields; the rest of the payload is left out on purpose.
+      const snap = { containers: [{ name: 'c', tenantId: 't', cpuPercent: 50, memPercent: 1 }] } as unknown as MetricsSnapshot;
       vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
       eventBus.emit('metrics:snapshot', snap);
       vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));

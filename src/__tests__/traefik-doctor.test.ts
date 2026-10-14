@@ -17,7 +17,7 @@ function ctxOf(overrides: Partial<DoctorContext>): DoctorContext {
   } as DoctorContext;
 }
 
-function withTraefik(t: TraefikGlobal): OverwatchConfig {
+function withTraefik(t: Partial<TraefikGlobal>): OverwatchConfig {
   return { project: { name: 'p', prefix: 'p', db_prefix: 'p' }, database: {} as any, traefik: t } as OverwatchConfig;
 }
 
@@ -43,7 +43,7 @@ describe('validateTraefik — middleware references', () => {
       createdAt: '', updatedAt: '',
     } as unknown as AppDefinition;
     const issues = validateTraefik(ctxOf({
-      config: withTraefik({ middlewares: { hsts: { type: 'headers', sts_seconds: 31536000 } } } as TraefikGlobal),
+      config: withTraefik({ middlewares: { hsts: { type: 'headers', sts_seconds: 31536000 } } }),
       apps: [app],
     }));
     expect(issues).toEqual([]);
@@ -116,7 +116,7 @@ describe('validateTraefik — cert resolvers', () => {
           env: { CF_DNS_API_TOKEN: '${CF_TOKEN}' },
           domain_patterns: ['*'],
         }],
-      } as TraefikGlobal),
+      }),
       presentEnvVars: new Set(['SOMETHING_ELSE']),
     }));
     expect(issues.some(i => i.message.includes('${CF_TOKEN}'))).toBe(true);
@@ -130,7 +130,7 @@ describe('validateTraefik — cert resolvers', () => {
           env: { CF_DNS_API_TOKEN: '${CF_TOKEN}' },
           domain_patterns: ['*'],
         }],
-      } as TraefikGlobal),
+      }),
       presentEnvVars: new Set(['CF_TOKEN']),
     }));
     expect(issues.filter(i => i.message.includes('${'))).toEqual([]);
@@ -143,7 +143,7 @@ describe('validateTraefik — cert resolvers', () => {
           name: 'leg', challenge: 'dns', provider: 'legacy', acme_email: 'legacy@overwatch.local',
           domain_patterns: ['*'],
         }],
-      } as TraefikGlobal),
+      }),
     }));
     expect(issues.some(i => i.message.includes('placeholder'))).toBe(true);
   });

@@ -17,7 +17,6 @@ afterEach(async () => {
 describe('G4 audit describeAction — records force=true tag', () => {
   it('annotates delete app with force tag when force=true', async () => {
     // We exercise the middleware directly by invoking its describeAction-producing flow.
-    const { auditLog } = await import('../middleware/audit');
     const dataDir = path.join(tmpRoot, 'data');
     await fs.mkdir(dataDir, { recursive: true });
 
