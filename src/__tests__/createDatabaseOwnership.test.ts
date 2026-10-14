@@ -176,7 +176,7 @@ vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async (
       })),
       applyApp: vi.fn(),
     }));
-    vi.doMock('../services/envVars', () => ({ generateSharedEnvFile: vi.fn(async () => undefined) }));
+    vi.doMock('../services/envVars', () => ({ generateSharedEnvFile: vi.fn(async () => undefined), formatEnvValue: (v: unknown) => String(v) }));
     vi.doMock('../services/tenantAppDef', () => ({ writeTenantAppDef: vi.fn(async () => undefined) }));
     const mod = await import('../services/tenant');
     const errors = await import('../utils/httpErrors');
