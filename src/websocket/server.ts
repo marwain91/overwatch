@@ -31,6 +31,23 @@ let eventUnsubscribers: Array<() => void> = [];
 const clients = new Set<WebSocket>();
 const connectionsByUser = new Map<string, number>();
 
+interface SocketState {
+  authenticated: boolean;
+  userEmail?: string;
+  expiryTimer?: ReturnType<typeof setTimeout>;
+  released?: boolean;
+  isAlive?: boolean;
+}
+const socketState = new WeakMap<WebSocket, SocketState>();
+const stateOf = (ws: WebSocket): SocketState => {
+  let state = socketState.get(ws);
+  if (!state) {
+    state = { authenticated: false };
+    socketState.set(ws, state);
+  }
+  return state;
+};
+
 type AuthResult = { valid: true; email: string; exp: number } | { valid: false };
 
 // Valid session token AND the user is still an admin user (any role: viewers get
@@ -95,7 +112,7 @@ function broadcast(msg: WSMessage): void {
 // Idempotent per socket: 'close' and 'error' can both fire, and the per-user
 // count must only drop once.
 function releaseConnection(ws: WebSocket): void {
-  const state = ws as any;
+  const state = stateOf(ws);
   clients.delete(ws);
   if (state.expiryTimer) {
     clearTimeout(state.expiryTimer);
@@ -106,10 +123,24 @@ function releaseConnection(ws: WebSocket): void {
   if (state.userEmail) untrackConnection(state.userEmail);
 }
 
+// A slow store must not stack re-checks: a tick that finds the previous run
+// still going is skipped.
+let rechecking = false;
+
 async function recheckMembership(): Promise<void> {
+  if (rechecking) return;
+  rechecking = true;
+  try {
+    await recheckAll();
+  } finally {
+    rechecking = false;
+  }
+}
+
+async function recheckAll(): Promise<void> {
   const verdicts = new Map<string, boolean>();
   for (const ws of [...clients]) {
-    const email = (ws as any).userEmail as string | undefined;
+    const email = stateOf(ws).userEmail;
     if (!email) continue;
     let member = verdicts.get(email);
     if (member === undefined) {
@@ -156,17 +187,17 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
 
     wss!.handleUpgrade(request, socket, head, (ws) => {
       // First-message auth only — token must be sent as first WS message (not in URL)
-      (ws as any).authenticated = false;
+      const state = stateOf(ws);
 
       const authTimer = setTimeout(() => {
-        if (!(ws as any).authenticated) {
+        if (!state.authenticated) {
           ws.close(4001, 'Authentication timeout');
         }
       }, AUTH_TIMEOUT);
 
       ws.once('message', async (data) => {
         clearTimeout(authTimer);
-        if ((ws as any).authenticated) return; // Already handled or closed
+        if (state.authenticated) return; // Already handled or closed
         try {
           const msg = JSON.parse(data.toString());
           const result = msg.type === 'auth' ? await authenticate(msg.token) : { valid: false as const };
@@ -180,15 +211,15 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
             ws.close(4029, 'Too many connections');
             return;
           }
-          (ws as any).authenticated = true;
-          (ws as any).userEmail = result.email;
+          state.authenticated = true;
+          state.userEmail = result.email;
           // The session ends at token expiry; don't wait for the next re-check.
-          (ws as any).expiryTimer = setTimeout(
+          state.expiryTimer = setTimeout(
             () => ws.close(4401, 'Session expired'),
             Math.min(Math.max(result.exp * 1000 - Date.now(), 0), MAX_TIMER_MS),
           );
           clients.add(ws);
-          (ws as any).isAlive = true;
+          state.isAlive = true;
           ws.send(JSON.stringify({ type: 'auth:ok' }));
           wss!.emit('connection', ws, request);
         } catch {
@@ -200,7 +231,7 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
 
   wss.on('connection', (ws: WebSocket) => {
     ws.on('pong', () => {
-      (ws as any).isAlive = true;
+      stateOf(ws).isAlive = true;
     });
 
     ws.on('close', () => releaseConnection(ws));
@@ -210,12 +241,13 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
   // Heartbeat to detect dead connections
   heartbeatTimer = setInterval(() => {
     for (const ws of clients) {
-      if ((ws as any).isAlive === false) {
+      const state = stateOf(ws);
+      if (state.isAlive === false) {
         clients.delete(ws);
         ws.terminate();
         continue;
       }
-      (ws as any).isAlive = false;
+      state.isAlive = false;
       ws.ping();
     }
   }, HEARTBEAT_INTERVAL);
