@@ -15,6 +15,12 @@ import { writeFileAtomic } from './atomicJson';
 // Bound on queued lines while the file is unwritable, so a long outage cannot grow memory without limit.
 const MAX_QUEUED_LINES = 10_000;
 
+// An unwritable file is retried this many times with exponential backoff
+// (1s, 2s, 4s, 8s), then left alone until the cooldown passes or someone
+// flushes. Without the bound, one drain would hold the chain forever.
+const MAX_DRAIN_ATTEMPTS = 5;
+const RETRY_COOLDOWN_MS = 60_000;
+
 const RENAME_BLOCKED = new Set(['EBUSY', 'EXDEV', 'EPERM']);
 
 /** Truncate + write through the existing inode, keeping its mode. Not crash-atomic, but the lock is held. */
@@ -34,6 +40,7 @@ export class JsonlLog {
   private chain: Promise<unknown> = Promise.resolve();
   private errorLogged = false;
   private inPlaceLogged = false;
+  private retryNotBefore = 0;
 
   constructor(private readonly getFile: () => string, private readonly tag: string) {}
 
@@ -45,7 +52,8 @@ export class JsonlLog {
 
   /** Resolves once everything queued so far has been written. */
   async flush(): Promise<void> {
-    await this.run(() => this.drain());
+    // Forced: a single attempt even inside the cooldown, so shutdown stays bounded.
+    await this.run(() => this.drain(true));
   }
 
   /** Keep the newest `maxEntries` lines; returns how many were dropped. */
@@ -63,32 +71,41 @@ export class JsonlLog {
     return `jsonl-${path.basename(this.getFile())}`;
   }
 
-  private async drain(): Promise<void> {
+  private async drain(force = false): Promise<void> {
+    if (!force && Date.now() < this.retryNotBefore) return;
+    let attempts = 0;
     while (this.queue.length > 0) {
       // Take everything queued so many entries share one append.
-      const chunk = this.queue.splice(0, this.queue.length).join('');
+      const lines = this.queue.splice(0, this.queue.length);
       try {
         const file = this.getFile();
         await withFileLock(this.lockKey(), async () => {
           // Mode 0600 on create (umask may loosen it); chmod each time so a
           // historically 0644 file is tightened on the next entry.
-          await fs.appendFile(file, chunk, { mode: 0o600 });
+          await fs.appendFile(file, lines.join(''), { mode: 0o600 });
           await fs.chmod(file, 0o600).catch(() => {});
         });
         this.errorLogged = false;
+        this.retryNotBefore = 0;
+        attempts = 0;
       } catch (err: any) {
-        // Re-queue so entries are not lost; log once per outage.
-        this.queue.unshift(chunk);
+        // Keep the lines (one entry each, so the cap counts lines) and log once per outage.
+        this.queue.unshift(...lines);
         const dropped = this.queue.length - MAX_QUEUED_LINES;
         if (dropped > 0) {
           this.queue.splice(0, dropped);
           console.error(`[${this.tag}] dropped ${dropped} oldest queued line(s) during a write outage`);
         }
         if (!this.errorLogged) {
-          console.error(`[${this.tag}] write failed: ${err?.message || err}. Will retry.`);
+          console.error(`[${this.tag}] write failed: ${err?.message || err}. Retrying with backoff; up to ${MAX_QUEUED_LINES} lines are kept in memory meanwhile.`);
           this.errorLogged = true;
         }
-        await new Promise(r => setTimeout(r, 1000));
+        attempts++;
+        if (force || attempts >= MAX_DRAIN_ATTEMPTS) {
+          this.retryNotBefore = Date.now() + RETRY_COOLDOWN_MS;
+          return;
+        }
+        await new Promise(r => setTimeout(r, Math.min(1000 * 2 ** (attempts - 1), 8000)));
       }
     }
   }
