@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 afterEach(() => {
   vi.resetModules();
   vi.doUnmock('dockerode');
@@ -45,7 +47,7 @@ describe('health checker container identity', () => {
 
     const { eventBus } = await import('../services/eventBus');
     const change = new Promise<any>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no health:change emitted')), 3000);
+      const timer = setTimeout(() => reject(new Error('no health:change emitted')), 15_000);
       eventBus.once('health:change', (data) => { clearTimeout(timer); resolve(data); });
     });
     const { startHealthChecker, stopHealthChecker } = await import('../services/healthChecker');

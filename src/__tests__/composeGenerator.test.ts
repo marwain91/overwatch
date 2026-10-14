@@ -11,6 +11,8 @@ import { generateComposeFile } from '../services/composeGenerator';
  * for any valid formatting — and fail if a field value can change the shape.
  */
 
+afterEach(() => { vi.restoreAllMocks(); });
+
 function config(): any {
   return {
     project: { name: 'Test', prefix: 'test', db_prefix: 'test' },
@@ -411,6 +413,7 @@ describe('generateComposeFile treats every value as data', () => {
   });
 
   it('keeps health check fields with quotes or line breaks inside the check', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const hcPath = '/health"]\n      privileged: true';
     const doc = load(render([{
       name: 'web', required: true, ports: { internal: 3000 },
@@ -418,7 +421,8 @@ describe('generateComposeFile treats every value as data', () => {
     }]));
 
     expect(doc.services.web.healthcheck.test).toEqual(['CMD', 'curl', '-f', `http://127.0.0.1:3000${hcPath}`]);
-    expect(doc.services.web.healthcheck.interval).toBe('30s\n    privileged: true');
+    // Not a duration, so the generator drops it (warning) rather than emit it.
+    expect(doc.services.web.healthcheck.interval).toBe('30s');
     expect(allKeys(doc)).not.toContain('privileged');
   });
 
