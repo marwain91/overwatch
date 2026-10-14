@@ -86,6 +86,7 @@ describe('tenant lifecycle rollback', () => {
     vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
     vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => db }));
     vi.doMock('../services/app', () => ({ getApp: vi.fn(async () => baseApp('customer-portal')), applyApp: vi.fn() }));
+    vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined), assertTenantDomainAllowed: vi.fn(async () => undefined) }));
 
     const { createTenant, getTenantPath } = await import('../services/tenant');
     await expect(createTenant({
@@ -95,6 +96,32 @@ describe('tenant lifecycle rollback', () => {
       imageTag: 'latest',
     })).rejects.toThrow(/db create failed/);
 
+    await expect(fs.access(getTenantPath('customer-portal', 'tenant-one'))).rejects.toThrow();
+  });
+
+  it('rejects a disallowed primary domain before any database or directory work', async () => {
+    const appsDir = path.join(tmpRoot, 'apps');
+    const db = {
+      initialize: vi.fn(async () => undefined),
+      databaseExists: vi.fn(async () => false),
+      createDatabase: vi.fn(async () => undefined),
+      dropDatabase: vi.fn(async () => undefined),
+    };
+    const { ConflictError } = await import('../utils/httpErrors');
+    const assertTenantDomainAllowed = vi.fn(async () => { throw new ConflictError('Domain is already used by another tenant'); });
+    vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
+    vi.doMock('../config', () => ({ loadConfig: () => baseConfig(), getAppsDir: () => appsDir, resolveAppDbPrefix: () => 'test' }));
+    vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
+    vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => db }));
+    vi.doMock('../services/app', () => ({ getApp: vi.fn(async () => baseApp('customer-portal')), applyApp: vi.fn() }));
+    vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined), assertTenantDomainAllowed }));
+
+    const { createTenant, getTenantPath } = await import('../services/tenant');
+    await expect(createTenant({
+      appId: 'customer-portal', tenantId: 'tenant-one', domain: 'taken.example.test', imageTag: 'latest',
+    })).rejects.toThrow(/already used/);
+    expect(assertTenantDomainAllowed).toHaveBeenCalledWith('customer-portal', 'tenant-one', 'taken.example.test');
+    expect(db.createDatabase).not.toHaveBeenCalled();
     await expect(fs.access(getTenantPath('customer-portal', 'tenant-one'))).rejects.toThrow();
   });
 

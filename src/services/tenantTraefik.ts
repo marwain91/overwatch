@@ -6,7 +6,7 @@ import { loadConfig } from '../config/loader';
 import { TraefikTenantSchema, type TraefikTenant } from '../models/traefik';
 import { withFileLock } from './fileLock';
 import { getApp } from './app';
-import { HttpError, ValidationError } from '../utils/httpErrors';
+import { ConflictError, HttpError, ValidationError } from '../utils/httpErrors';
 
 /**
  * Per-tenant Traefik overrides — host aliases, middleware overrides,
@@ -118,6 +118,22 @@ export function assertHostAliasesAllowed(aliases: string[], ctx: AliasContext): 
     if (problem) throw new ValidationError(`Host alias "${alias}" is not allowed: ${problem}`);
   }
   return [...new Set(aliases.map(normalizeHost))];
+}
+
+/**
+ * Create-time check for a tenant's primary domain: the same reserved-host and
+ * other-tenant rules as aliases, but not the domain-template rule (a primary
+ * domain may be any host the operator points at Overwatch). Fails closed.
+ */
+export async function assertTenantDomainAllowed(appId: string, tenantId: string, domain: string): Promise<void> {
+  const ctx = await loadAliasContext(appId, tenantId);
+  const host = normalizeHost(domain);
+  if (ctx.reservedHosts.has(host)) {
+    throw new ValidationError(`Domain "${domain}" is not allowed: it is a host served by Overwatch itself`);
+  }
+  if (ctx.foreignHosts.has(host)) {
+    throw new ConflictError(`Domain "${domain}" is already used by another tenant`);
+  }
 }
 
 function hostOf(url: string | undefined): string | undefined {

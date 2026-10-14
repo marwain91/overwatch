@@ -5,7 +5,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { loadConfig } from '../config';
 import { resolveCertResolver } from '../config/loader';
-import { readTenantTraefik } from './tenantTraefik';
+import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
 import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue } from './envVars';
 import { getApp, applyApp } from './app';
@@ -177,6 +177,8 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
   if (!app) {
     throw new NotFoundError(`App '${appId}' not found`);
   }
+  // Reserved Overwatch hosts and other tenants' domains/aliases (create-from-backup goes through here too).
+  await assertTenantDomainAllowed(appId, tenantId, domain);
 
   const tag = imageTag || app.default_image_tag || 'latest';
   const tagValidation = validateImageTag(tag);
