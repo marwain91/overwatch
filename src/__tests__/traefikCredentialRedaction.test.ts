@@ -43,7 +43,7 @@ describe('global Traefik config credentials for non-admins', () => {
     const mw = res.body.middlewares;
     expect(mw.gate.users).toEqual(['alice:••••••••', 'bob:••••••••']);
     expect(mw.gate.realm).toBe('Private');
-    expect(mw.sso.address).toBe('https://auth.example.com/verify');
+    expect(mw.sso.address).toBe('https://••••••••@auth.example.com/verify');
     expect(mw.hdr.custom_request_headers).toEqual({ Authorization: '••••••••', 'X-Env': '••••••••' });
     expect(mw.limit).toEqual({ type: 'rateLimit', average: 10 });
     expect(res.body.overwatch.raw_labels['traefik.http.middlewares.ow-auth.basicauth.users']).toBe('carol:••••••••');
@@ -118,7 +118,7 @@ describe('credential-bearing raw labels and broader typed rules', () => {
     });
     const labels = full.overwatch.raw_labels;
     const ow = new URL(labels['traefik.http.middlewares.ow-sso.forwardauth.address']);
-    expect(ow.username + ow.password).toBe('');
+    expect(labels['traefik.http.middlewares.ow-sso.forwardauth.address']).toMatch(/^https:\/\/••••••••@auth\.example\.com\//);
     expect(ow.searchParams.get('signature')).toBe('••••••••');
     expect(ow.searchParams.get('a')).toBe('1');
     expect(labels['traefik.http.middlewares.ow-h.headers.customrequestheaders.X-Api-Key']).toBe('••••••••');
@@ -241,12 +241,14 @@ describe('fail-closed address, header and URL-in-text masking', () => {
     expect(mw.sso.address).toBe(M);
     expect(mw.hdr.custom_request_headers).toEqual({ 'X-Session-Id': M });
     expect(mw.hdr.custom_response_headers).toEqual({ 'X-Plain': M });
-    expect(mw.redir.regex).toBe(`^https://${M}@host/(.*)`);
-    expect(mw.redir.replacement).toBe(`https://host/$1?api_key=${M}&mode=1`);
-    expect(mw.rp.path).toBe(`/go?token=${M}`);
-    expect(mw.rpr.replacement).toBe(`https://${M}@h/x`);
-    expect(t.overwatch.raw_labels['traefik.http.middlewares.r.redirectregex.regex']).toBe(`^https://${M}@host/(.*)`);
-    expect(t.overwatch.raw_labels['traefik.http.middlewares.r.redirectregex.replacement']).toBe(`https://host/$1?sig=${M}&x=1`);
+    // Whole-value masking: a value with `@` or a credential-named parameter is hidden entirely.
+    expect(mw.redir.regex).toBe(M);
+    expect(mw.redir.replacement).toBe(M);
+    expect(mw.rp.path).toBe(M);
+    expect(mw.rpr.replacement).toBe(M);
+    expect(mw.rpr.regex).toBe('^/a');
+    expect(t.overwatch.raw_labels['traefik.http.middlewares.r.redirectregex.regex']).toBe(M);
+    expect(t.overwatch.raw_labels['traefik.http.middlewares.r.redirectregex.replacement']).toBe(M);
     expect(t.overwatch.raw_labels['traefik.http.routers.ow.rule']).toBe(LABELS['traefik.http.routers.ow.rule']);
   });
 
@@ -264,8 +266,94 @@ describe('fail-closed address, header and URL-in-text masking', () => {
     expect(restoreRawLabels(redactRawLabels(LABELS), LABELS)).toEqual(LABELS);
     expect(() => restoreMiddlewareCredentials(masked, undefined)).toThrow(/masked placeholder/);
     expect(() => restoreMiddlewareCredentials({ x: { type: 'headers', custom_request_headers: { 'X-Session-Id': M } } } as any, undefined)).toThrow(/masked placeholder/);
-    expect(() => restoreMiddlewareCredentials({ x: { type: 'redirectRegex', regex: `^https://${M}@h/`, replacement: '/' } } as any, undefined)).toThrow(/masked placeholder/);
-    expect(() => restoreRawLabels({ 'traefik.http.middlewares.r.redirectregex.regex': `^https://${M}@h/` }, undefined)).toThrow(/masked placeholder/);
+    expect(() => restoreMiddlewareCredentials({ x: { type: 'redirectRegex', regex: M, replacement: '/' } } as any, undefined)).toThrow(/masked placeholder/);
+    expect(() => restoreRawLabels({ 'traefik.http.middlewares.r.redirectregex.regex': M }, undefined)).toThrow(/masked placeholder/);
+  });
+});
+
+describe('whole-value masking of free text (round 5)', () => {
+  const M = '••••••••';
+  const leak = (v: string) => ({ type: 'redirectRegex', regex: v, replacement: '/x' });
+
+  async function r() { return import('../services/traefikRedaction'); }
+
+  it.each([
+    ['https://user:p@ss@host/', 'extra @ in the password'],
+    ['https://a.example/?next=https%3A%2F%2Fu%3Apw%40h%2F', 'URL embedded in a query'],
+    ['$1://u:pw@h/', 'scheme from a backreference'],
+    ['//u:pw@h/', 'scheme-relative URL'],
+    ['u:pw@h', 'bare userinfo'],
+    ['^(.*)@example\\.com', '@ in a regex'],
+    ['/go?sessionid=abc', 'session query parameter'],
+    ['/go;jwt=abc', 'semicolon parameter'],
+    ['/go#access_token=abc', 'fragment parameter'],
+    ['/go?a=1&PWD=abc', 'pwd parameter'],
+    ['/go?otp=123', 'otp parameter'],
+  ])('masks %s (%s) for viewers, in typed fields and allowlisted raw labels', async (value) => {
+    const { redactMiddlewareCredentials, redactRawLabels } = await r();
+    expect((redactMiddlewareCredentials({ x: leak(value) } as any) as any).x.regex).toBe(M);
+    expect(redactRawLabels({ 'traefik.http.middlewares.x.redirectregex.regex': value })['traefik.http.middlewares.x.redirectregex.regex']).toBe(M);
+  });
+
+  it('shows clean values, and masks every string field of a typed middleware', async () => {
+    const { redactMiddlewareCredentials, redactRawLabels } = await r();
+    const red: any = redactMiddlewareCredentials({
+      a: { type: 'redirectRegex', regex: '^https://old\\.example\\.com/(.*)', replacement: 'https://new.example.com/$1', permanent: true },
+      b: { type: 'ipAllowList', source_range: ['10.0.0.0/8', 'a@b'] },
+      c: { type: 'chain', middlewares: ['x', 'y?token=1'] },
+    } as any);
+    expect(red.a).toEqual({ type: 'redirectRegex', regex: '^https://old\\.example\\.com/(.*)', replacement: 'https://new.example.com/$1', permanent: true });
+    expect(red.b.source_range).toEqual(['10.0.0.0/8', M]);
+    expect(red.c.middlewares).toEqual(['x', M]);
+    expect(redactRawLabels({ 'traefik.http.routers.x.priority': '5' })['traefik.http.routers.x.priority']).toBe('5');
+  });
+
+  it('forwardAuth: non-http scheme masked, userinfo shown as placeholder, secret params and fragment masked', async () => {
+    const { redactMiddlewareCredentials, redactRawLabels } = await r();
+    const addr = (a: string) => (redactMiddlewareCredentials({ x: { type: 'forwardAuth', address: a } } as any) as any).x.address;
+    expect(addr('ftp://auth.example.com/v')).toBe(M);
+    expect(addr('javascript:alert(1)')).toBe(M);
+    expect(addr('https://u:pw@auth.example.com/v')).toBe(`https://${M}@auth.example.com/v`);
+    expect(addr('https://auth.example.com/v?sessionid=abc&x=1')).toContain('x=1');
+    expect(addr('https://auth.example.com/v?sessionid=abc&x=1')).not.toContain('abc');
+    expect(addr('https://auth.example.com/v#frag-secret')).toBe(`https://auth.example.com/v#${M}`);
+    expect(addr('https://auth.example.com/v')).toBe('https://auth.example.com/v');
+    expect(redactRawLabels({ 'traefik.http.middlewares.x.forwardauth.address': 'ftp://h/' })['traefik.http.middlewares.x.forwardauth.address']).toBe(M);
+  });
+
+  it('an editor sending the clean forwardAuth URL removes the credentials instead of having them restored', async () => {
+    const { restoreMiddlewareCredentials, redactMiddlewareCredentials } = await r();
+    const stored: any = { x: { type: 'forwardAuth', address: 'https://u:pw@auth.example.com/v' } };
+    const masked = redactMiddlewareCredentials(stored) as any;
+    expect(restoreMiddlewareCredentials(masked, stored)).toEqual(stored);
+    const clean = { x: { type: 'forwardAuth', address: 'https://auth.example.com/v' } } as any;
+    expect((restoreMiddlewareCredentials(clean, stored) as any).x.address).toBe('https://auth.example.com/v');
+    expect(() => restoreMiddlewareCredentials(masked, undefined)).toThrow(/masked placeholder/);
+  });
+
+  it('healthcheck headers (user-keyed) and request-matching rules are masked; other rules shown', async () => {
+    const { redactRawLabels, restoreRawLabels } = await r();
+    const labels = {
+      'traefik.http.services.s.loadbalancer.healthcheck.headers.Path': 'hc-secret',
+      'traefik.http.services.s.loadbalancer.healthcheck.path': '/health',
+      'traefik.http.routers.a.rule': 'Host(`a.example.com`) && Header(`X-Key`, `k-secret`)',
+      'traefik.http.routers.b.rule': 'Host(`a.example.com`) && QueryRegexp(`t`, `s3`)',
+      'traefik.http.routers.c.rule': 'Host(`a.example.com`) && PathPrefix(`/x`)',
+    };
+    const red = redactRawLabels(labels);
+    expect(red['traefik.http.services.s.loadbalancer.healthcheck.headers.Path']).toBe(M);
+    expect(red['traefik.http.services.s.loadbalancer.healthcheck.path']).toBe('/health');
+    expect(red['traefik.http.routers.a.rule']).toBe(M);
+    expect(red['traefik.http.routers.b.rule']).toBe(M);
+    expect(red['traefik.http.routers.c.rule']).toBe(labels['traefik.http.routers.c.rule']);
+    expect(restoreRawLabels(red, labels)).toEqual(labels);
+    expect(() => restoreRawLabels(red, undefined)).toThrow(/masked placeholder/);
+  });
+
+  it('editor round trip of unchanged values keeps the stored ones; admin routes still return everything', async () => {
+    const { redactMiddlewareCredentials, restoreMiddlewareCredentials } = await r();
+    const stored: any = { r: { type: 'redirectRegex', regex: '^https://u:p@ss@host/(.*)', replacement: '/x?token=t' }, ok: { type: 'compress' } };
+    expect(restoreMiddlewareCredentials(redactMiddlewareCredentials(stored) as any, stored)).toEqual(stored);
   });
 });
 
