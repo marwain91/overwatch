@@ -42,6 +42,14 @@ networking:
     default: string               #   migrate via `overwatch config traefik migrate`.
 ```
 
+### Data Directory
+
+```yaml
+data_dir: string      # Optional. Default: /app/data
+```
+
+Where Overwatch keeps its stores (`apps.d/`, trash, admin users, audit log, snapshots, and so on). The default `/app/data` is the path inside the container (`./data` is mounted there by the shipped `docker-compose.yml`). When the CLI runs on the host and the configured path does not exist, it falls back to `data/` next to `overwatch.yaml` (`<deploy dir>/overwatch/data`). Set it only for a non-standard layout.
+
 ### Traefik Configuration
 
 The `traefik:` section gives you full control of the reverse proxy: cert resolvers
@@ -494,3 +502,5 @@ Who may sign in, and what they may do, is stored in `data/admin-users.json` and 
 |----------|---------|-------------|
 | `PORT` | `3002` | Overwatch HTTP port |
 | `ALLOWED_ADMIN_EMAILS` | (none) | Comma-separated initial admin emails |
+| `OVERWATCH_DEPLOY_DIR` | (none) | Deploy root used by `overwatch infra deploy` only; a legacy alias of `DEPLOY_DIR`, which takes precedence when both are set. Without either, the root is the parent of the directory holding `overwatch.yaml`. Other CLI commands read `DEPLOY_DIR` only (see [updating.md](updating.md)). |
+| `OVERWATCH_SKIP_CHECKSUM` | (none) | `1` lets `overwatch self-update` install a CLI binary when the release has no `<asset>.sha256` companion file. **Security risk, leave unset.** The checksum is the only proof the downloaded binary is the one the maintainers published (TLS only shows the bytes came from GitHub), so skipping it means a tampered or corrupted release asset is installed and run as-is. It does not bypass a hash mismatch: a present checksum that does not match always aborts the update. |
