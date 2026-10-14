@@ -619,9 +619,31 @@ export async function restoreBackupLocked(
   }
 }
 
+/**
+ * Whether `snapshotId` names exactly one snapshot tagged for this app. Apps may
+ * share a repository, and a `--tag` filter cannot scope an id: restic ignores
+ * filters when explicit snapshot ids are given.
+ */
+async function snapshotBelongsToApp(app: AppDefinition, snapshotId: string): Promise<boolean> {
+  const { stdout } = await execFileAsync('restic', ['snapshots', '--json', snapshotId], {
+    env: getResticEnv(app),
+    timeout: RESTIC_SNAPSHOTS_TIMEOUT_MS,
+  });
+  const found = JSON.parse(stdout || '[]') as Array<{ tags?: string[] }>;
+  return found.length === 1 && (found[0].tags ?? []).includes(`app:${app.id}`);
+}
+
 export async function deleteSnapshot(appId: string, snapshotId: string): Promise<{ success: boolean; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
   const app = await getApp(appId);
   if (!app) return { success: false, error: `App '${appId}' not found` };
+
+  let owned: boolean;
+  try {
+    owned = await snapshotBelongsToApp(app, snapshotId);
+  } catch (error: any) {
+    return { success: false, ...formatError(error) };
+  }
+  if (!owned) throw new NotFoundError(`Snapshot '${snapshotId}' not found for app '${appId}'`);
 
   try {
     await execFileAsync('restic', ['forget', snapshotId], {
