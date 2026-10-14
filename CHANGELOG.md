@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Node.js 24 LTS everywhere.** The Docker image stages, CI and the CLI binaries move from Node 22 to Node 24 (LTS until April 2028; Node 22 reaches end of life in April 2027). Running from source or building the CLI now needs Node 24.
+
 ### Fixed
 
 - **A container without a name no longer hides every tenant.** Docker reports `Names: []` for some leftover containers (for example a stale build container in the `created` state); one of those made the tenant and container listings come back empty in the API and UI.

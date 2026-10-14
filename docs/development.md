@@ -28,14 +28,14 @@ The UI is a React app built with Vite. For development with hot module replaceme
 cd ui
 
 # Install dependencies in Docker
-docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:22-alpine npm ci
+docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:24-alpine npm ci
 
 # Start Vite dev server with HMR
 docker run --rm -u "$(id -u):$(id -g)" -p 5173:5173 \
   -v "$(pwd)":/app -w /app \
   -e API_HOST=host.docker.internal \
   -e API_PORT=3010 \
-  node:22-alpine npm run dev -- --host 0.0.0.0
+  node:24-alpine npm run dev -- --host 0.0.0.0
 ```
 
 The Vite dev server proxies `/api` and `/ws` requests to the backend via `API_HOST`/`API_PORT` environment variables (defaults to `localhost:3010`).
@@ -69,7 +69,7 @@ docker run -p 3002:3002 \
 The CLI is built with `@yao-pkg/pkg` targeting Linux x64 and arm64:
 
 ```bash
-docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:22-alpine sh -c "npm ci && npm run build && npx @yao-pkg/pkg dist/cli.js --targets node22-linux-x64,node22-linux-arm64 --output dist/bin/overwatch --compress GZip"
+docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:24-alpine sh -c "npm ci && npm run build && npx @yao-pkg/pkg dist/cli.js --targets node24-linux-x64,node24-linux-arm64 --output dist/bin/overwatch --compress GZip"
 ```
 
 ## Project Layout
