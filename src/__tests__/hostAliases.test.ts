@@ -9,6 +9,9 @@ vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 let appsDir: string;
 let tmpRoot: string;
 let cfg: any;
+// Mutable so a test can change how the loader behaves without re-mocking the path
+// (re-mocking a path registered in beforeEach races inside vitest's mock queue).
+let loadConfigImpl: () => unknown;
 
 async function addTenant(appId: string, tenantId: string, domain: string, aliases?: string[]) {
   const dir = path.join(appsDir, appId, 'tenants', tenantId);
@@ -27,7 +30,8 @@ beforeEach(async () => {
     mcp: { enabled: true, public_url: 'https://mcp.example.com/' },
   };
   vi.doMock('../config', () => ({ getAppsDir: () => appsDir, getDataDir: () => tmpRoot, loadConfig: () => cfg }));
-  vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir, loadConfig: () => cfg }));
+  loadConfigImpl = () => cfg;
+  vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir, loadConfig: () => loadConfigImpl() }));
   vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
   vi.doMock('../services/app', () => ({
     getApp: async (id: string) => (id === 'shop'
@@ -99,7 +103,7 @@ describe('alias checks fail closed', () => {
   it('save-time: an unloadable config is an exposed error, not an allow', async () => {
     await addTenant('shop', 't1', 't1.shop.example.com');
     cfg = undefined;
-    vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir, loadConfig: () => { throw new Error('boom'); } }));
+    loadConfigImpl = () => { throw new Error('boom'); };
     const { updateTenantTraefik } = await import('../services/traefikConfig');
     await expect(updateTenantTraefik('shop', 't1', { host_aliases: ['a.shop.example.com'] })).rejects.toMatchObject({ expose: true });
   });
