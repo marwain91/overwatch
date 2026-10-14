@@ -25,9 +25,13 @@ const SAFE_LABEL_LEAVES = new Set([
   'framedeny', 'contenttypenosniff', 'browserxssfilter', 'referrerpolicy',
   'accesscontrolallowmethods', 'accesscontrolalloworiginlist', 'accesscontrolmaxage', 'addvaryheader',
   'attempts', 'initialinterval', 'maxrequestbodybytes', 'memrequestbodybytes', 'maxresponsebodybytes',
-  'excludedcontenttypes', 'minresponsebodybytes', 'passhostheader', 'sticky', 'cookie', 'name',
+  'excludedcontenttypes', 'minresponsebodybytes', 'passhostheader', 'sticky', 'name',
   'secure', 'httponly', 'samesite', 'healthcheck', 'interval', 'timeout',
 ]);
+// Map-valued options: the segment after the map name is user data (a header name,
+// a plugin setting), so it can collide with an allowlisted leaf (`Cookie`, `Name`,
+// `Path`). Every value under them is masked whatever the leaf is.
+const USER_KEYED_MAP = /\.(customrequestheaders|customresponseheaders|sslproxyheaders|plugin)\./i;
 const labelLeaf = (key: string) => (key.split('.').pop() ?? '').replace(/\[\d+\]$/, '').toLowerCase();
 
 type Labels = Record<string, string>;
@@ -66,6 +70,7 @@ function redactAddress(address: string): string {
 function redactLabelValue(key: string, value: string): string {
   if (CREDENTIAL_LABEL_KEY.test(key)) return maskUserList(value);
   if (FORWARD_AUTH_LABEL.test(key)) return redactAddress(value);
+  if (USER_KEYED_MAP.test(key)) return MASK;
   return SAFE_LABEL_LEAVES.has(labelLeaf(key)) ? value : MASK;
 }
 const carriesMask = (v: string) => v.includes(MASK) || v.includes(encodeURIComponent(MASK));

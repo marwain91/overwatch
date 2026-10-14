@@ -155,6 +155,12 @@ describe('raw label values are masked fail-closed', () => {
     'traefik.http.middlewares.p.plugin.x.apikey': 'plugin-secret',
     'traefik.http.middlewares.f.forwardauth.tls.key': '/certs/private.key',
     'foo.bar.anything': 'unknown-value',
+    'traefik.http.middlewares.h.headers.customrequestheaders.Cookie': 'session=cookie-secret',
+    'traefik.http.middlewares.h.headers.customrequestheaders.X-Name': 'name-secret',
+    'traefik.http.middlewares.h.headers.customresponseheaders.Path': 'path-secret',
+    'traefik.http.middlewares.h.headers.sslproxyheaders.Port': 'port-secret',
+    'traefik.http.middlewares.pl.plugin.vendor.name': 'plugin-name-secret',
+    'traefik.http.services.ow.loadbalancer.sticky.cookie.name': 'sticky-name',
     'traefik.http.middlewares.i[0].ipallowlist.sourcerange[0]': '10.0.0.0/8',
   };
 
@@ -171,7 +177,12 @@ describe('raw label values are masked fail-closed', () => {
   it('hides unknown leaves from non-admins but keeps keys and allowlisted values', async () => {
     const labels = await labelsAs('viewer');
     expect(Object.keys(labels)).toEqual(Object.keys(LABELS));
-    expect(JSON.stringify(labels)).not.toMatch(/plugin-secret|private\.key|unknown-value/);
+    expect(JSON.stringify(labels)).not.toMatch(/plugin-secret|private\.key|unknown-value|cookie-secret|name-secret|path-secret|port-secret|plugin-name-secret/);
+    for (const k of Object.keys(LABELS).filter(k => /customrequestheaders|customresponseheaders|sslproxyheaders|\.plugin\./.test(k))) {
+      expect(labels[k], k).toBe('••••••••');
+    }
+    // The sticky cookie option is its own leaf and stays visible.
+    expect(labels['traefik.http.services.ow.loadbalancer.sticky.cookie.name']).toBe('sticky-name');
     expect(labels['traefik.http.middlewares.p.plugin.x.apikey']).toBe('••••••••');
     expect(labels['traefik.http.middlewares.f.forwardauth.tls.key']).toBe('••••••••');
     expect(labels['foo.bar.anything']).toBe('••••••••');
