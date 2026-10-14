@@ -9,7 +9,9 @@ import { HttpError } from '../utils/httpErrors';
  * messages from unexpected failures never leak.
  */
 export function errorHandler(err: any, req: Request, res: Response, next: NextFunction): void {
-  console.error(`Error in ${req.method} ${req.path}:`, err);
+  // Request data goes in as arguments, never into the format string: a path
+  // containing %s/%o would otherwise consume `err` and drop it from the log.
+  console.error('Error in %s %s:', req.method, req.path, err);
   if (res.headersSent) {
     next(err);
     return;

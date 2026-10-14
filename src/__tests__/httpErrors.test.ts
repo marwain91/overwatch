@@ -43,6 +43,18 @@ describe('errorHandler', () => {
     expect(spy).toHaveBeenCalled();
   });
 
+  it('keeps the request path out of the log format string', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const err = new Error('boom');
+    const app = express();
+    // No route params: the router would reject '%s' while decoding one.
+    app.use((_req, _res, next) => next(err));
+    app.use(errorHandler);
+    await request(app).get('/boom/%s%o');
+    // A '%s' in the path must not be able to consume `err` as a format argument.
+    expect(spy).toHaveBeenCalledWith('Error in %s %s:', 'GET', expect.stringContaining('/boom/'), err);
+  });
+
   it('hides non-exposed HttpError 5xx messages', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await request(appThrowing(new HttpError(503, 'db at 10.0.0.5 down'))).get('/boom');
