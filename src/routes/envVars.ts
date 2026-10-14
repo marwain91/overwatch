@@ -122,7 +122,7 @@ router.post('/tenants/:tenantId/overrides', validateTenantId, requireRole('edito
     return res.status(400).json({ error: 'sensitive must be a boolean' });
   }
 
-  await setTenantOverride(appId, tenantId, key, String(value), sensitive ?? false);
+  await setTenantOverride(appId, tenantId, key, String(value), sensitive ?? undefined);
   const { busy } = await regenerateTenantSharedEnv(appId, tenantId);
 
   res.json({ success: true, ...busyWarnings(busy ? [`${appId}/${tenantId}`] : []) });

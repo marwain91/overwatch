@@ -291,7 +291,7 @@ export async function setTenantOverride(
   tenantId: string,
   key: string,
   value: string,
-  sensitive: boolean = false
+  sensitive?: boolean,
 ): Promise<void> {
   const keyValidation = validateEnvVarKey(key);
   if (!keyValidation.valid) {
@@ -315,13 +315,19 @@ export async function setTenantOverride(
 
     const now = new Date().toISOString();
     const existing = tenant.overrides.find(o => o.key === key);
+    // An omitted flag keeps the stored one, or inherits the global variable's:
+    // defaulting to false would unmask a secret in the tenant's merged view.
+    const effectiveSensitive = sensitive
+      ?? existing?.sensitive
+      ?? (await listEnvVars(appId)).find(v => v.key === key)?.sensitive
+      ?? false;
 
     if (existing) {
       existing.value = value;
-      existing.sensitive = sensitive;
+      existing.sensitive = effectiveSensitive;
       existing.updatedAt = now;
     } else {
-      tenant.overrides.push({ key, value, sensitive, updatedAt: now });
+      tenant.overrides.push({ key, value, sensitive: effectiveSensitive, updatedAt: now });
     }
 
     await saveTenantOverridesStore(store);
