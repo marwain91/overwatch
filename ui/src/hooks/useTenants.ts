@@ -5,7 +5,7 @@ import { useWsAwareInterval, useWindowActive } from './useWsPolling';
 import type { Tenant, BackupSnapshot, BackupStatus, TenantEnvVar } from '../lib/types';
 
 export function useTenants(appId: string) {
-  const refetchInterval = useWsAwareInterval(30_000);
+  const refetchInterval = useWsAwareInterval(30_000, 120_000);
   return useQuery({
     queryKey: ['tenants', appId],
     queryFn: () => api.get<Tenant[]>(`/apps/${appId}/tenants`),

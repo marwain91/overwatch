@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { useCreateApp } from '../hooks/useApps';
 import type { AppService, AppRegistry, AppBackup, AppAdminAccess } from '../lib/types';
 import { RegistryForm } from '../components/RegistryForm';
-import { ServiceEditor } from '../components/ServiceEditor';
+import { ServiceEditor, useServiceKeys } from '../components/ServiceEditor';
 
 type Step = 'basics' | 'registry' | 'services' | 'backup' | 'review';
 const steps: Step[] = ['basics', 'registry', 'services', 'backup', 'review'];
@@ -43,6 +43,8 @@ export function AppCreateWizard() {
       health_check: { type: 'http', path: '/health', port: 3000, interval: '30s' },
     },
   ]);
+
+  const serviceKeys = useServiceKeys(services.length);
 
   const [backup, setBackup] = useState<AppBackup>({
     enabled: false,
@@ -145,7 +147,7 @@ export function AppCreateWizard() {
             </p>
             {services.map((svc, i) => (
               <ServiceEditor
-                key={i}
+                key={serviceKeys.keys[i]}
                 service={svc}
                 allowCommand
                 onChange={(updated) => {
@@ -153,12 +155,16 @@ export function AppCreateWizard() {
                   next[i] = updated;
                   setServices(next);
                 }}
-                onRemove={() => setServices(services.filter((_, j) => j !== i))}
+                onRemove={() => {
+                  serviceKeys.remove(i);
+                  setServices(services.filter((_, j) => j !== i));
+                }}
               />
             ))}
             <button
               className="btn btn-secondary"
-              onClick={() =>
+              onClick={() => {
+                serviceKeys.add();
                 setServices([
                   ...services,
                   {
@@ -166,8 +172,8 @@ export function AppCreateWizard() {
                     required: false,
                     is_init_container: false,
                   },
-                ])
-              }
+                ]);
+              }}
             >
               + Add Service
             </button>

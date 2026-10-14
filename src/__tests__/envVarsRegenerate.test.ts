@@ -78,6 +78,28 @@ describe('regenerateAllSharedEnvFiles', () => {
     expect(err.failures.map((f: any) => f.appId)).toEqual(['broken']);
     await expect(fs.access(path.join(appsDir, 'good', 'tenants', 'a', 'shared.env'))).resolves.toBeUndefined();
   });
+
+  it('treats a non-ENOENT failure reading a tenant .env as a failure, not "not a tenant", and still sweeps the rest', async () => {
+    await tenant('demo', 'ok');
+    const locked = await tenant('demo', 'locked');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    vi.doMock('fs/promises', () => ({
+      ...actual,
+      access: (p: any, ...rest: any[]) =>
+        String(p) === path.join(locked, '.env')
+          ? Promise.reject(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }))
+          : (actual.access as any)(p, ...rest),
+    }));
+    const { regenerateAllSharedEnvFiles, SharedEnvRegenerationError } = await import('../services/envVars');
+
+    const err: any = await regenerateAllSharedEnvFiles('demo').catch(e => e);
+
+    expect(err).toBeInstanceOf(SharedEnvRegenerationError);
+    expect(err.failures.map((f: any) => `${f.appId}/${f.tenantId}`)).toEqual(['demo/locked']);
+    await expect(actual.access(path.join(appsDir, 'demo', 'tenants', 'ok', 'shared.env'))).resolves.toBeUndefined();
+    await expect(actual.access(path.join(locked, 'shared.env'))).rejects.toThrow();
+  });
 });
 
 describe('shared.env regeneration vs the tenant lock', () => {

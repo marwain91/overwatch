@@ -90,9 +90,24 @@ export function writeAuditEntry(entry: Omit<AuditEntry, 'timestamp'> & { timesta
   auditWriter().append(JSON.stringify(full));
 }
 
-/** Drain the audit queue — intended for graceful shutdown, the CLI and tests. */
-export async function flushAuditLog(): Promise<void> {
-  await auditWriter().flush();
+/**
+ * Drain the audit queue — intended for graceful shutdown, the CLI and tests.
+ * Gives up after `timeoutMs` (an unwritable file or a stuck lock must not hold
+ * shutdown until the forced exit); unwritten entries are logged as lost.
+ */
+export async function flushAuditLog(timeoutMs: number = 5000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<void>(resolve => {
+    timer = setTimeout(() => {
+      console.error(`[audit] flush timed out after ${timeoutMs}ms; queued entries may not have been written`);
+      resolve();
+    }, timeoutMs);
+  });
+  try {
+    await Promise.race([auditWriter().flush(), timedOut]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** Keep the newest `maxEntries` entries; returns how many were dropped. */

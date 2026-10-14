@@ -18,7 +18,7 @@ describe('isPrivateAddress', () => {
     '0.0.0.0', '0.1.2.3', '10.0.0.1', '100.64.0.1', '100.127.255.255', '127.0.0.1', '127.5.6.7',
     '169.254.169.254', '172.16.0.1', '172.31.255.255', '192.168.1.1', '198.18.0.1',
     '224.0.0.1', '239.255.255.255', '240.0.0.1', '255.255.255.255',
-    '::', '::1', 'fe80::1', 'febf::1', 'fc00::1', 'fd12:3456::1', 'ff02::1',
+    '::', '::1', '0::1', '0:0:0:0:0:0:0:1', '0:0:0:0:0:0:0:0', 'fe80::1', 'febf::1', 'fc00::1', 'fd12:3456::1', 'ff02::1',
     '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:7f00:1', '::ffff:a9fe:a9fe', '64:ff9b::a00:1',
     '::7f00:1', '::127.0.0.1', '::a9fe:a9fe', '::10.0.0.1', '::ffff:0:7f00:1', '::ffff:0:127.0.0.1',
     '2002:7f00:1::', '2002:a9fe:a9fe::1', '2002:c0a8:101::', '2001:0:4136:e378:8000:63bf:3fff:fdd2', '2001::1',
@@ -65,6 +65,9 @@ describe('assertPublicUrl', () => {
     await expect(assertPublicUrl('')).rejects.toThrow(/Invalid/);
     await expect(assertPublicUrl('http://localhost./x')).rejects.toThrow(/private|internal/);
     await expect(assertPublicUrl('http://foo.internal./x')).rejects.toThrow(/private|internal/);
+    // Every trailing dot is an absolute-name marker, not just the first.
+    await expect(assertPublicUrl('http://localhost../x')).rejects.toThrow(/private|internal/);
+    await expect(assertPublicUrl('http://foo.internal.../x')).rejects.toThrow(/private|internal/);
   });
 
   it('fails closed when the name does not resolve', async () => {

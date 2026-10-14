@@ -215,9 +215,14 @@ export async function loadAliasContext(appId: string, tenantId: string): Promise
 export async function writeTenantTraefik(
   appId: string,
   tenantId: string,
-  overrides: TraefikTenant | undefined | null,
+  input: TraefikTenant | undefined | null | ((current: TraefikTenant | undefined) => Promise<TraefikTenant> | TraefikTenant),
 ): Promise<void> {
   return withFileLock(`tenant-traefik-${appId}-${tenantId}`, async () => {
+    // A function runs under the lock against the stored value, so a read-modify-write
+    // (restoring masked credentials) cannot be reverted by a concurrent writer.
+    const overrides = typeof input === 'function'
+      ? await input(await readTenantTraefik(appId, tenantId, { raw: true }))
+      : input;
     const file = getTenantTraefikPath(appId, tenantId);
     if (!overrides || isEmpty(overrides)) {
       try { await fs.unlink(file); } catch (err: any) { if (err.code !== 'ENOENT') throw err; }

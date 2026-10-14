@@ -25,7 +25,8 @@ afterEach(async () => {
   vi.doUnmock('../config');
   vi.doUnmock('../services/fileLock');
   vi.doUnmock('../middleware/requireRole');
-    await fs.rm(tmpRoot, { recursive: true, force: true });
+  vi.doUnmock('../services/auditLog');
+  await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
 describe('services/users roles', () => {
@@ -161,5 +162,54 @@ describe('routes/adminUsers roles', () => {
     const app = await makeApp();
     const res = await request(app).get('/api/admin-users').expect(200);
     expect(res.body.map((u: any) => [u.email, u.role])).toEqual([['root@example.com', 'admin'], ['v@example.com', 'viewer']]);
+  });
+});
+
+describe('routes/adminUsers destructive and audited operations', () => {
+  async function makeApp(audit: boolean) {
+    const { getUserRole } = await import('../services/users');
+    const express = (await import('express')).default;
+    const router = (await import('../routes/adminUsers')).default;
+    const { errorHandler } = await import('../middleware/errorHandler');
+    const { auditLog } = await import('../middleware/audit');
+    const app = express();
+    app.use(express.json());
+    app.use(async (_req, res, next) => {
+      res.locals.user = { email: 'root@example.com', role: await getUserRole('root@example.com') };
+      next();
+    });
+    app.use('/api/admin-users', ...(audit ? [auditLog] : []), router);
+    app.use(errorHandler);
+    return app;
+  }
+
+  it('DELETE needs an X-Confirm-Id header that matches the email', async () => {
+    await seed([rec('root@example.com', 'admin'), rec('v@example.com', 'viewer')]);
+    const request = (await import('supertest')).default;
+    const app = await makeApp(false);
+    const missing = await request(app).delete('/api/admin-users/v%40example.com').expect(400);
+    expect(missing.body.error).toMatch(/X-Confirm-Id/);
+    await request(app).delete('/api/admin-users/v%40example.com').set('X-Confirm-Id', 'other@example.com').expect(400);
+    const { listAdminUsers } = await import('../services/users');
+    expect((await listAdminUsers()).map(u => u.email)).toContain('v@example.com');
+
+    await request(app).delete('/api/admin-users/v%40example.com').set('X-Confirm-Id', 'v@example.com').expect(200);
+    expect((await listAdminUsers()).map(u => u.email)).toEqual(['root@example.com']);
+  });
+
+  it('PATCH role writes an audit entry naming the target and the new role', async () => {
+    const writeAuditEntry = vi.fn();
+    vi.doMock('../services/auditLog', () => ({ writeAuditEntry: (e: unknown) => writeAuditEntry(e) }));
+    await seed([rec('root@example.com', 'admin'), rec('v@example.com', 'viewer')]);
+    const request = (await import('supertest')).default;
+    const app = await makeApp(true);
+    await request(app).patch('/api/admin-users/v%40example.com').send({ role: 'editor' }).expect(200);
+    expect(writeAuditEntry).toHaveBeenCalledTimes(1);
+    expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      user: 'root@example.com',
+      action: 'change role of v@example.com to editor',
+      method: 'PATCH',
+      status: 200,
+    }));
   });
 });

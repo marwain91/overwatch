@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { resolveGoogleAdmin } from '../services/identity';
-import { signSession, verifySession } from '../auth/session';
+import { signSession, type Session } from '../auth/session';
 import { authMiddleware, type AuthUser } from '../middleware/auth';
 import { getUserRole } from '../services/users';
 import { asyncHandler } from '../utils/asyncHandler';
@@ -51,10 +51,10 @@ router.post('/google', asyncHandler(async (req: Request, res: Response) => {
 
 // Verify JWT token. Runs behind authMiddleware so a removed admin gets 401 and
 // the response carries the caller's current role.
-router.get('/verify', authMiddleware, (req: Request, res: Response) => {
+router.get('/verify', authMiddleware, (_req: Request, res: Response) => {
   const { email, role } = res.locals.user as AuthUser;
-  // authMiddleware already validated the token; re-read it only for profile claims.
-  const session = verifySession((req.headers.authorization as string).substring(7));
+  // Claims authMiddleware already decoded; the token is verified once per request.
+  const session = res.locals.session as Session;
   res.json({
     user: {
       email,

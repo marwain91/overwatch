@@ -40,19 +40,21 @@ router.get('/summary', asyncHandler(async (req, res) => {
     }
   }
 
-  // Resolve non-secret config values for display
+  // Resolve non-secret config values for display; a disabled backup block may
+  // still carry stale settings that must not be shown as active.
   let bucket: string | null = null;
   let endpoint: string | null = null;
-  if (app.backup?.s3?.bucket_env) {
-    bucket = process.env[app.backup.s3.bucket_env] || null;
+  const backup = app.backup?.enabled ? app.backup : undefined;
+  if (backup?.s3?.bucket_env) {
+    bucket = process.env[backup.s3.bucket_env] || null;
   }
-  if (app.backup?.s3?.endpoint_env) {
-    endpoint = process.env[app.backup.s3.endpoint_env] || null;
+  if (backup?.s3?.endpoint_env) {
+    endpoint = process.env[backup.s3.endpoint_env] || null;
   }
 
   res.json({
     ...info,
-    schedule: app.backup?.schedule || null,
+    schedule: backup?.schedule || null,
     lastBackup,
     totalSnapshots,
     bucket,

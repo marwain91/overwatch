@@ -1,4 +1,5 @@
 import type { OverwatchConfig } from '../config/schema';
+import { loadConfig } from '../config/loader';
 
 /**
  * Env names that hold Overwatch's own secrets (see templates/overwatch/docker-compose.yml).
@@ -43,4 +44,16 @@ export function isReservedSecretEnv(
   if (RESERVED_SECRET_PREFIXES.some(p => name.startsWith(p))) return true;
   const dbEnv = config?.database?.root_password_env;
   return !!dbEnv && name === dbEnv;
+}
+
+/**
+ * The loaded config, or null when it cannot be read; callers then fall back to
+ * the static reserved list (isReservedSecretEnv accepts a null config).
+ */
+export function loadConfigOrNull(): OverwatchConfig | null {
+  try {
+    return loadConfig();
+  } catch {
+    return null;
+  }
 }

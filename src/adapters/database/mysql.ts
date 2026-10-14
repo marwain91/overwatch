@@ -2,7 +2,7 @@ import mysql from 'mysql2/promise';
 import { spawn } from 'child_process';
 import { createReadStream, createWriteStream } from 'fs';
 import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
-import { BaseDatabaseAdapter } from './base';
+import { BaseDatabaseAdapter, STDERR_TAIL_BYTES } from './base';
 
 /**
  * MySQL/MariaDB database adapter
@@ -57,6 +57,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     const connection = await this.pool!.getConnection();
     let created = false;
     let userCreated = false;
+    let grantAttempted = false;
 
     try {
       const [dbRows] = await connection.query(
@@ -82,13 +83,20 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
         await connection.query(`ALTER USER '${userName}'@'%' IDENTIFIED BY ?`, [password]);
       }
 
+      grantAttempted = true;
       await connection.query(
         `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${userName}'@'%'`
       );
       await connection.query('FLUSH PRIVILEGES');
       return { created, userCreated };
     } catch (error) {
-      // Undo only what this call created; never touch pre-existing objects
+      // Undo only what this call created; never touch pre-existing objects.
+      // A pre-existing user keeps its account, but a grant on the database we
+      // are about to drop would otherwise linger and apply to a future database
+      // with the same name.
+      if (created && !userCreated && grantAttempted) {
+        await connection.query(`REVOKE ALL PRIVILEGES ON \`${dbName}\`.* FROM '${userName}'@'%'`).catch(() => {});
+      }
       if (created) await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``).catch(() => {});
       if (userCreated) await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`).catch(() => {});
       throw error;
@@ -182,7 +190,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       input.pipe(proc.stdin);
 
       let stderr = '';
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      proc.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-STDERR_TAIL_BYTES); });
       proc.on('close', (code) => {
         if (code === 0) resolve();
         else reject(new Error(`mysql restore exited with code ${code}: ${stderr}`));

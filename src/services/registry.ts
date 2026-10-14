@@ -77,12 +77,16 @@ function parseNextLink(link: string | null, registry: string): string | null {
   if (!match) return null;
   const raw = match[1];
   // The Bearer token is sent to this URL: never follow it off the registry's origin.
+  // Both sides go through URL so an explicit default port (`:443`) still matches.
   if (/^https?:\/\//i.test(raw)) {
     try {
-      return new URL(raw).origin === `https://${registry}` ? raw : null;
+      if (new URL(raw).origin === new URL(`https://${registry}`).origin) return raw;
     } catch {
-      return null;
+      // fall through: an unparsable link counts as foreign
     }
+    // Host only: the link's path and query can carry tokens.
+    console.warn(`[registry] Ignoring Link: next that points away from ${registry}`);
+    return null;
   }
   return `https://${registry}${raw.startsWith('/') ? '' : '/'}${raw}`;
 }

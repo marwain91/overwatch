@@ -34,4 +34,18 @@ describe('SPA fallback', () => {
     expect((await request(app).get('/favicon.ico')).status).toBe(404);
     expect((await request(app).get('/foo.map')).status).toBe(404);
   });
+
+  it('404s every known static-file extension', async () => {
+    for (const ext of ['js', 'mjs', 'css', 'map', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'woff', 'woff2', 'ttf', 'json', 'txt', 'wasm']) {
+      expect((await request(app).get(`/missing.${ext}`)).status, ext).toBe(404);
+    }
+  });
+
+  it('serves index.html for client routes that contain dots', async () => {
+    for (const url of ['/apps/foo/tenants/acme.example.com', '/tenants/v1.2.3', '/users/john.doe']) {
+      const res = await request(app).get(url);
+      expect(res.status, url).toBe(200);
+      expect(res.text).toContain('app');
+    }
+  });
 });
