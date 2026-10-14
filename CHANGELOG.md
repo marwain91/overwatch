@@ -10,11 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Node.js 24 LTS everywhere.** The Docker image stages, CI and the CLI binaries move from Node 22 to Node 24 (LTS until April 2028; Node 22 reaches end of life in April 2027). Running from source or building the CLI now needs Node 24.
+- **CI actions updated** (docker/build-push-action 7.4.0, docker/metadata-action 6.2.0).
 
 ### Fixed
 
 - **A container without a name no longer hides every tenant.** Docker reports `Names: []` for some leftover containers (for example a stale build container in the `created` state); one of those made the tenant and container listings come back empty in the API and UI.
 - **A request path containing `%s` or `%o` no longer mangles the server error log.** The path was part of the log format string, so such a path consumed the error and dropped it from the log line (CodeQL `js/tainted-format-string`).
+
+### Upgrade notes
+
+- **Running Overwatch from source or building the CLI binary now needs Node.js 24.** Docker image users need no action.
 
 ## [1.8.1] — 2026-10-14
 
