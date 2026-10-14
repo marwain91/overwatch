@@ -27,6 +27,7 @@ import { writeFileAtomic } from '../utils/atomicJson';
 import { withTenantLock } from './fileLock';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
+import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 
 const execFileAsync = promisify(execFile);
 // Compose resolves ${VAR} against its own environment, so docker runs with the
@@ -35,7 +36,6 @@ const execFileAsync = promisify(execFile);
 // stall must not pin the tenant lock (and a request) forever.
 const DOCKER_MAX_BUFFER = 64 * 1024 * 1024;
 const COMPOSE_TIMEOUT_MS = 300_000;
-const COMPOSE_PULL_TIMEOUT_MS = 900_000;
 const execDocker = (args: string[], timeoutMs: number = COMPOSE_TIMEOUT_MS) =>
   execFileAsync('docker', args, { env: getDockerEnv(), timeout: timeoutMs, maxBuffer: DOCKER_MAX_BUFFER });
 
@@ -260,7 +260,7 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
 
     // Create external volumes and start tenant
     await ensureExternalVolumes(composePath);
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], COMPOSE_LONG_TIMEOUT_MS);
   } catch (error) {
     // Rollback in reverse order of creation. If compose was written and `up` was
     // attempted, containers may exist even when the original command failed —
@@ -564,7 +564,7 @@ async function updateTenantLocked(
   // not found') leaves the tenant exactly as it was.
   emit('pull', 'started');
   try {
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull'], COMPOSE_PULL_TIMEOUT_MS);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull'], COMPOSE_LONG_TIMEOUT_MS);
     await ensureExternalVolumes(composePath);
     emit('pull', 'completed');
   } catch (error: any) {
@@ -580,7 +580,7 @@ async function updateTenantLocked(
   // file (e.g. a service removed via an upstream manifest update).
   emit('restart', 'started');
   try {
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans'], COMPOSE_LONG_TIMEOUT_MS);
     emit('restart', 'completed');
     await pruneReplacedImages(oldImages, tenantPath, composePath, appId, tenantId);
     emit('done', 'completed');
@@ -594,7 +594,7 @@ async function updateTenantLocked(
     const initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
     const detail = initFailures ? `${composeError}\n\n${initFailures}` : composeError;
     await restoreTenantUpdateStateBestEffort('restart failure');
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']).catch((rollbackErr: any) => {
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], COMPOSE_LONG_TIMEOUT_MS).catch((rollbackErr: any) => {
       console.error(`[tenant:update] Failed to restart restored compose for ${appId}/${tenantId}: ${rollbackErr?.message || rollbackErr}`);
     });
     emit('restart', 'failed', detail);
