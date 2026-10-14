@@ -153,7 +153,7 @@ export const BackupConfigSchema = z.object({
 });
 
 export const TenantTemplateSchema = z.object({
-  dir: z.string().default('./tenant-template'),
+  dir: z.string().optional(),
   compose_file: z.string().default('docker-compose.yml'),
   env_template: z.string().default('.env.template'),
 });
