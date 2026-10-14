@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { applyApp, restoreApp, purgeApp } from '../services/app';
 import { assertAppRawLabelsOwned } from '../services/traefikLabels';
+import { assertServiceNamesValid } from '../utils/validators';
 import { writeAuditEntry, flushAuditLog } from '../services/auditLog';
 import { GREEN, YELLOW, RED, BOLD, NC } from './config/utils';
 
@@ -62,6 +63,7 @@ async function runApply(args: string[]): Promise<void> {
   const actor = `cli:${currentOsUser()}`;
   try {
     const def = parsed as { id?: unknown; services?: unknown };
+    assertServiceNamesValid(def?.services);
     if (typeof def?.id === 'string') assertAppRawLabelsOwned(def.id, def.services);
     const { result, app, changedKeys } = await applyApp(parsed, actor);
     writeAuditEntry({

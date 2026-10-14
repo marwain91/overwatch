@@ -10,6 +10,7 @@ import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
 import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
 import { assertAppRawLabelsOwned } from '../services/traefikLabels';
+import { assertServiceNamesValid } from '../utils/validators';
 
 const router = Router();
 
@@ -51,6 +52,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
     return res.status(400).json({ error: `Invalid app definition: ${errors}` });
   }
 
+  assertServiceNamesValid(parseResult.data.services);
   assertAppRawLabelsOwned(parseResult.data.id, parseResult.data.services);
   const app = await createApp(parseResult.data);
   res.status(201).json(app);
@@ -76,6 +78,7 @@ router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (r
     const errors = parseResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
     throw new ValidationError(`Invalid app definition: ${errors}`);
   }
+  assertServiceNamesValid(parseResult.data.services);
   assertAppRawLabelsOwned(appId, parseResult.data.services);
   const app = await updateApp(parseResult.data);
   res.json(app);

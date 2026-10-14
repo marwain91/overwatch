@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'util';
 import { AppDefinitionStatic, AppService, AppServiceRoutingSchema } from '../models/app';
+import { isValidSlug } from '../utils/validators';
 
 type AppServiceRouting = NonNullable<AppService['routing']>;
 type Fields = Record<string, unknown>;
@@ -46,7 +47,15 @@ export function applyManifestPolicy(
   for (const field of PROTECTED_APP_FIELDS) {
     keepCurrent(next, manifest, current ?? undefined, field, field, ignored);
   }
-  next.services = manifest.services.map(service =>
+  // A service the manifest adds must have a slug name: the name reaches container
+  // names and labels. Services already in the definition keep loading as before.
+  const accepted = manifest.services.filter(service => {
+    if (isValidSlug(service.name) || current?.services.some(s => s.name === service.name)) return true;
+    ignored.push(`services.${service.name}`);
+    console.warn(`[manifest] skipped added service with invalid name ${JSON.stringify(service.name)}`);
+    return false;
+  });
+  next.services = accepted.map(service =>
     applyServicePolicy(service, current?.services.find(s => s.name === service.name), current !== null, ignored));
   return { next: next as AppDefinitionStatic, ignored };
 }

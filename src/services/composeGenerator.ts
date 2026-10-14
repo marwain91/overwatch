@@ -108,7 +108,7 @@ export function generateComposeFile(options: GenerateOptions): string {
       'com.overwatch.managed=true',
       `com.overwatch.app-id=${app.id}`,
       `com.overwatch.tenant-id=${tenantId}`,
-      `com.overwatch.service=${service.name}`,
+      `com.overwatch.service=${escapeDollar(service.name)}`,
       // Traefik labels for routable services (built via traefikLabels.ts)
       ...buildTraefikLabels({
         app,

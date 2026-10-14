@@ -124,6 +124,24 @@ describe('PUT /api/apps/:appId', () => {
   });
 });
 
+describe('service names on the write path', () => {
+  it.each(['web"x', 'we$b', 'Web', 'web_api', 'a\nb'])('POST and PUT reject the service name %j with 400', async (name) => {
+    const app = await mount();
+    const bad = { services: [{ name, image_suffix: 'web', ports: { internal: 80 } }] };
+    const post = await request(app).post('/api/apps').send(validApp('demo', bad)).expect(400);
+    expect(post.body.error).toMatch(/service name/i);
+    await request(app).post('/api/apps').send(validApp('demo')).expect(201);
+    await request(app).put('/api/apps/demo').send(bad).expect(400);
+  });
+
+  it('accepts slug-style service names', async () => {
+    const app = await mount();
+    await request(app).post('/api/apps').send(validApp('demo', {
+      services: [{ name: 'web-api', image_suffix: 'web' }, { name: 'w2', image_suffix: 'w' }],
+    })).expect(201);
+  });
+});
+
 describe('GET /api/apps/:appId/tags', () => {
   const cases: Array<[string, Error, RegExp]> = [
     ['authentication', new Error('GitHub API denied access (HTTP 403). GHCR_TOKEN needs the repo scope for ns/demo.'), /authentication failed/i],

@@ -1,3 +1,5 @@
+import { ValidationError } from './httpErrors';
+
 /** Slug pattern: lowercase alphanumeric with hyphens (tenant IDs, app IDs) */
 export const SLUG_RE = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
 
@@ -19,6 +21,21 @@ export const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{1,63}$/;
 
 export function isValidSlug(id: string, maxLength: number = 63): boolean {
   return id.length <= maxLength && SLUG_RE.test(id);
+}
+
+/**
+ * Write-path check for app definitions: service names end up in container
+ * names, labels and compose keys, so new input must be slugs. Stored
+ * definitions are not re-checked here, so existing odd names keep loading.
+ */
+export function assertServiceNamesValid(services: unknown): void {
+  if (!Array.isArray(services)) return;
+  for (const svc of services) {
+    const name = svc?.name;
+    if (typeof name === 'string' && !isValidSlug(name)) {
+      throw new ValidationError(`Invalid service name ${JSON.stringify(name)}: use lowercase letters, digits and hyphens`);
+    }
+  }
 }
 
 export function isValidContainerId(id: string): boolean {

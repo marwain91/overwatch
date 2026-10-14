@@ -91,6 +91,17 @@ describe('overwatch apps apply — end-to-end', { timeout: 30_000 }, () => {
     await expect(fs.stat(path.join(dataDir, 'apps.d', 'acme.json'))).rejects.toThrow();
   });
 
+  it('refuses a service name that is not a slug', async () => {
+    const def: any = validStatic('acme');
+    def.services[0].name = 'web"x';
+    const appFile = path.join(tmpRoot, 'acme.json');
+    await fs.writeFile(appFile, JSON.stringify(def));
+    const proc = runCli(['apps', 'apply', appFile]);
+    expect(proc.status).toBe(2);
+    expect(proc.stderr).toMatch(/service name/i);
+    await expect(fs.stat(path.join(dataDir, 'apps.d', 'acme.json'))).rejects.toThrow();
+  });
+
   it('reads from stdin with "-"', async () => {
     const proc = runCli(['apps', 'apply', '-'], JSON.stringify(validStatic('widgets')));
     expect(proc.status).toBe(0);

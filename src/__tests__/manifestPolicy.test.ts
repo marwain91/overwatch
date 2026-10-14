@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { AppDefinitionStaticSchema, type AppDefinitionStatic } from '../models/app';
 import { applyManifestPolicy, manifestPolicyBaseline } from '../services/manifestPolicy';
 
@@ -471,5 +471,25 @@ describe('manifestPolicyBaseline', () => {
     expect(service(next, 'legacy-worker').volumes).toEqual([{ name: 'jobs', container_path: '/jobs' }]);
     expect(service(next, 'legacy-worker').command).toEqual(['node', 'legacy.js']);
     expect(ignored).toEqual(['services.legacy-worker.volumes']);
+  });
+
+  it('skips a manifest-added service with an invalid name, with a warning, and keeps valid and existing ones', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const manifest = manifestFrom(m => {
+      m.services.push({ name: 'good-one', image_suffix: 'x' });
+      m.services.push({ name: 'bad"name\n', image_suffix: 'x' });
+      m.services.push({ name: 'Bad_Name', image_suffix: 'x' });
+    });
+    const { next, ignored } = applyManifestPolicy(CURRENT, manifest);
+    expect(next.services.map(s => s.name)).toEqual([...CURRENT.services.map(s => s.name), 'good-one']);
+    expect(ignored).toContain('services.Bad_Name');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('keeps an already-stored service whose name would not pass the slug rule', () => {
+    const odd = def({ ...CURRENT_INPUT, services: [{ name: 'Odd_Name', image_suffix: 'backend' }] });
+    const { next } = applyManifestPolicy(odd, odd);
+    expect(next.services.map(s => s.name)).toEqual(['Odd_Name']);
   });
 });
