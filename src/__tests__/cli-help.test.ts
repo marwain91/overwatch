@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -78,8 +78,13 @@ afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
-// Each test spawns the CLI through tsx (a cold compile of the CLI graph), which
-// alone takes 1-5s and more on a loaded machine; the 5s default is too tight.
+// The first tsx spawn compiles the whole CLI graph (tens of seconds on a loaded
+// machine); warm tsx's on-disk cache once so no single test pays for it.
+beforeAll(() => {
+  spawnSync(process.execPath, ['--import', 'tsx', cliEntry, '--help'], { encoding: 'utf-8' });
+}, 180_000);
+
+// Each test still spawns a fresh CLI process (1-5s, more on a loaded machine).
 describe('overwatch CLI help', { timeout: 30_000 }, () => {
   it('prints update help without pulling images', async () => {
     const proc = runCli(['update', '--help']);
