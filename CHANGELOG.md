@@ -50,8 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Backend hot paths are cheaper.** Tenant listing makes one Docker listing and one app read, app definitions are cached against file metadata (CLI edits are still picked up), and health probes run concurrently.
 - **The registry form and service editor are shared between the create wizard and app settings**, and settings can now edit the registry `tag_pattern`. UI API types are generated from the backend schemas by `npm run build`.
 - **Dependencies are refreshed and `npm audit` is clean** for the backend and UI (including the critical `proxy-addr` advisory via Express). Docker image stages, CI and the CLI binaries target Node 22 (the image was on `node:26-alpine`), CI actions are pinned to commit SHAs, and `curl` is dropped from the runtime image.
-- **`data_dir`, `OVERWATCH_DEPLOY_DIR` and `OVERWATCH_SKIP_CHECKSUM` are documented.**
-<!-- T26b/T27: test reorganisation, compiler strictness -->
+- **`data_dir`, `OVERWATCH_DEPLOY_DIR` and `OVERWATCH_SKIP_CHECKSUM` are documented**, and `docs/architecture.md` lists the current source tree.
+- **The backend compiles with `noUnusedLocals` and `noUnusedParameters`, and the tests are type-checked in CI** (`npm run typecheck:test`, using the new `tsconfig.test.json`). Batch-named test files were split into per-module files; no test was added or removed.
 
 ### Added
 
