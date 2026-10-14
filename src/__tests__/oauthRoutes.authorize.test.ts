@@ -51,6 +51,25 @@ describe('oauth /authorize', () => {
     expect(res.text).toContain('accounts.google.com/gsi/client'); // GIS script
   });
 
+  it('rejects an unknown resource value', async () => {
+    const client = await registerClient({ client_name: 'c', redirect_uris: ['https://client/cb'] });
+    const res = await request(appWith()).get('/oauth/authorize').query({
+      response_type: 'code', client_id: client.client_id, redirect_uri: 'https://client/cb',
+      code_challenge: 'abc', code_challenge_method: 'S256', resource: 'https://other.example.com/mcp',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_target');
+  });
+
+  it('accepts the MCP resource value', async () => {
+    const client = await registerClient({ client_name: 'c', redirect_uris: ['https://client/cb'] });
+    const res = await request(appWith()).get('/oauth/authorize').query({
+      response_type: 'code', client_id: client.client_id, redirect_uri: 'https://client/cb',
+      code_challenge: 'abc', code_challenge_method: 'S256', resource: ISSUER + '/mcp',
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('rejects a redirect_uri that is not registered', async () => {
     const client = await registerClient({ client_name: 'c', redirect_uris: ['https://client/cb'] });
     const res = await request(appWith()).get('/oauth/authorize').query({
@@ -60,7 +79,7 @@ describe('oauth /authorize', () => {
     expect(res.status).toBe(400);
   });
 
-  it('callback issues a code and redirects for an admin', async () => {
+  it('callback shows a consent page instead of issuing a code', async () => {
     const client = await registerClient({ client_name: 'c', redirect_uris: ['https://client/cb'] });
     const page = await request(appWith()).get('/oauth/authorize').query({
       response_type: 'code', client_id: client.client_id, redirect_uri: 'https://client/cb',
@@ -74,11 +93,9 @@ describe('oauth /authorize', () => {
       .type('form')
       .send({ request_token: reqToken, credential: 'google-jwt' });
 
-    expect(res.status).toBe(302);
-    const loc = new URL(res.headers.location);
-    expect(loc.origin + loc.pathname).toBe('https://client/cb');
-    expect(loc.searchParams.get('code')).toMatch(/.+/);
-    expect(loc.searchParams.get('state')).toBe('s1');
+    expect(res.status).toBe(200);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('name="consent_token"');
   });
 
   it('callback denies a non-admin', async () => {

@@ -1,21 +1,9 @@
+import * as yaml from 'js-yaml';
 import { AppDefinition, AppService } from '../models/app';
 import { OverwatchConfig } from '../config/schema';
 import type { TraefikTenant } from '../models/traefik';
 import { resolveCertResolver } from '../config/loader';
 import { buildTraefikLabels } from './traefikLabels';
-
-/** Escape a value for safe use inside a double-quoted YAML string */
-function yamlEscape(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r');
-}
-
-function labelLine(key: string, value: string): string {
-  return `      - "${yamlEscape(`${key}=${value}`)}"`;
-}
 
 interface GenerateOptions {
   app: AppDefinition;
@@ -26,9 +14,49 @@ interface GenerateOptions {
   tenantTraefik?: TraefikTenant;
 }
 
+type DependsOnCondition = 'service_completed_successfully' | 'service_started';
+
+interface ComposeHealthcheck {
+  test: string[];
+  interval: string;
+  timeout: string;
+  retries: number;
+  start_period?: string;
+}
+
+interface ComposeService {
+  image: string;
+  container_name: string;
+  restart: 'no' | 'unless-stopped';
+  user?: string;
+  env_file: string[];
+  command?: string[];
+  environment?: Record<string, string>;
+  volumes?: string[];
+  networks: string[];
+  healthcheck?: ComposeHealthcheck;
+  depends_on?: Record<string, { condition: DependsOnCondition }>;
+  labels: string[];
+}
+
+type ComposeNetwork = { external: true } | null;
+type ComposeVolume = { external: true } | { name: string };
+
+interface ComposeFile {
+  services: Record<string, ComposeService>;
+  networks: Record<string, ComposeNetwork>;
+  volumes?: Record<string, ComposeVolume>;
+}
+
+type AppServiceVolume = NonNullable<AppService['volumes']>[number];
+
 /**
- * Generate a docker-compose.yml content from app service definitions.
- * Produces YAML as a string (no external YAML library dependency needed).
+ * Generate a tenant docker-compose.yml from app service definitions.
+ *
+ * The file is built as data and serialised by js-yaml (as infraComposeGenerator
+ * does), so no value — service names, env keys, volume paths, label values —
+ * can change its structure. `${VAR}` references stay plain strings for compose
+ * to interpolate at deploy time.
  */
 export function generateComposeFile(options: GenerateOptions): string {
   const { app, tenantId, domain, config, tenantTraefik } = options;
@@ -37,11 +65,13 @@ export function generateComposeFile(options: GenerateOptions): string {
   // For legacy installs (no traefik.cert_resolvers), the resolver helper still works against
   // the synthesized shim; the resulting name is what the legacy tenant.yml template carries.
   let certResolverName: string;
+  let certResolverIsRef = false;
   try {
     certResolverName = resolveCertResolver(domain, config.traefik, tenantTraefik?.cert_resolver).name;
   } catch (err) {
     // Fallback for misconfigured legacy installs — old behavior used the env var.
     certResolverName = '${CERT_RESOLVER}';
+    certResolverIsRef = true;
   }
   const externalNetwork = config.networking?.external_network || `${prefix}-network`;
   const internalNetworkTemplate = config.networking?.internal_network_template || `${prefix}-\${tenantId}-internal`;
@@ -50,13 +80,11 @@ export function generateComposeFile(options: GenerateOptions): string {
     .replace(/\$\{tenantId\}/g, tenantId);
   const needsInternalNetwork = app.services.some(s => s.networks?.includes('internal'));
   const imageRegistry = `${app.registry.url}/${app.registry.repository}`;
+  const where = `${app.id}/${tenantId}`;
 
   // Resolve depends_on names against the app's own services so an init
   // container dependency can be rendered with the right wait condition.
   const servicesByName = new Map(app.services.map(s => [s.name, s]));
-
-  const lines: string[] = [];
-  lines.push('services:');
 
   // Sort services: non-init first, then init containers
   const sortedServices = [...app.services].sort((a, b) => {
@@ -66,216 +94,229 @@ export function generateComposeFile(options: GenerateOptions): string {
     return 0;
   });
 
-  for (const service of sortedServices) {
-    const containerName = `${app.id}-${tenantId}-${service.name}`;
+  const services = sortedServices.map((service): [string, ComposeService] => {
     const imageName = service.image_suffix || service.name;
-    const image = `${imageRegistry}/${imageName}:\${IMAGE_TAG:-${app.default_image_tag}}`;
 
-    lines.push('');
-    lines.push(`  ${service.name}:`);
-    lines.push(`    image: ${image}`);
-    lines.push(`    container_name: ${containerName}`);
+    const serviceNetworks = service.networks || ['external'];
+    const networks: string[] = [];
+    if (serviceNetworks.includes('external')) networks.push(externalNetwork);
+    if (serviceNetworks.includes('internal') && needsInternalNetwork) networks.push(internalNetwork);
 
-    if (service.is_init_container) {
-      lines.push('    restart: "no"');
-    } else {
-      lines.push('    restart: unless-stopped');
+    // Ownership labels are used by Overwatch for safe Docker discovery and
+    // authorization. Keep them on every service, including non-routable workers.
+    const labels = [
+      'com.overwatch.managed=true',
+      `com.overwatch.app-id=${app.id}`,
+      `com.overwatch.tenant-id=${tenantId}`,
+      `com.overwatch.service=${escapeDollar(service.name)}`,
+      // Traefik labels for routable services (built via traefikLabels.ts)
+      ...buildTraefikLabels({
+        app,
+        tenantId,
+        domain,
+        service,
+        certResolverName,
+        traefik: config.traefik,
+        tenantOverrides: tenantTraefik,
+      }).map(l => escapeLabel(l, certResolverIsRef)),
+    ];
+
+    // Keys are written in this order; js-yaml omits the `undefined` ones.
+    return [service.name, {
+      image: `${imageRegistry}/${imageName}:\${IMAGE_TAG:-${app.default_image_tag}}`,
+      container_name: `${app.id}-${tenantId}-${service.name}`,
+      restart: service.is_init_container ? 'no' : 'unless-stopped',
+      user: service.user || undefined,
+      env_file: ['.env', 'shared.env'],
+      command: service.command && service.command.length > 0 ? service.command : undefined,
+      environment: buildEnvironment(service, { config, domain, service }, where),
+      volumes: buildServiceVolumes(service, app.id, tenantId),
+      networks,
+      healthcheck: buildHealthcheck(service),
+      depends_on: buildDependsOn(service, app, servicesByName, where),
+      labels,
+    }];
+  });
+
+  const networks: Array<[string, ComposeNetwork]> = [[externalNetwork, { external: true }]];
+  if (needsInternalNetwork) networks.push([internalNetwork, null]);
+
+  const compose: ComposeFile = {
+    services: toMapping(services, 'service', where),
+    networks: toMapping(networks, 'network', where),
+  };
+  const volumes = buildVolumeDeclarations(app, tenantId);
+  if (volumes.length > 0) compose.volumes = toMapping(volumes, 'volume', where);
+
+  // lineWidth -1 keeps every value (long Traefik rules included) on one line.
+  // js-yaml's default compat mode also quotes YAML 1.1 look-alikes ("no",
+  // "1000:1000"), so any compose YAML parser reads them back as strings.
+  return yaml.dump(compose, { lineWidth: -1, noRefs: true, quotingType: '"' });
+}
+
+/** `$` → `$$`: compose reads `$$` as a literal `$` and interpolates a bare `$`. */
+function escapeDollar(value: string): string {
+  return value.replace(/\$/g, '$$$$');
+}
+
+/**
+ * Escape a `key=value` label so the value reaches Traefik literally (an
+ * `$apr1$` htpasswd hash or a `$1` regex replacement would otherwise be
+ * interpolated away). basicauth users written with an already-doubled `$$`
+ * (the old manual workaround) are collapsed first so they keep working;
+ * `$$` is never valid inside an htpasswd hash.
+ */
+function escapeLabel(label: string, keepCertResolverRef: boolean): string {
+  const eq = label.indexOf('=');
+  if (eq < 0) return escapeDollar(label);
+  const key = label.slice(0, eq);
+  let value = label.slice(eq + 1);
+  if (key.endsWith('.basicauth.users')) value = value.replace(/\$\$/g, '$');
+  let escaped = escapeDollar(value);
+  // The legacy fallback resolver is deliberately a reference into the tenant .env.
+  if (keepCertResolverRef) escaped = escaped.split('$${CERT_RESOLVER}').join('${CERT_RESOLVER}');
+  return `${key}=${escaped}`;
+}
+
+/**
+ * Build a YAML mapping from entries. Keys become own data properties, so a
+ * name like `__proto__` stays a key. A repeated key throws rather than
+ * silently keeping the last value; compose rejects duplicate keys, so such
+ * input never deployed when the file was written as text either.
+ */
+function toMapping<T>(entries: Array<[string, T]>, kind: string, where: string): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [key, value] of entries) {
+    if (Object.prototype.hasOwnProperty.call(out, key)) {
+      throw new Error(`${kind} '${key}' appears more than once in the compose file for ${where}.`);
     }
+    Object.defineProperty(out, key, { value, enumerable: true, writable: true, configurable: true });
+  }
+  return out;
+}
 
-    // User
-    if (service.user) {
-      lines.push(`    user: "${yamlEscape(service.user)}"`);
+/** Environment variable mapping (auto-resolved where possible). */
+function buildEnvironment(
+  service: AppService,
+  ctx: ResolveContext,
+  where: string,
+): Record<string, string> | undefined {
+  if (!service.env_mapping || Object.keys(service.env_mapping).length === 0) return undefined;
+  const entries: Array<[string, string]> = [];
+  for (const [key, value] of Object.entries(service.env_mapping)) {
+    entries.push([key, resolveEnvValue(value, ctx)]);
+  }
+  return toMapping(entries, 'environment variable', where);
+}
+
+function resolveVolumeName(vol: AppServiceVolume, appId: string, tenantId: string): string {
+  return vol.name_template
+    ? vol.name_template.replace(/\$\{appId\}/g, appId).replace(/\$\{tenantId\}/g, tenantId)
+    : vol.name;
+}
+
+/** The service's `name:path` mounts: its volumes, then backup paths not already mounted. */
+function buildServiceVolumes(service: AppService, appId: string, tenantId: string): string[] | undefined {
+  const volumes: string[] = [];
+  const mountedPaths = new Set<string>();
+  for (const vol of service.volumes ?? []) {
+    volumes.push(`${resolveVolumeName(vol, appId, tenantId)}:${vol.container_path}`);
+    mountedPaths.add(vol.container_path);
+  }
+  if (service.backup?.enabled && service.backup.paths) {
+    for (const p of service.backup.paths) {
+      if (mountedPaths.has(p.container)) continue;
+      volumes.push(`${service.name}-${p.local}:${p.container}`);
+      mountedPaths.add(p.container);
     }
+  }
+  return volumes.length > 0 ? volumes : undefined;
+}
 
-    // Environment files
-    lines.push('    env_file:');
-    lines.push('      - .env');
-    lines.push('      - shared.env');
-
-    // Command override
-    if (service.command && service.command.length > 0) {
-      lines.push('    command:');
-      for (const cmd of service.command) {
-        lines.push(`      - "${yamlEscape(cmd)}"`);
-      }
-    }
-
-    // Environment variable mapping (auto-resolved where possible)
-    if (service.env_mapping && Object.keys(service.env_mapping).length > 0) {
-      lines.push('    environment:');
-      for (const [key, value] of Object.entries(service.env_mapping)) {
-        const resolved = resolveEnvValue(value, { config, domain, service });
-        lines.push(`      ${key}: "${yamlEscape(resolved)}"`);
-      }
-    }
-
-    // Volumes
-    const volumes: string[] = [];
+/**
+ * Top-level named volume declarations, first declaration of a name wins.
+ * Backup volumes follow buildServiceVolumes: a service gets one for each backup
+ * path it does not already mount itself, so each one it mounts is declared.
+ */
+function buildVolumeDeclarations(app: AppDefinition, tenantId: string): Array<[string, ComposeVolume]> {
+  const declarations: Array<[string, ComposeVolume]> = [];
+  const isDeclared = (name: string) => declarations.some(([declared]) => declared === name);
+  for (const service of app.services) {
     const mountedPaths = new Set<string>();
-    if (service.volumes) {
-      for (const vol of service.volumes) {
-        const resolvedName = vol.name_template
-          ? vol.name_template.replace(/\$\{appId\}/g, app.id).replace(/\$\{tenantId\}/g, tenantId)
-          : vol.name;
-        volumes.push(`${resolvedName}:${vol.container_path}`);
-        mountedPaths.add(vol.container_path);
-      }
+    for (const vol of service.volumes ?? []) {
+      const name = resolveVolumeName(vol, app.id, tenantId);
+      mountedPaths.add(vol.container_path);
+      if (isDeclared(name)) continue;
+      declarations.push([name, vol.external === true ? { external: true } : { name }]);
     }
     if (service.backup?.enabled && service.backup.paths) {
       for (const p of service.backup.paths) {
         if (mountedPaths.has(p.container)) continue;
-        const volName = `${service.name}-${p.local}`;
-        volumes.push(`${volName}:${p.container}`);
         mountedPaths.add(p.container);
-      }
-    }
-    if (volumes.length > 0) {
-      lines.push('    volumes:');
-      for (const v of volumes) {
-        lines.push(`      - ${v}`);
-      }
-    }
-
-    // Networks
-    const serviceNetworks = service.networks || ['external'];
-    lines.push('    networks:');
-    if (serviceNetworks.includes('external')) {
-      lines.push(`      - ${externalNetwork}`);
-    }
-    if (serviceNetworks.includes('internal') && needsInternalNetwork) {
-      lines.push(`      - ${internalNetwork}`);
-    }
-
-    // Health check
-    if (service.health_check && !service.is_init_container) {
-      const hc = service.health_check;
-      lines.push('    healthcheck:');
-      if (hc.type === 'http') {
-        const hcPath = hc.path || '/health';
-        const hcPort = hc.port || service.ports?.internal || 80;
-        if (hc.tool === 'curl') {
-          lines.push(`      test: ["CMD", "curl", "-f", "http://127.0.0.1:${hcPort}${hcPath}"]`);
-        } else {
-          lines.push(`      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:${hcPort}${hcPath}"]`);
-        }
-      } else {
-        const hcPort = hc.port || service.ports?.internal || 80;
-        lines.push(`      test: ["CMD-SHELL", "nc -z 127.0.0.1 ${hcPort}"]`);
-      }
-      lines.push(`      interval: ${hc.interval || '30s'}`);
-      lines.push('      timeout: 10s');
-      lines.push('      retries: 3');
-      if (hc.start_period) {
-        lines.push(`      start_period: ${hc.start_period}`);
-      }
-    }
-
-    // Depends on — always long form.
-    //
-    // Short-form `depends_on` ("- migrator") only controls START ORDER: it
-    // never waits for the dependency to finish and never inspects its exit
-    // code. For an init container that is no gating at all — a migrator that
-    // died on `sh: drizzle-kit: not found` still let the backend start and
-    // report healthy against a schema three migrations old.
-    //
-    // `service_completed_successfully` makes a non-zero init container abort
-    // `docker compose up` and leave dependents unstarted. Compose rejects
-    // mixing short and long form inside one block, so every dependency gets an
-    // explicit condition; `service_started` is exactly what short form meant,
-    // which keeps startup timing unchanged for non-init dependencies.
-    if (service.depends_on && service.depends_on.length > 0) {
-      lines.push('    depends_on:');
-      for (const dep of service.depends_on) {
-        const target = servicesByName.get(dep);
-        if (!target) {
-          throw new Error(
-            `App '${app.id}' service '${service.name}' declares depends_on '${dep}', ` +
-            `which is not a known service. Known services: ${app.services.map(s => s.name).join(', ')}.`,
-          );
-        }
-        lines.push(`      ${dep}:`);
-        lines.push(
-          `        condition: ${target.is_init_container ? 'service_completed_successfully' : 'service_started'}`,
-        );
-      }
-    }
-
-    // Ownership labels are used by Overwatch for safe Docker discovery and
-    // authorization. Keep them on every service, including non-routable workers.
-    const labelLines = [
-      labelLine('com.overwatch.managed', 'true'),
-      labelLine('com.overwatch.app-id', app.id),
-      labelLine('com.overwatch.tenant-id', tenantId),
-      labelLine('com.overwatch.service', service.name),
-    ];
-
-    // Traefik labels for routable services (built via traefikLabels.ts)
-    const traefikLabelLines = buildTraefikLabels({
-      app,
-      tenantId,
-      domain,
-      service,
-      certResolverName,
-      traefik: config.traefik,
-      tenantOverrides: tenantTraefik,
-    });
-    labelLines.push(...traefikLabelLines);
-
-    lines.push('    labels:');
-    lines.push(...labelLines);
-  }
-
-  // Networks section
-  lines.push('');
-  lines.push('networks:');
-  lines.push(`  ${externalNetwork}:`);
-  lines.push('    external: true');
-  if (needsInternalNetwork) {
-    lines.push(`  ${internalNetwork}:`);
-  }
-
-  // Volumes section (if any named volumes used)
-  const volumeDeclarations: Array<{ name: string; external: boolean }> = [];
-  const declaredPaths = new Set<string>();
-  for (const service of app.services) {
-    if (service.volumes) {
-      for (const vol of service.volumes) {
-        const resolvedName = vol.name_template
-          ? vol.name_template.replace(/\$\{appId\}/g, app.id).replace(/\$\{tenantId\}/g, tenantId)
-          : vol.name;
-        if (!volumeDeclarations.find(v => v.name === resolvedName)) {
-          volumeDeclarations.push({ name: resolvedName, external: vol.external === true });
-          if (vol.container_path) declaredPaths.add(vol.container_path);
-        }
-      }
-    }
-    if (service.backup?.enabled && service.backup.paths) {
-      for (const p of service.backup.paths) {
-        if (declaredPaths.has(p.container)) continue;
-        const volName = `${service.name}-${p.local}`;
-        if (!volumeDeclarations.find(v => v.name === volName)) {
-          volumeDeclarations.push({ name: volName, external: false });
-          declaredPaths.add(p.container);
-        }
+        const name = `${service.name}-${p.local}`;
+        if (isDeclared(name)) continue;
+        declarations.push([name, { name }]);
       }
     }
   }
+  return declarations;
+}
 
-  if (volumeDeclarations.length > 0) {
-    lines.push('');
-    lines.push('volumes:');
-    for (const vol of volumeDeclarations) {
-      lines.push(`  ${vol.name}:`);
-      if (vol.external) {
-        lines.push('    external: true');
-      } else {
-        lines.push(`    name: ${vol.name}`);
-      }
-    }
+function buildHealthcheck(service: AppService): ComposeHealthcheck | undefined {
+  const hc = service.health_check;
+  if (!hc || service.is_init_container) return undefined;
+  const hcPort = hc.port || service.ports?.internal || 80;
+  let test: string[];
+  if (hc.type === 'http') {
+    const url = `http://127.0.0.1:${hcPort}${hc.path || '/health'}`;
+    test = hc.tool === 'curl'
+      ? ['CMD', 'curl', '-f', url]
+      : ['CMD', 'wget', '--spider', '-q', url];
+  } else {
+    test = ['CMD-SHELL', `nc -z 127.0.0.1 ${hcPort}`];
   }
+  return {
+    test,
+    interval: hc.interval || '30s',
+    timeout: '10s',
+    retries: 3,
+    start_period: hc.start_period || undefined,
+  };
+}
 
-  lines.push('');
-  return lines.join('\n');
+/**
+ * Depends on — always long form.
+ *
+ * Short-form `depends_on` ("- migrator") only controls START ORDER: it
+ * never waits for the dependency to finish and never inspects its exit
+ * code. For an init container that is no gating at all — a migrator that
+ * died on `sh: drizzle-kit: not found` still let the backend start and
+ * report healthy against a schema three migrations old.
+ *
+ * `service_completed_successfully` makes a non-zero init container abort
+ * `docker compose up` and leave dependents unstarted. Compose rejects
+ * mixing short and long form inside one block, so every dependency gets an
+ * explicit condition; `service_started` is exactly what short form meant,
+ * which keeps startup timing unchanged for non-init dependencies.
+ */
+function buildDependsOn(
+  service: AppService,
+  app: AppDefinition,
+  servicesByName: Map<string, AppService>,
+  where: string,
+): Record<string, { condition: DependsOnCondition }> | undefined {
+  if (!service.depends_on || service.depends_on.length === 0) return undefined;
+  const entries = service.depends_on.map((dep): [string, { condition: DependsOnCondition }] => {
+    const target = servicesByName.get(dep);
+    if (!target) {
+      throw new Error(
+        `App '${app.id}' service '${service.name}' declares depends_on '${dep}', ` +
+        `which is not a known service. Known services: ${app.services.map(s => s.name).join(', ')}.`,
+      );
+    }
+    return [dep, { condition: target.is_init_container ? 'service_completed_successfully' : 'service_started' }];
+  });
+  return toMapping(entries, `service '${service.name}' dependency`, where);
 }
 
 interface ResolveContext {
@@ -288,11 +329,13 @@ function resolveEnvValue(
   value: string | { static: string },
   ctx: ResolveContext,
 ): string {
+  // Literal values are escaped so compose does not interpolate a `$` in them;
+  // only a named source is deliberately left as a `${NAME}` reference.
   if (typeof value === 'object' && 'static' in value) {
-    return value.static;
+    return escapeDollar(value.static);
   }
   const auto = getAutoResolvedValue(value, ctx);
-  if (auto !== undefined) return auto;
+  if (auto !== undefined) return escapeDollar(auto);
   return `\${${value}}`;
 }
 

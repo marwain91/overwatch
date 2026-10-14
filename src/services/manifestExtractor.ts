@@ -7,6 +7,10 @@ import { AppDefinition } from '../models/app';
 
 const execFileAsync = promisify(execFile);
 
+// A manifest is a small JSON app definition; anything larger is not one, and the
+// image is not trusted to keep Overwatch from reading an arbitrarily large file.
+const MAX_MANIFEST_BYTES = 1024 * 1024;
+
 /**
  * Extract a single file from a Docker image without running it. Creates a
  * throw-away container (which starts no process), `docker cp`s the file out,
@@ -41,9 +45,16 @@ export async function extractFileFromImage(
       }
       throw err;
     }
-    const content = await fs.readFile(tmpFile, 'utf-8');
-    await fs.unlink(tmpFile).catch(() => {});
-    return content;
+    try {
+      const { size } = await fs.stat(tmpFile);
+      if (size > MAX_MANIFEST_BYTES) {
+        console.warn(`[manifest] ${pathInImage} in ${imageRef} is ${size} bytes (limit ${MAX_MANIFEST_BYTES}); ignoring it`);
+        return null;
+      }
+      return await fs.readFile(tmpFile, 'utf-8');
+    } finally {
+      await fs.unlink(tmpFile).catch(() => {});
+    }
   } finally {
     await execFileAsync('docker', ['rm', '-f', cid]).catch(() => {});
   }

@@ -43,7 +43,10 @@ on every request, so removing an admin revokes MCP access immediately.
    and `/.well-known/oauth-authorization-server`), dynamically registers
    (RFC 7591), and opens the authorize URL — sign in with your Google admin
    account.
-3. The client receives an access token (default 1h) + a rotating refresh token
+3. After sign-in Overwatch shows a consent page naming the client, the host it
+   will be redirected to, and the scope (`tenants`). Choose **Approve** or
+   **Deny**; no authorization code is issued until you approve.
+4. The client receives an access token (default 1h) + a rotating refresh token
    (default 30d) and calls tools. `update_tenant` streams progress notifications
    as it pulls the image, regenerates config, and recreates containers.
 
@@ -55,7 +58,27 @@ on every request, so removing an admin revokes MCP access immediately.
   session token.
 - Auth codes are single-use, 60s-lived, and held in memory — Overwatch assumes a
   single-process deployment per host.
-- The OAuth endpoints are rate-limited.
+- The OAuth endpoints are rate-limited per IP.
+- **Consent.** The consent form carries a signed, single-use, 5-minute token that
+  is only handed to the admin who just signed in with Google, so a forged
+  cross-site request cannot approve a client. The page is not frameable
+  (`X-Frame-Options: DENY`) and every client-supplied value is HTML-escaped.
+  Only approve connections you started yourself.
+- **Registration limits.** `redirect_uris` must be `https://` URLs or `http://`
+  loopback URLs (`127.0.0.1`, `localhost`, `[::1]`, any port), without
+  credentials or fragments; at most 10 per client. `client_name` is at most 100
+  characters. At most 200 clients can be registered (further registrations get
+  HTTP 429), and clients unused for 90 days are pruned together with their
+  refresh tokens. Clients registered earlier with a non-loopback `http://`
+  redirect URI keep working but the consent page warns about them; re-register
+  them with `https://` redirects.
+- **Token endpoint.** `client_id` is required for both the code exchange and
+  the refresh grant and must match the client the code or refresh token was
+  issued to (a refresh token presented by another client is revoked). A
+  `resource` parameter, if sent, must be `<public_url>/mcp`; anything else is
+  rejected with `invalid_target`. `expires_in` reflects `access_token_ttl`.
+- **Store hygiene.** Expired auth codes and refresh tokens are swept every 10
+  minutes from `data/mcp-oauth.json`.
 
 See `docs/superpowers/specs/2026-06-01-overwatch-mcp-oauth-design.md` for the full
 design and `docs/superpowers/plans/2026-06-01-overwatch-mcp-oauth.md` for the

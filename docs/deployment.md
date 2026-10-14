@@ -2,44 +2,38 @@
 
 ## Docker Compose (Recommended)
 
+Overwatch's own compose file is generated, not hand-written. Configure `traefik.overwatch` (host, cert resolver, middlewares) in `overwatch.yaml`, then run:
+
+```bash
+overwatch infra deploy --dry-run   # print what would be written
+overwatch infra deploy             # write the files and `docker compose up -d` the infrastructure stack
+```
+
+`overwatch init` writes the same files through the same renderer, so both paths produce an identical stack. The generated `overwatch/docker-compose.yml` has this shape (see the generated file for the full environment list):
+
 ```yaml
 services:
   overwatch:
     image: ghcr.io/marwain91/overwatch:latest
-    container_name: overwatch
+    container_name: myapp-overwatch
     restart: unless-stopped
-    env_file: .env
+    environment:
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      ALLOWED_ADMIN_EMAILS: ${ALLOWED_ADMIN_EMAILS:-}
+      # ... database password, registry, restic/R2 settings: see the generated file
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /root/.docker:/root/.docker:ro
-      - ./overwatch.yaml:/app/overwatch.yaml:ro
+      - ./overwatch.yaml:/app/overwatch.yaml      # read-write: the UI/API persist Traefik edits
       - ./data:/app/data
-      - ./apps:/app/apps
+      - /opt/myapp/deploy/apps:/app/apps
     networks:
-      - myapp-network
-    labels:
-      # The labels below are the legacy hardcoded form. From v1.6 onward, configure
-      # these in `overwatch.yaml` under `traefik.overwatch` (host, cert_resolver,
-      # middlewares) and run `overwatch infra deploy` — the labels are generated
-      # from that config. See: docs/configuration.md → Traefik Configuration.
-      - "traefik.enable=true"
-      - "traefik.http.routers.overwatch.rule=Host(`overwatch.example.com`)"
-      - "traefik.http.routers.overwatch.entrypoints=websecure"
-      - "traefik.http.routers.overwatch.tls=true"
-      - "traefik.http.routers.overwatch.tls.certresolver=letsencrypt"
-      - "traefik.http.services.overwatch.loadbalancer.server.port=3002"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-
+      - shared
+    # traefik.* labels are generated from overwatch.yaml -> traefik.overwatch
 networks:
-  myapp-network:
+  shared:
+    name: myapp-network
     external: true
 ```
 
@@ -60,7 +54,7 @@ Overwatch needs access to:
 |-------|-------------|
 | `/var/run/docker.sock` | Docker socket for container management |
 | `/root/.docker:ro` | Registry credentials for pulling tenant images (optional) |
-| `./overwatch.yaml:ro` | Infrastructure configuration |
+| `./overwatch.yaml` | Infrastructure configuration (mounted read-write so the UI/API can save Traefik changes) |
 | `./data` | Persistent data: `apps.d/`, `apps.runtime.json`, `admin-users.json`, env vars, logs |
 | `./apps` | Auto-managed tenant compose files and `.env` files |
 
@@ -89,7 +83,7 @@ This guide walks through deploying Overwatch on a production server to manage a 
 
 ### Prerequisites
 
-- A server (VPS, cloud instance, etc.) with Docker and Docker Compose installed
+- A server (VPS, cloud instance, etc.) with Docker and Docker Compose 2.24 or newer installed (the generated Overwatch compose file uses `env_file` with `required: false`; check with `docker compose version`)
 - Your application images published to a container registry (GHCR, Docker Hub, ECR, etc.)
 - A domain with DNS configured (e.g., `*.example.com` pointing to your server)
 - DNS provider API credentials for wildcard SSL (e.g., Cloudflare API token)
@@ -100,8 +94,9 @@ The deployment uses a separated layout — infrastructure, Overwatch, and apps a
 
 ```
 /opt/myapp/deploy/
-├── infrastructure/        # Traefik reverse proxy + database
-│   └── docker-compose.yml
+├── infrastructure/        # Traefik reverse proxy + database (generated)
+│   ├── docker-compose.yml
+│   └── traefik/
 ├── overwatch/             # Overwatch instance
 │   ├── docker-compose.yml
 │   ├── overwatch.yaml
@@ -119,77 +114,9 @@ This separation means you can restart infrastructure without touching Overwatch,
 mkdir -p /opt/myapp/deploy/{infrastructure,overwatch,overwatch/data,apps}
 ```
 
-### Step 2: Set up infrastructure
+### Step 2: Configure Overwatch
 
-Create the Traefik reverse proxy and database. This example uses MariaDB — substitute PostgreSQL if preferred.
-
-**`infrastructure/docker-compose.yml`:**
-
-```yaml
-services:
-  traefik:
-    image: traefik:v3.3
-    container_name: myapp-traefik
-    restart: unless-stopped
-    command:
-      - "--api.dashboard=false"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=myapp-network"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-      - "--entrypoints.websecure.address=:443"
-      # Wildcard SSL via DNS challenge (Cloudflare example)
-      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
-      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"
-      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
-      # HTTP challenge for custom tenant domains
-      - "--certificatesresolvers.letsencrypt-http.acme.httpchallenge=true"
-      - "--certificatesresolvers.letsencrypt-http.acme.httpchallenge.entrypoint=web"
-      - "--certificatesresolvers.letsencrypt-http.acme.email=admin@example.com"
-      - "--certificatesresolvers.letsencrypt-http.acme.storage=/letsencrypt/acme.json"
-    environment:
-      CF_DNS_API_TOKEN: "${CF_DNS_API_TOKEN}"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - letsencrypt:/letsencrypt
-    networks:
-      - myapp-network
-
-  mariadb:
-    image: mariadb:11
-    container_name: myapp-mariadb
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD}"
-    volumes:
-      - mariadb-data:/var/lib/mysql
-    networks:
-      - myapp-network
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-networks:
-  myapp-network:
-    name: myapp-network
-
-volumes:
-  letsencrypt:
-  mariadb-data:
-```
-
-> **Note:** This example uses Cloudflare for DNS challenge (set `CF_DNS_API_TOKEN` in the infrastructure `.env`). Traefik supports [many DNS providers](https://doc.traefik.io/traefik/https/acme/#providers). The HTTP challenge resolver is available for tenants using custom (non-wildcard) domains.
-
-### Step 3: Configure Overwatch
-
-Create the Overwatch configuration file. This only contains infrastructure settings — app definitions (registry, services, backup) are configured through the web UI after deployment.
+Create the Overwatch configuration file. It holds infrastructure settings only — app definitions (registry, services, backup) are configured through the web UI after deployment. The `traefik` block drives the generated Traefik and compose files.
 
 **`overwatch/overwatch.yaml`:**
 
@@ -211,6 +138,24 @@ networking:
   external_network: "myapp-network"
   apps_path: "/app/apps"
 
+traefik:
+  cert_resolvers:
+    # Wildcard certs via DNS challenge (Cloudflare example)
+    - name: letsencrypt
+      challenge: dns
+      provider: cloudflare
+      acme_email: admin@example.com
+      env:
+        CF_DNS_API_TOKEN: "${CF_DNS_API_TOKEN}"
+      domain_patterns: ["*.example.com"]
+    # HTTP challenge for custom tenant domains (fallback)
+    - name: letsencrypt-http
+      challenge: http
+      acme_email: admin@example.com
+  overwatch:
+    host: overwatch.example.com
+    cert_resolver: letsencrypt
+
 monitoring:
   enabled: true
   metrics_interval: 15
@@ -220,49 +165,24 @@ retention:
   max_audit_entries: 10000
 ```
 
-### Step 4: Deploy Overwatch
+Traefik supports [many DNS providers](https://doc.traefik.io/traefik/https/acme/#providers); list each provider's credential variables under `env` and set them in `infrastructure/.env`.
 
-**`overwatch/docker-compose.yml`:**
+### Step 3: Generate the infrastructure and Overwatch compose files
 
-```yaml
-services:
-  overwatch:
-    image: ghcr.io/marwain91/overwatch:latest
-    container_name: myapp-overwatch
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /root/.docker:/root/.docker:ro
-      - ./overwatch.yaml:/app/overwatch.yaml:ro
-      - ./data:/app/data
-      - ../apps:/app/apps
-    networks:
-      - myapp-network
-    labels:
-      # The labels below are the legacy hardcoded form. From v1.6 onward, configure
-      # these in `overwatch.yaml` under `traefik.overwatch` (host, cert_resolver,
-      # middlewares) and run `overwatch infra deploy` — the labels are generated
-      # from that config. See: docs/configuration.md → Traefik Configuration.
-      - "traefik.enable=true"
-      - "traefik.http.routers.overwatch.rule=Host(`overwatch.example.com`)"
-      - "traefik.http.routers.overwatch.entrypoints=websecure"
-      - "traefik.http.routers.overwatch.tls=true"
-      - "traefik.http.routers.overwatch.tls.certresolver=letsencrypt"
-      - "traefik.http.services.overwatch.loadbalancer.server.port=3002"
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          memory: 512M
+```bash
+cd /opt/myapp/deploy
+overwatch infra deploy --dry-run   # review: infrastructure/ (Traefik + MariaDB 10.11) and overwatch/docker-compose.yml
+```
 
-networks:
-  myapp-network:
-    external: true
+The infrastructure stack is Traefik `v3.6` plus MariaDB `10.11` (or PostgreSQL `16` when `database.type: postgres`). `overwatch infra deploy` refuses to replace a running database with an older version, because an older server cannot open a newer data volume; pass `--allow-db-downgrade` only after restoring from a backup.
+
+### Step 4: Environment files
+
+**`infrastructure/.env`:**
+
+```bash
+MYSQL_ROOT_PASSWORD=<strong-password>
+CF_DNS_API_TOKEN=<cloudflare-api-token>
 ```
 
 **`overwatch/.env`:**
@@ -276,7 +196,7 @@ ALLOWED_ADMIN_EMAILS=admin@example.com
 
 ### Step 5: Start everything
 
-Boot order matters — infrastructure must be running before Overwatch starts:
+`overwatch infra deploy` (without `--dry-run`) writes the files, creates the network and starts the infrastructure stack. Boot order matters — infrastructure must be running before Overwatch starts:
 
 ```bash
 cd /opt/myapp/deploy
@@ -303,10 +223,10 @@ After setting up and creating a few apps with tenants:
 ```
 /opt/myapp/deploy/
 ├── infrastructure/
-│   ├── docker-compose.yml        # Traefik + MariaDB
+│   ├── docker-compose.yml        # Traefik + MariaDB (generated)
 │   └── .env                      # CF_DNS_API_TOKEN, MYSQL_ROOT_PASSWORD
 ├── overwatch/
-│   ├── docker-compose.yml        # Overwatch container
+│   ├── docker-compose.yml        # Overwatch container (generated)
 │   ├── overwatch.yaml            # Infrastructure configuration
 │   ├── .env                      # Overwatch secrets
 │   └── data/

@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useBackupSummary } from '../hooks/useApps';
 import { useBackupStatus, useAllBackups, useTenants, useRestoreBackup, useDeleteBackup } from '../hooks/useTenants';
+import { useCan } from '../hooks/useRole';
 import { cn } from '../lib/cn';
 import { formatRelativeTime, formatCron } from '../lib/format';
 
@@ -17,6 +18,7 @@ export function BackupsPage() {
   const { data: tenants } = useTenants(appId!);
   const restoreBackup = useRestoreBackup(appId!);
   const deleteBackup = useDeleteBackup(appId!);
+  const isAdmin = useCan('admin');
 
   const [page, setPage] = useState(0);
   const [restoreTarget, setRestoreTarget] = useState<{ snapshotId: string; tenantId: string } | null>(null);
@@ -55,7 +57,7 @@ export function BackupsPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-content-faint">Provider</span>
-              <span className="font-medium text-content-secondary">{backupConfig.provider.toUpperCase()}</span>
+              <span className="font-medium text-content-secondary">{(backupConfig.provider ?? 's3').toUpperCase()}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-content-faint">Schedule</span>
@@ -113,6 +115,7 @@ export function BackupsPage() {
                         </span>
                       )}
                     </div>
+                    {isAdmin && (
                     <div className="flex gap-1">
                       <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId: b.tenantId || '' })}>Restore</button>
                       <button
@@ -125,6 +128,7 @@ export function BackupsPage() {
                         Delete
                       </button>
                     </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -149,7 +153,11 @@ export function BackupsPage() {
               </select>
               <div className="flex gap-2">
                 <button className="btn btn-danger btn-sm" onClick={() => restoreBackup.mutate(restoreTarget, {
-                  onSuccess: () => { toast.success('Backup restored'); setRestoreTarget(null); },
+                  onSuccess: (res) => {
+                    if (res?.warnings?.length) toast.warning(`Backup restored with warnings: ${res.warnings.join('; ')}`);
+                    else toast.success('Backup restored');
+                    setRestoreTarget(null);
+                  },
                   onError: (err) => toast.error(err.message),
                 })} disabled={restoreBackup.isPending}>
                   {restoreBackup.isPending ? 'Restoring...' : 'Restore'}

@@ -1,13 +1,12 @@
 import { Router } from 'express';
-import jwt from 'jsonwebtoken';
-import { listTenants, startTenant, stopTenant, restartTenant, getTenantInfo } from '../services/docker';
-import { createTenant, deleteTenant, updateTenant, CreateTenantInput, validateImageTag, validateTenantDomain } from '../services/tenant';
-import { getApp } from '../services/app';
+import { listTenants, startTenant, stopTenant, restartTenant } from '../services/docker';
+import { createTenant, deleteTenant, updateTenant, CreateTenantInput, validateImageTag } from '../services/tenant';
 import { asyncHandler } from '../utils/asyncHandler';
 import { isValidSlug } from '../utils/validators';
 import { validateTenantId } from '../middleware/validators';
 import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
+import { mintAdminAccess } from '../services/adminAccess';
 import { getTenantTraefik, updateTenantTraefik } from '../services/traefikConfig';
 
 const router = Router({ mergeParams: true });
@@ -38,17 +37,6 @@ router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
   if (!isValidSlug(input.tenantId)) {
     return res.status(400).json({ error: 'Invalid tenant ID format' });
   }
-  const domainValidation = validateTenantDomain(input.domain);
-  if (!domainValidation.valid) {
-    return res.status(400).json({ error: domainValidation.error });
-  }
-  if (input.imageTag !== undefined && input.imageTag !== '') {
-    const tagValidation = validateImageTag(input.imageTag);
-    if (!tagValidation.valid) {
-      return res.status(400).json({ error: tagValidation.error });
-    }
-  }
-
   const tenant = await createTenant(input);
   res.status(201).json(tenant);
 }));
@@ -103,59 +91,7 @@ router.post('/:tenantId/restart', validateTenantId, requireRole('editor'), async
 router.post('/:tenantId/access-token', validateTenantId, requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId, tenantId } = (req.params as Record<string, string>);
 
-  const app = await getApp(appId);
-  if (!app) {
-    return res.status(404).json({ error: 'App not found' });
-  }
-
-  const adminAccess = app.admin_access;
-  if (!adminAccess?.enabled) {
-    return res.status(400).json({ error: 'Admin access is not enabled for this app' });
-  }
-
-  const secretEnv = adminAccess.secret_env || 'AUTH_SERVICE_SECRET';
-  const secret = process.env[secretEnv];
-
-  if (!secret) {
-    console.error(`[AdminAccess] Secret env '${secretEnv}' not configured for app ${appId}`);
-    return res.status(500).json({ error: 'Admin access is not properly configured. Contact your administrator.' });
-  }
-
-  const tenantInfo = await getTenantInfo(appId, tenantId);
-  if (!tenantInfo) {
-    return res.status(404).json({ error: 'Tenant not found' });
-  }
-
-  const tokenPayload = adminAccess.token_payload;
-  const adminFlag = tokenPayload?.admin_flag || 'isSystemAdmin';
-  const emailTemplate = tokenPayload?.email_template || `admin@${app.name}.local`;
-  const adminName = tokenPayload?.name || 'System Admin';
-
-  const adminToken = jwt.sign(
-    {
-      [adminFlag]: true,
-      appId,
-      tenantId,
-      email: emailTemplate.replace('${tenantId}', tenantId),
-      name: adminName,
-      iat: Math.floor(Date.now() / 1000),
-    },
-    secret,
-    { expiresIn: '1h' }
-  );
-
-  const urlTemplate = adminAccess.url_template || 'https://${domain}/admin-login#token=${token}';
-  // Defence in depth: re-validate the pinned prefix at token-mint time. The schema
-  // enforces it at write, but this catches any template reaching the mint path
-  // that somehow bypassed schema validation (e.g. hand-edited apps.json).
-  if (!/^https:\/\/\$\{domain\}/.test(urlTemplate)) {
-    console.error(`[AdminAccess] url_template rejected at runtime for ${appId}: ${urlTemplate}`);
-    return res.status(500).json({ error: 'Admin access URL template is invalid; contact administrator.' });
-  }
-  const accessUrl = urlTemplate
-    .replace('${domain}', encodeURIComponent(tenantInfo.domain))
-    .replace('${token}', encodeURIComponent(adminToken))
-    .replace('${tenantId}', encodeURIComponent(tenantId));
+  const { accessUrl, token: adminToken } = await mintAdminAccess(appId, tenantId);
 
   res.json({
     success: true,

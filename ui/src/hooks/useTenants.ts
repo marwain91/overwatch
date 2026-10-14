@@ -1,14 +1,16 @@
+import { useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { useAuthStore } from '../stores/authStore';
+import { useWsAwareInterval, useWindowActive } from './useWsPolling';
 import type { Tenant, BackupSnapshot, BackupStatus, TenantEnvVar } from '../lib/types';
 
 export function useTenants(appId: string) {
+  const refetchInterval = useWsAwareInterval(30_000);
   return useQuery({
     queryKey: ['tenants', appId],
     queryFn: () => api.get<Tenant[]>(`/apps/${appId}/tenants`),
     enabled: !!appId,
-    refetchInterval: 30_000,
+    refetchInterval,
   });
 }
 
@@ -104,7 +106,7 @@ export function useRestoreBackup(appId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ snapshotId, tenantId }: { snapshotId: string; tenantId: string }) =>
-      api.post(`/apps/${appId}/backups/${snapshotId}/restore`, { tenantId }),
+      api.post<{ success: boolean; message: string; warnings?: string[] }>(`/apps/${appId}/backups/${snapshotId}/restore`, { tenantId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tenants', appId] });
       qc.invalidateQueries({ queryKey: ['backup-summary', appId] });
@@ -125,20 +127,26 @@ export function useDeleteBackup(appId: string) {
 
 // Container Logs & Restart
 export function useContainerLogs(containerId: string | null, tail: number = 200) {
-  const token = useAuthStore((s) => s.token);
-  return useQuery({
+  const windowActive = useWindowActive();
+  const query = useQuery({
     queryKey: ['container-logs', containerId, tail],
     queryFn: async () => {
-      const res = await fetch(`/api/status/containers/${containerId}/logs?tail=${tail}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error('Failed to fetch logs');
-      const data = await res.json();
-      return data.logs as string;
+      const data = await api.get<{ logs: string }>(`/status/containers/${containerId}/logs?tail=${tail}`);
+      return data.logs;
     },
     enabled: !!containerId,
-    refetchInterval: 10_000,
+    refetchInterval: windowActive ? 10_000 : false,
   });
+
+  // Catch up once when the tab becomes visible and focused again.
+  const { refetch } = query;
+  const wasActive = useRef(windowActive);
+  useEffect(() => {
+    if (windowActive && !wasActive.current && containerId) void refetch();
+    wasActive.current = windowActive;
+  }, [windowActive, containerId, refetch]);
+
+  return query;
 }
 
 export function useRestartContainer() {

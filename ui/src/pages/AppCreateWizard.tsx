@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useCreateApp } from '../hooks/useApps';
 import type { AppService, AppRegistry, AppBackup, AppAdminAccess } from '../lib/types';
+import { RegistryForm } from '../components/RegistryForm';
+import { ServiceEditor } from '../components/ServiceEditor';
 
 type Step = 'basics' | 'registry' | 'services' | 'backup' | 'review';
 const steps: Step[] = ['basics', 'registry', 'services', 'backup', 'review'];
@@ -134,120 +136,7 @@ export function AppCreateWizard() {
           </div>
         )}
 
-        {step === 'registry' && (
-          <div className="space-y-4">
-            <div>
-              <label className="label">Registry Type</label>
-              <select
-                className="input"
-                value={registry.type}
-                onChange={(e) => {
-                  const next = e.target.value as AppRegistry['type'];
-                  // Smart defaults when switching to GitLab/GHCR — preserves any token_env already entered.
-                  if (next === 'gitlab' && registry.type !== 'gitlab') {
-                    setRegistry({ ...registry, type: next, url: 'registry.gitlab.com', auth: { ...registry.auth, type: 'token' } });
-                  } else if (next === 'ghcr' && registry.type !== 'ghcr') {
-                    setRegistry({ ...registry, type: next, url: 'ghcr.io' });
-                  } else {
-                    setRegistry({ ...registry, type: next });
-                  }
-                }}
-              >
-                <option value="ghcr">GitHub Container Registry</option>
-                <option value="gitlab">GitLab Container Registry</option>
-                <option value="dockerhub">Docker Hub</option>
-                <option value="ecr">AWS ECR</option>
-                <option value="custom">Custom</option>
-              </select>
-            </div>
-            <div>
-              <label className="label">Registry URL</label>
-              <input className="input" value={registry.url} onChange={(e) => setRegistry({ ...registry, url: e.target.value })} placeholder="ghcr.io" />
-            </div>
-            {registry.type === 'gitlab' && (
-              <div>
-                <label className="label">
-                  API URL <span className="text-content-faint">(optional for gitlab.com SaaS)</span>
-                </label>
-                <input
-                  className="input"
-                  value={registry.api_url || ''}
-                  onChange={(e) => setRegistry({ ...registry, api_url: e.target.value || undefined })}
-                  placeholder="https://gitlab.acme.com"
-                />
-                <p className="mt-1 text-xs text-content-faint">
-                  Required for self-hosted GitLab — registry host and API host commonly differ. Leave empty when using <code>gitlab.com</code>. See{' '}
-                  <a
-                    href="https://github.com/marwain91/overwatch/blob/main/docs/registry-gitlab.md"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline hover:text-content-muted"
-                  >
-                    registry-gitlab.md
-                  </a>.
-                </p>
-              </div>
-            )}
-            <div>
-              <label className="label">Repository</label>
-              <input className="input" value={registry.repository} onChange={(e) => setRegistry({ ...registry, repository: e.target.value })} placeholder="org/repo" />
-            </div>
-            <div>
-              <label className="label">Auth Type</label>
-              <select
-                className="input"
-                value={registry.auth.type}
-                onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, type: e.target.value as AppRegistry['auth']['type'] } })}
-              >
-                <option value="token">Personal Access Token</option>
-                <option value="basic">Basic (username/password)</option>
-                <option value="aws_iam">AWS ECR</option>
-              </select>
-            </div>
-            {(registry.auth.type === 'token' || registry.auth.type === 'basic') && (
-              <>
-                <div>
-                  <label className="label">Username Env Var</label>
-                  <input
-                    className="input"
-                    value={registry.auth.username_env || ''}
-                    onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, username_env: e.target.value } })}
-                    placeholder="GHCR_USERNAME"
-                  />
-                </div>
-                <div>
-                  <label className="label">Token Env Var</label>
-                  <input
-                    className="input"
-                    value={registry.auth.token_env || ''}
-                    onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, token_env: e.target.value } })}
-                    placeholder="GHCR_TOKEN"
-                  />
-                </div>
-              </>
-            )}
-            {registry.auth.type === 'aws_iam' && (
-              <div>
-                <label className="label">AWS Region Env Var</label>
-                <input
-                  className="input"
-                  value={registry.auth.aws_region_env || ''}
-                  onChange={(e) => setRegistry({ ...registry, auth: { ...registry.auth, aws_region_env: e.target.value } })}
-                  placeholder="AWS_REGION"
-                />
-              </div>
-            )}
-            <div>
-              <label className="label">Tag Pattern (optional)</label>
-              <input
-                className="input"
-                value={registry.tag_pattern || ''}
-                onChange={(e) => setRegistry({ ...registry, tag_pattern: e.target.value || undefined })}
-                placeholder="^v\\d+\\.\\d+\\.\\d+$"
-              />
-            </div>
-          </div>
-        )}
+        {step === 'registry' && <RegistryForm value={registry} onChange={setRegistry} smartDefaults />}
 
         {step === 'services' && (
           <div className="space-y-4">
@@ -258,6 +147,7 @@ export function AppCreateWizard() {
               <ServiceEditor
                 key={i}
                 service={svc}
+                allowCommand
                 onChange={(updated) => {
                   const next = [...services];
                   next[i] = updated;
@@ -426,71 +316,6 @@ function ReviewItem({ label, value }: { label: string; value: string }) {
     <div className="flex justify-between">
       <dt className="text-content-faint">{label}</dt>
       <dd className="text-content-secondary">{value || '—'}</dd>
-    </div>
-  );
-}
-
-function ServiceEditor({
-  service,
-  onChange,
-  onRemove,
-}: {
-  service: AppService;
-  onChange: (s: AppService) => void;
-  onRemove: () => void;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const [showAdvanced, setShowAdvanced] = useState(!!service.image_suffix);
-
-  return (
-    <div className="rounded-lg border border-border-subtle bg-surface-muted p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <button onClick={() => setExpanded(!expanded)} className="text-sm font-medium text-content-secondary">
-          {service.name || 'New Service'} {expanded ? '▾' : '▸'}
-        </button>
-        <button onClick={onRemove} className="text-xs text-red-400 hover:text-red-300">
-          Remove
-        </button>
-      </div>
-
-      {expanded && (
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label">Name</label>
-            <input className="input" value={service.name} onChange={(e) => onChange({ ...service, name: e.target.value })} placeholder="backend" />
-            <p className="mt-1 text-xs text-content-faint">Also used as the image name in the registry</p>
-          </div>
-          <div>
-            <label className="label">Internal Port</label>
-            <input className="input" type="number" value={service.ports?.internal || ''} onChange={(e) => onChange({ ...service, ports: { internal: parseInt(e.target.value) || 0 } })} placeholder="3000" />
-          </div>
-          <div className="col-span-2">
-            <label className="label">Command (optional)</label>
-            <input className="input" value={service.command?.join(' ') || ''} onChange={(e) => onChange({ ...service, command: e.target.value ? e.target.value.split(' ') : undefined })} placeholder="node server.js" />
-          </div>
-          <div className="col-span-2 flex gap-4">
-            <label className="flex items-center gap-2 text-sm text-content-tertiary">
-              <input type="checkbox" checked={service.required} onChange={(e) => onChange({ ...service, required: e.target.checked })} />
-              Required
-            </label>
-            <label className="flex items-center gap-2 text-sm text-content-tertiary">
-              <input type="checkbox" checked={service.is_init_container} onChange={(e) => onChange({ ...service, is_init_container: e.target.checked })} />
-              Init Container
-            </label>
-          </div>
-          {showAdvanced ? (
-            <div className="col-span-2">
-              <label className="label">Image Name Override</label>
-              <input className="input" value={service.image_suffix || ''} onChange={(e) => onChange({ ...service, image_suffix: e.target.value || undefined })} placeholder={service.name || 'defaults to service name'} />
-              <p className="mt-1 text-xs text-content-faint">Only set if the image name differs from the service name</p>
-            </div>
-          ) : (
-            <button className="col-span-2 text-left text-xs text-content-faint hover:text-content-muted" onClick={() => setShowAdvanced(true)}>
-              Advanced options...
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 }

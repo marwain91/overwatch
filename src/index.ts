@@ -2,12 +2,13 @@
 // GOOGLE_CLIENT_ID, ...) at import time, so .env has to be loaded before them.
 import 'dotenv/config';
 import express from 'express';
-import * as fs from 'fs';
 import path from 'path';
+import { errorHandler } from './middleware/errorHandler';
 import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors, clearConfigCache } from './config';
 import { loginToAllRegistries } from './adapters/registry';
-import { listApps } from './services/app';
+import { listApps, setAppsChangedHook } from './services/app';
 import { authMiddleware } from './middleware/auth';
+import { spaFallback } from './middleware/spaFallback';
 import { rateLimit, destructiveRateLimit } from './middleware/rateLimit';
 import { auditLog } from './middleware/audit';
 import { validateAppId } from './middleware/validators';
@@ -22,10 +23,15 @@ import auditLogsRouter from './routes/auditLogs';
 import monitoringRouter from './routes/monitoring';
 import databaseRouter from './routes/database';
 import traefikRouter from './routes/traefik';
+import { closeAllDatabaseAdapters } from './adapters/database';
 import { mountMcp } from './mcp/server';
-import { regenerateAllSharedEnvFiles, backfillComposeProjectNames, tightenSecretFilePermissions, repairBindMountedDataFiles } from './services/envVars';
-import { startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns } from './services/scheduler';
-import { flushAuditLog } from './middleware/audit';
+import { regenerateAllSharedEnvFiles } from './services/envVars';
+import { backfillComposeProjectNames, tightenSecretFilePermissions, repairBindMountedDataFiles } from './services/startupMaintenance';
+import {
+  startAllBackupSchedulers, stopBackupScheduler, reportAbandonedRuns,
+  reconcileBackupSchedulers, startSchedulerReconciler, stopSchedulerReconciler,
+} from './services/scheduler';
+import { flushAuditLog } from './services/auditLog';
 import { createWebSocketServer, stopWebSocketServer } from './websocket/server';
 import { startDockerEventListener, stopDockerEventListener } from './services/dockerEvents';
 import { startMetricsCollector, stopMetricsCollector } from './services/metricsCollector';
@@ -133,7 +139,7 @@ async function start() {
   app.use('/api/admin-users', authMiddleware, apiLimiter, destructiveLimiter, auditLog, adminUsersRouter);
   app.use('/api/status', authMiddleware, apiLimiter, auditLog, statusRouter);
   app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
-  app.use('/api/monitoring', authMiddleware, apiLimiter, monitoringRouter);
+  app.use('/api/monitoring', authMiddleware, apiLimiter, auditLog, monitoringRouter);
   app.use('/api/database', authMiddleware, apiLimiter, auditLog, databaseRouter);
   app.use('/api/traefik', authMiddleware, apiLimiter, destructiveLimiter, auditLog, traefikRouter);
 
@@ -154,22 +160,9 @@ async function start() {
 
   // Serve frontend for all other routes (SPA fallback).
   // Express 5 / path-to-regexp 8 require a named wildcard.
-  app.get('/*splat', (_req, res) => {
-    const indexPath = path.join(staticPath, 'index.html');
-    if (fs.existsSync(indexPath)) {
-      res.sendFile(indexPath);
-    } else {
-      res.status(404).json({ error: 'Frontend not found' });
-    }
-  });
+  app.get('/*splat', spaFallback(staticPath));
 
-  // Global error handler — log full error server-side, return message to client
-  app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error(`Error in ${req.method} ${req.path}:`, err);
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || (status < 500 ? 'Bad request' : 'Internal server error');
-    res.status(status).json({ error: message });
-  });
+  app.use(errorHandler);
 
   // Helper: run a startup step with typed error handling.
   // critical=true aborts boot if the step throws (fail-fast). critical=false logs and continues.
@@ -258,6 +251,8 @@ async function start() {
 
   await runStartupStep('report abandoned backup runs', () => reportAbandonedRuns());
   await runStartupStep('start backup schedulers', () => startAllBackupSchedulers());
+  setAppsChangedHook(reconcileBackupSchedulers);
+  startSchedulerReconciler();
 
   // Daily config snapshot: protects against apps.d/, apps.runtime.json, env-vars.json loss.
   // 03:17 UTC (off-peak). Also run one immediately on boot so we have a recent snapshot.
@@ -305,6 +300,8 @@ async function start() {
     console.log(`\n${signal} received — shutting down gracefully...`);
 
     stopRetention();
+    stopSchedulerReconciler();
+    setAppsChangedHook(undefined);
     stopBackupScheduler();
     stopAlertEngine();
     stopHealthChecker();
@@ -315,7 +312,10 @@ async function start() {
     server.close(() => {
       // Drain the audit queue before exit — queued entries would otherwise be
       // lost on SIGTERM (fire-and-forget writes were never awaited).
-      flushAuditLog().catch(() => {}).finally(() => {
+      Promise.all([
+        flushAuditLog().catch(() => {}),
+        closeAllDatabaseAdapters().catch(() => {}),
+      ]).finally(() => {
         console.log('All connections closed. Exiting.');
         process.exit(0);
       });

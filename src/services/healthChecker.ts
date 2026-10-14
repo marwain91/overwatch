@@ -2,7 +2,7 @@ import http from 'http';
 import net from 'net';
 import cron, { ScheduledTask } from 'node-cron';
 import { docker, extractContainerInfo, getManagedContainerNamePattern } from './docker';
-import { eventBus } from './eventBus';
+import { eventBus, type HealthState as HealthStateName } from './eventBus';
 import { listApps } from './app';
 import { AppService } from '../models/app';
 
@@ -11,7 +11,7 @@ interface HealthState {
   appId: string;
   tenantId: string;
   service: string;
-  state: 'healthy' | 'unhealthy' | 'unknown';
+  state: HealthStateName;
   consecutiveFailures: number;
   lastCheck: string | null;
 }
@@ -19,6 +19,28 @@ interface HealthState {
 const healthStates = new Map<string, HealthState>();
 let scheduledTask: ScheduledTask | null = null;
 let checking = false;
+const STALE_CONTAINER_MS = 10 * 60 * 1000;
+const MAX_CONCURRENT_CHECKS = 10;
+
+/** Run at most `max` tasks at once; later tasks wait for a free slot. */
+function createLimiter(max: number) {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async function run<T>(task: () => Promise<T>): Promise<T> {
+    if (active >= max) {
+      // The finishing task hands its slot over, so `active` never dips below the cap.
+      await new Promise<void>(resolve => waiting.push(resolve));
+    } else {
+      active++;
+    }
+    try {
+      return await task();
+    } finally {
+      const next = waiting.shift();
+      if (next) next(); else active--;
+    }
+  };
+}
 
 async function checkHTTP(host: string, port: number, path: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -75,6 +97,11 @@ async function runHealthChecks(): Promise<void> {
       c.Names.some(n => pattern.test(n))
     );
 
+    interface Target {
+      name: string; appId: string; tenantId: string; serviceName: string;
+      hc: NonNullable<AppService['health_check']>; port: number;
+    }
+    const targets: Target[] = [];
     for (const container of managedContainers) {
       const name = container.Names[0].replace(/^\//, '');
       // Labels first, then known apps: the bare name split misreads
@@ -83,25 +110,27 @@ async function runHealthChecks(): Promise<void> {
       if (!info) continue;
 
       const { appId, tenantId, service: serviceName } = info;
-      const appServices = serviceMap.get(appId);
-      if (!appServices) continue;
-
-      const svcConfig = appServices.get(serviceName);
+      const svcConfig = serviceMap.get(appId)?.get(serviceName);
       if (!svcConfig?.health_check) continue;
 
       const hc = svcConfig.health_check;
       const port = hc.port || svcConfig.ports?.internal;
       if (!port) continue;
+      targets.push({ name, appId, tenantId, serviceName, hc, port });
+    }
 
-      const host = name; // Docker DNS resolution
+    // Probe concurrently (a hung probe costs up to 5s), then apply the results
+    // and emit events in container order so consumers see a stable sequence.
+    const limit = createLimiter(MAX_CONCURRENT_CHECKS);
+    const results = await Promise.allSettled(targets.map(t => limit(() =>
+      t.hc.type === 'tcp' ? checkTCP(t.name, t.port) : checkHTTP(t.name, t.port, t.hc.path || '/'),
+    )));
 
-      let isHealthy: boolean;
-      if (hc.type === 'tcp') {
-        isHealthy = await checkTCP(host, port);
-      } else {
-        const hcPath = hc.path || '/';
-        isHealthy = await checkHTTP(host, port, hcPath);
-      }
+    targets.forEach((t, i) => {
+      const { name, appId, tenantId, serviceName } = t;
+      const result = results[i];
+      // A probe that throws is a failed probe, like one that reports an error.
+      const isHealthy = result.status === 'fulfilled' && result.value;
 
       const currentState = healthStates.get(name);
       const previousState = currentState?.state || 'unknown';
@@ -131,6 +160,33 @@ async function runHealthChecks(): Promise<void> {
           lastCheck: new Date().toISOString(),
         });
       }
+    });
+
+    // Containers no longer checked go back to unknown (transition emitted);
+    // ones that no longer exist are forgotten. Stopped-but-existing containers
+    // keep an unknown entry. Skipped if the existence listing fails.
+    const existing = await docker.listContainers({ all: true }).then(
+      all => new Set(all.flatMap(c => c.Names.map(n => n.replace(/^\//, '')))),
+      () => null,
+    );
+    const now = Date.now();
+    for (const [name, state] of existing ? healthStates : []) {
+      if (state.lastCheck && now - Date.parse(state.lastCheck) < STALE_CONTAINER_MS) continue;
+      if (state.state !== 'unknown') {
+        eventBus.emit('health:change', {
+          containerName: name,
+          appId: state.appId,
+          tenantId: state.tenantId,
+          service: state.service,
+          previousState: state.state,
+          newState: 'unknown',
+          consecutiveFailures: 0,
+          lastCheck: new Date().toISOString(),
+        });
+        state.state = 'unknown';
+        state.consecutiveFailures = 0;
+      }
+      if (!existing!.has(name)) healthStates.delete(name);
     }
   } catch (error: any) {
     console.error('[HealthChecker] Error:', error.message);

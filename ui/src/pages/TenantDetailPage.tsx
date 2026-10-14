@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { useTenants, useTenantAction, useContainerLogs, useRestartContainer } from '../hooks/useTenants';
 import { useWSStore } from '../stores/wsStore';
 import { formatBytes, formatRelativeTime } from '../lib/format';
+import { useCan } from '../hooks/useRole';
 import { cn } from '../lib/cn';
 import type { ContainerMetrics } from '../lib/types';
 
@@ -22,6 +23,8 @@ export function TenantDetailPage() {
     (c) => c.tenantId === tenantId && c.appId === appId,
   ) || [];
 
+  const canEdit = useCan('editor');
+  const isAdmin = useCan('admin');
   const tenantAction = useTenantAction(appId!);
   const restartContainer = useRestartContainer();
 
@@ -110,7 +113,7 @@ export function TenantDetailPage() {
             )}
           </div>
         </div>
-        <div className="flex gap-2">
+        {canEdit && <div className="flex gap-2">
           {tenant.healthy ? (
             <>
               <button
@@ -137,7 +140,7 @@ export function TenantDetailPage() {
               Start
             </button>
           )}
-        </div>
+        </div>}
       </div>
 
       {/* Containers */}
@@ -191,7 +194,7 @@ export function TenantDetailPage() {
                       {m ? formatBytes(m.memUsage) : '—'}
                     </td>
                     <td className="py-2 text-right">
-                      <button
+                      {isAdmin && <button
                         className="btn btn-ghost btn-sm text-xs"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -201,7 +204,7 @@ export function TenantDetailPage() {
                         title="Restart container"
                       >
                         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                      </button>
+                      </button>}
                     </td>
                   </tr>
                 );

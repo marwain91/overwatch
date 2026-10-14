@@ -1,10 +1,7 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as yaml from 'js-yaml';
 import inquirer from 'inquirer';
-import { loadConfig, loadRawConfig, clearConfigCache, findConfigPath } from '../../config/loader';
-import { OverwatchConfigSchema } from '../../config/schema';
-import { header, success, warn, fail, info, BOLD, DIM, CYAN, GREEN, RED, NC } from './utils';
+import { loadConfig, loadRawConfig, findConfigPath } from '../../config/loader';
+import { writeOverwatchConfig } from '../../config/writer';
+import { header, success, warn, fail, info, BOLD, DIM, GREEN, RED, NC } from './utils';
 
 const EDITABLE_SECTIONS = [
   'project',
@@ -74,7 +71,7 @@ function displayValue(value: unknown): string {
   return String(value);
 }
 
-async function editSection(section: EditableSection, rawConfig: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+async function editSection(section: EditableSection, _rawConfig: Record<string, unknown>): Promise<Record<string, unknown> | null> {
   const config = loadConfig() as Record<string, unknown>;
   const sectionData = config[section];
 
@@ -219,33 +216,16 @@ export async function runConfigEdit(args: string[]): Promise<void> {
     setNestedValue(rawConfig[section] as Record<string, unknown>, key, value);
   }
 
-  // Validate before saving
-  const parseResult = OverwatchConfigSchema.safeParse(rawConfig);
-  if (!parseResult.success) {
-    fail('Validation failed with the new values:');
-    for (const err of parseResult.error.errors) {
-      console.log(`    ${RED}${err.path.join('.')}:${NC} ${err.message}`);
-    }
-    console.log('');
+  // The writer validates before touching the file.
+  warn('YAML comments will not be preserved.');
+  try {
+    await writeOverwatchConfig(rawConfig);
+  } catch (err: any) {
+    fail(err.message);
     warn('Changes not saved. Fix the values and try again.');
     return;
   }
 
-  // Write config
-  const configPath = getConfigPath();
-  warn('YAML comments will not be preserved.');
-
-  const yamlContent = yaml.dump(rawConfig, {
-    indent: 2,
-    lineWidth: -1,
-    noRefs: true,
-    quotingType: '"',
-    forceQuotes: false,
-  });
-
-  fs.writeFileSync(configPath, yamlContent, 'utf-8');
-  clearConfigCache();
-
-  success(`Configuration saved to ${configPath}`);
+  success(`Configuration saved to ${getConfigPath()}`);
   console.log('');
 }

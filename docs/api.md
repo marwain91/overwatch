@@ -1,6 +1,6 @@
 # API Reference
 
-All API endpoints require authentication via an Overwatch JWT except `/api/auth/google`, `/api/auth/config`, and `/health`. `/api/auth/verify` is public at the router level but expects an `Authorization: Bearer <token>` header.
+All API endpoints require authentication via an Overwatch JWT except `/api/auth/google`, `/api/auth/config`, and `/health`. `/api/auth/verify` is public at the router level but expects an `Authorization: Bearer <token>` header. Session tokens last 24h and carry `aud: overwatch-web` / `iss: overwatch`; tokens for other audiences (MCP, OAuth consent) are rejected, and a token whose user is no longer an admin user gets `401`. The WebSocket (`/ws`) authenticates with the same session token as its first message and is closed when the token expires or the user is removed (re-checked every 60s).
 
 ## Conventions
 
@@ -187,9 +187,10 @@ All env var endpoints are scoped to an app: `/api/apps/:appId/env-vars`.
 
 | Method | Endpoint | Role | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/admin-users` | `auth` | List admin users |
-| `POST` | `/api/admin-users` | `admin` | Add admin user |
-| `DELETE` | `/api/admin-users/:email` | `admin`, `confirm` | Remove admin user; URL-encode the email path segment |
+| `GET` | `/api/admin-users` | `auth` | List users; each entry carries its effective `role` (records without a stored role report `admin`) |
+| `POST` | `/api/admin-users` | `admin` | Add user. Body: `{ "email", "role"? }` where `role` is `viewer`, `editor` or `admin` (default `viewer`) |
+| `PATCH` | `/api/admin-users/:email` | `admin` | Change a user's role. Body: `{ "role" }`. Returns `409` when it would demote the last admin; URL-encode the email path segment |
+| `DELETE` | `/api/admin-users/:email` | `admin`, `confirm` | Remove user (`409` for yourself or the last admin); URL-encode the email path segment |
 
 ## Audit Logs
 

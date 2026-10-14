@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 const writeAuditEntry = vi.fn();
-vi.mock('../middleware/audit', () => ({ writeAuditEntry: (...a: any[]) => writeAuditEntry(...a) }));
+vi.mock('../services/auditLog', () => ({ writeAuditEntry: (...a: any[]) => writeAuditEntry(...a) }));
 
 import { writeMcpAudit, requireToolRole, ToolRoleError } from '../mcp/audit';
 

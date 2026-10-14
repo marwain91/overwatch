@@ -60,6 +60,7 @@ class RingBuffer<T> {
 const metricsHistory = new Map<string, RingBuffer<ContainerMetrics>>();
 let scheduledTask: ScheduledTask | null = null;
 let collecting = false;
+const STALE_CONTAINER_MS = 10 * 60 * 1000;
 
 function calculateCpuPercent(stats: any): number {
   const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
@@ -81,6 +82,16 @@ function getNetworkStats(stats: any): { rx: number; tx: number } {
     tx += iface.tx_bytes || 0;
   }
   return { rx, tx };
+}
+
+/** Names of every container that exists (running or not); null when the listing fails. */
+async function listExistingNames(): Promise<Set<string> | null> {
+  try {
+    const all = await docker.listContainers({ all: true });
+    return new Set(all.flatMap(c => c.Names.map(n => n.replace(/^\//, ''))));
+  } catch {
+    return null;
+  }
 }
 
 async function collectMetrics(): Promise<void> {
@@ -168,6 +179,23 @@ async function collectMetrics(): Promise<void> {
       totalCpu: Math.round(t.totalCpu * 100) / 100,
     }));
 
+    // Containers that no longer exist would otherwise keep a ring buffer forever.
+    // Stopped-but-existing containers keep theirs; if the existence listing
+    // fails, nothing is evicted this round.
+    const now = Date.now();
+    const existingNames = await listExistingNames();
+    if (existingNames) {
+      for (const [name, history] of metricsHistory) {
+        const latest = history.latest();
+        if (!latest || (!existingNames.has(name) && now - Date.parse(latest.timestamp) >= STALE_CONTAINER_MS)) {
+          metricsHistory.delete(name);
+        }
+      }
+    }
+
+    // Internal only: the WebSocket relay forwards a fixed event list, and this
+    // names every container on the host, which viewers must not see.
+    if (existingNames) eventBus.emit('containers:existence', Array.from(existingNames));
     eventBus.emit('metrics:snapshot', { containers: allMetrics, tenants: tenantMetrics });
   } catch (error: any) {
     console.error('[MetricsCollector] Collection error:', error.message);

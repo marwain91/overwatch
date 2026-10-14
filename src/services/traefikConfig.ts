@@ -1,10 +1,5 @@
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import * as yaml from 'js-yaml';
-import { findConfigPath, loadConfig, clearConfigCache } from '../config/loader';
-import { getDataDir } from '../config';
-import { OverwatchConfigSchema } from '../config/schema';
-import { withFileLock } from './fileLock';
+import { loadConfig } from '../config/loader';
+import { updateOverwatchConfig } from '../config/writer';
 import {
   TraefikGlobalSchema,
   TraefikDashboardSchema,
@@ -16,9 +11,13 @@ import {
   type MiddlewareSpec,
 } from '../models/traefik';
 import { getApp, applyApp } from './app';
-import { TraefikAppSchema, type TraefikApp } from '../models/traefik';
-import { readTenantTraefik, writeTenantTraefik } from './tenantTraefik';
+import { TraefikAppSchema, TraefikTenantSchema, type TraefikApp } from '../models/traefik';
+import { readTenantTraefik, writeTenantTraefik, loadAliasContext, assertHostAliasesAllowed } from './tenantTraefik';
 import type { TraefikTenant } from '../models/traefik';
+import { NotFoundError } from '../utils/httpErrors';
+import { tenantDir } from './tenantStore';
+import * as fs from 'fs/promises';
+import { assertTenantRawLabelsOwned } from './traefikLabels';
 
 const SECRET_HINTS = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
 
@@ -41,83 +40,6 @@ export function maskTraefikSecrets(t: TraefikGlobal | undefined): TraefikGlobal 
   return masked;
 }
 
-/**
- * Load the raw overwatch.yaml as a JS object. Read+write helpers below preserve
- * the existing YAML for keys we don't touch.
- */
-async function readRawConfig(): Promise<Record<string, any>> {
-  const configPath = findConfigPath();
-  const content = await fs.readFile(configPath, 'utf-8');
-  return (yaml.load(content) as Record<string, any>) ?? {};
-}
-
-/**
- * Persist `updated` as the new overwatch.yaml, durably and serialised against
- * concurrent writers.
- *
- * Why this is non-trivial: in the default Docker layout overwatch.yaml is
- * bind-mounted as a *single file* into /app/. /app/ itself is owned by the
- * image and not writable by the runtime `node` user, so the classic
- * write-temp-then-rename pattern fails (parent isn't writable, AND the kernel
- * forbids overwriting a bind-mounted target via rename — would change inode).
- *
- * The pattern that actually works in this environment:
- *   1. Hold withFileLock so no other process / re-entrant call interleaves.
- *   2. Write+fsync a fully-formed scratch file in the (writable) data dir.
- *   3. fs.copyFile scratch → target. copyFile opens the target with
- *      O_TRUNC|O_CREAT|O_WRONLY, which works on bind-mounted single files.
- *   4. fsync the target so the new bytes are durable.
- *   5. Best-effort delete the scratch file.
- *
- * The result is durable (post-crash the target is either fully old or fully
- * new bytes from a single copyFile call), serialised across processes, and
- * works across both normal filesystems and bind-mounted single-file targets.
- */
-async function writeRawConfig(updated: Record<string, any>): Promise<void> {
-  return withFileLock('overwatch-config', async () => {
-    const parse = OverwatchConfigSchema.safeParse(updated);
-    if (!parse.success) {
-      const errors = parse.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
-      throw new Error(`Resulting overwatch.yaml would be invalid: ${errors}`);
-    }
-    const configPath = findConfigPath();
-    const content = yaml.dump(updated, { lineWidth: 120, noRefs: true });
-
-    const scratchDir = path.join(getDataDir(), '.config-tmp');
-    await fs.mkdir(scratchDir, { recursive: true });
-    const scratch = path.join(scratchDir, `overwatch.yaml.${process.pid}.${Date.now()}`);
-
-    try {
-      // Write fully + fsync the scratch file before touching the target.
-      const sfh = await fs.open(scratch, 'w', 0o644);
-      try {
-        await sfh.writeFile(content);
-        await sfh.sync();
-      } finally {
-        await sfh.close();
-      }
-
-      // Overwrite the (possibly bind-mounted) target in a single copyFile call.
-      await fs.copyFile(scratch, configPath);
-
-      // fsync the target so bytes are durable on the underlying filesystem.
-      // Best-effort: some bind-mount setups disallow opening RW-for-fsync from
-      // certain paths. The copyFile already wrote the bytes; the fsync is
-      // belt-and-braces for crash durability.
-      try {
-        const tfh = await fs.open(configPath, 'r+');
-        try { await tfh.sync(); } finally { await tfh.close(); }
-      } catch {
-        /* non-fatal; copyFile bytes are still in the page cache */
-      }
-    } finally {
-      await fs.unlink(scratch).catch(() => {});
-    }
-
-    clearConfigCache();
-  });
-}
-
 // ─── Global Traefik config ──────────────────────────────────────────────────
 
 export async function getTraefikConfig(opts: { unmask?: boolean } = {}): Promise<TraefikGlobal | undefined> {
@@ -127,9 +49,7 @@ export async function getTraefikConfig(opts: { unmask?: boolean } = {}): Promise
 
 export async function updateTraefikConfig(patch: TraefikGlobal): Promise<TraefikGlobal> {
   const validated = TraefikGlobalSchema.parse(patch);
-  const raw = await readRawConfig();
-  raw.traefik = validated;
-  await writeRawConfig(raw);
+  await updateOverwatchConfig(raw => { raw.traefik = validated; });
   return validated;
 }
 
@@ -144,25 +64,25 @@ export async function upsertCertResolver(name: string, body: unknown): Promise<C
   // Force the URL-path name onto the body to avoid mismatches.
   const bodyWithName = { ...(body as Record<string, unknown>), name };
   const validated = CertResolverSchema.parse(bodyWithName);
-  const raw = await readRawConfig();
-  raw.traefik = raw.traefik ?? {};
-  const list: CertResolver[] = raw.traefik.cert_resolvers ?? [];
-  const idx = list.findIndex(r => r.name === name);
-  if (idx >= 0) {
-    list[idx] = validated;
-  } else {
-    list.push(validated);
-  }
-  raw.traefik.cert_resolvers = list;
-  await writeRawConfig(raw);
+  await updateOverwatchConfig(raw => {
+    raw.traefik = raw.traefik ?? {};
+    const list: CertResolver[] = raw.traefik.cert_resolvers ?? [];
+    const idx = list.findIndex(r => r.name === name);
+    if (idx >= 0) {
+      list[idx] = validated;
+    } else {
+      list.push(validated);
+    }
+    raw.traefik.cert_resolvers = list;
+  });
   return validated;
 }
 
 export async function deleteCertResolver(name: string): Promise<void> {
-  const raw = await readRawConfig();
-  if (!raw.traefik?.cert_resolvers) return;
-  raw.traefik.cert_resolvers = raw.traefik.cert_resolvers.filter((r: CertResolver) => r.name !== name);
-  await writeRawConfig(raw);
+  await updateOverwatchConfig(raw => {
+    if (!raw.traefik?.cert_resolvers) return;
+    raw.traefik.cert_resolvers = raw.traefik.cert_resolvers.filter((r: CertResolver) => r.name !== name);
+  });
 }
 
 // ─── Global middleware library ──────────────────────────────────────────────
@@ -174,19 +94,19 @@ export async function listGlobalMiddlewares(): Promise<Record<string, Middleware
 
 export async function upsertGlobalMiddleware(name: string, body: unknown): Promise<MiddlewareSpec> {
   const validated = MiddlewareSpecSchema.parse(body);
-  const raw = await readRawConfig();
-  raw.traefik = raw.traefik ?? {};
-  raw.traefik.middlewares = raw.traefik.middlewares ?? {};
-  raw.traefik.middlewares[name] = validated;
-  await writeRawConfig(raw);
+  await updateOverwatchConfig(raw => {
+    raw.traefik = raw.traefik ?? {};
+    raw.traefik.middlewares = raw.traefik.middlewares ?? {};
+    raw.traefik.middlewares[name] = validated;
+  });
   return validated;
 }
 
 export async function deleteGlobalMiddleware(name: string): Promise<void> {
-  const raw = await readRawConfig();
-  if (!raw.traefik?.middlewares) return;
-  delete raw.traefik.middlewares[name];
-  await writeRawConfig(raw);
+  await updateOverwatchConfig(raw => {
+    if (!raw.traefik?.middlewares) return;
+    delete raw.traefik.middlewares[name];
+  });
 }
 
 // ─── Dashboard ──────────────────────────────────────────────────────────────
@@ -198,10 +118,10 @@ export async function getDashboardConfig() {
 
 export async function updateDashboardConfig(body: unknown) {
   const validated = TraefikDashboardSchema.parse(body);
-  const raw = await readRawConfig();
-  raw.traefik = raw.traefik ?? {};
-  raw.traefik.dashboard = validated;
-  await writeRawConfig(raw);
+  await updateOverwatchConfig(raw => {
+    raw.traefik = raw.traefik ?? {};
+    raw.traefik.dashboard = validated;
+  });
   return validated;
 }
 
@@ -214,10 +134,10 @@ export async function getOverwatchRouting() {
 
 export async function updateOverwatchRouting(body: unknown) {
   const validated = TraefikOverwatchSchema.parse(body);
-  const raw = await readRawConfig();
-  raw.traefik = raw.traefik ?? {};
-  raw.traefik.overwatch = validated;
-  await writeRawConfig(raw);
+  await updateOverwatchConfig(raw => {
+    raw.traefik = raw.traefik ?? {};
+    raw.traefik.overwatch = validated;
+  });
   return validated;
 }
 
@@ -225,14 +145,14 @@ export async function updateOverwatchRouting(body: unknown) {
 
 export async function getAppTraefik(appId: string): Promise<TraefikApp | undefined> {
   const app = await getApp(appId);
-  if (!app) throw new Error(`App '${appId}' not found`);
+  if (!app) throw new NotFoundError(`App '${appId}' not found`);
   return app.traefik;
 }
 
 export async function updateAppTraefik(appId: string, body: unknown): Promise<TraefikApp> {
   const validated = TraefikAppSchema.parse(body);
   const app = await getApp(appId);
-  if (!app) throw new Error(`App '${appId}' not found`);
+  if (!app) throw new NotFoundError(`App '${appId}' not found`);
   const { createdAt: _c, updatedAt: _u, ...staticPart } = app;
   void _c; void _u;
   await applyApp({ ...staticPart, traefik: validated }, 'api:traefik-update');
@@ -242,7 +162,8 @@ export async function updateAppTraefik(appId: string, body: unknown): Promise<Tr
 // ─── Per-tenant Traefik ─────────────────────────────────────────────────────
 
 export async function getTenantTraefik(appId: string, tenantId: string): Promise<TraefikTenant | undefined> {
-  return readTenantTraefik(appId, tenantId);
+  // Stored aliases are shown as stored, even ones generation would now drop.
+  return readTenantTraefik(appId, tenantId, { raw: true });
 }
 
 export async function updateTenantTraefik(appId: string, tenantId: string, body: unknown): Promise<TraefikTenant | undefined> {
@@ -250,6 +171,19 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
     await writeTenantTraefik(appId, tenantId, undefined);
     return undefined;
   }
-  await writeTenantTraefik(appId, tenantId, body as TraefikTenant);
-  return readTenantTraefik(appId, tenantId);
+  // Writing would otherwise create the tenant directory, and its aliases would then count as foreign hosts.
+  try {
+    await fs.access(tenantDir(appId, tenantId));
+  } catch (err: any) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') throw new NotFoundError(`Tenant '${tenantId}' not found in app '${appId}'`);
+    throw err;
+  }
+  const parsed = TraefikTenantSchema.parse(body);
+  assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);
+  if (parsed.host_aliases && parsed.host_aliases.length > 0) {
+    const normalized = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
+    parsed.host_aliases = normalized;
+  }
+  await writeTenantTraefik(appId, tenantId, parsed);
+  return readTenantTraefik(appId, tenantId, { raw: true });
 }

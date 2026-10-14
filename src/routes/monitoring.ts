@@ -13,58 +13,23 @@ import { loadConfig } from '../config';
 import { SLUG_RE, CONTAINER_NAME_RE, UUID_RE } from '../utils/validators';
 import { queryString, queryInt } from '../utils/query';
 import { requireRole } from '../middleware/requireRole';
-import { getCurrentUserEmail } from '../utils/jwt';
-import { getUserRole } from '../services/users';
+import { assertPublicUrl } from '../utils/ssrf';
+import { ValidationError } from '../utils/httpErrors';
 
 const router = Router();
 
-// SSRF guard for webhook URLs. Blocks loopback, private/link-local ranges, and
-// the common cloud metadata endpoint (169.254.169.254). Escape hatch for
+// SSRF guard for webhook URLs (shared with the send path). Escape hatch for
 // on-prem setups that route alerts to an internal collector:
 // OVERWATCH_ALLOW_PRIVATE_WEBHOOK=1.
-export function isValidWebhookUrl(url: string): string | null {
-  let parsed: URL;
+export async function webhookUrlError(url: unknown): Promise<string | null> {
+  if (typeof url !== 'string') return 'Invalid webhook URL';
   try {
-    parsed = new URL(url);
-  } catch {
-    return 'Invalid webhook URL';
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return 'Webhook URL must use http or https';
-  }
-  if (process.env.OVERWATCH_ALLOW_PRIVATE_WEBHOOK === '1') {
+    await assertPublicUrl(url, { allowPrivateEnv: 'OVERWATCH_ALLOW_PRIVATE_WEBHOOK', label: 'Webhook URL' });
     return null;
+  } catch (err) {
+    if (err instanceof ValidationError) return err.message;
+    throw err;
   }
-  const host = parsed.hostname.toLowerCase();
-  if (host === 'localhost' || host.endsWith('.localhost') || host === '0.0.0.0') {
-    return 'Webhook URL must not target localhost';
-  }
-  // IPv4 — numeric dotted-quad. Refuse if in loopback / private / link-local / reserved.
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
-    if (a === 10) return 'Webhook URL must not target private network (10/8)';
-    if (a === 127) return 'Webhook URL must not target loopback (127/8)';
-    if (a === 169 && b === 254) return 'Webhook URL must not target link-local / metadata endpoint';
-    if (a === 172 && b >= 16 && b <= 31) return 'Webhook URL must not target private network (172.16/12)';
-    if (a === 192 && b === 168) return 'Webhook URL must not target private network (192.168/16)';
-    if (a === 0) return 'Webhook URL must not target reserved range (0/8)';
-    if (a >= 224) return 'Webhook URL must not target multicast/reserved range';
-  }
-  // IPv6 — any form of loopback / link-local / unique-local.
-  if (host.includes(':')) {
-    const stripped = host.replace(/^\[|\]$/g, '');
-    if (stripped === '::1' || stripped === '::') {
-      return 'Webhook URL must not target IPv6 loopback';
-    }
-    if (/^fe[89ab][0-9a-f]?:/i.test(stripped)) {
-      return 'Webhook URL must not target IPv6 link-local (fe80::/10)';
-    }
-    if (/^f[cd][0-9a-f]{2}:/i.test(stripped)) {
-      return 'Webhook URL must not target IPv6 unique-local (fc00::/7)';
-    }
-  }
-  return null;
 }
 
 // GET /api/monitoring/metrics — current + history for all containers
@@ -116,7 +81,7 @@ router.get('/alerts', asyncHandler(async (req, res) => {
 }));
 
 // GET /api/monitoring/alerts/rules — configured rules (from config)
-router.get('/alerts/rules', asyncHandler(async (req, res) => {
+router.get('/alerts/rules', asyncHandler(async (_req, res) => {
   const config = loadConfig();
   res.json(config.alert_rules ?? []);
 }));
@@ -138,13 +103,11 @@ function redactWebhookUrl(url: string): string {
 // GET /api/monitoring/notifications — list notification channels. Webhook URLs
 // and custom headers (e.g. Authorization) are credentials, so only admins — the
 // only role that can edit channels — get them unredacted.
-router.get('/notifications', asyncHandler(async (req, res) => {
+router.get('/notifications', asyncHandler(async (_req, res) => {
   const channels = await getNotificationChannelsData();
-  const email = getCurrentUserEmail(req);
-  const role = email ? await getUserRole(email) : undefined;
-  // Explicit check: can(undefined, ...) treats a missing role as legacy admin,
-  // which would fail open for a caller that isn't an admin user at all.
-  if (role === 'admin') {
+  // Role was resolved once by authMiddleware. Explicit check: can(undefined, ...)
+  // treats a missing role as legacy admin, which would fail open.
+  if (res.locals.user?.role === 'admin') {
     res.json(channels);
     return;
   }
@@ -169,7 +132,7 @@ router.post('/notifications', requireRole('admin'), asyncHandler(async (req, res
     return;
   }
 
-  const urlError = isValidWebhookUrl(channelConfig.url);
+  const urlError = await webhookUrlError(channelConfig.url);
   if (urlError) {
     res.status(400).json({ error: urlError });
     return;
@@ -199,7 +162,7 @@ router.put('/notifications/:id', requireRole('admin'), asyncHandler(async (req, 
 
   // Re-validate URL if config is being updated
   if (channelConfig?.url) {
-    const urlError = isValidWebhookUrl(channelConfig.url);
+    const urlError = await webhookUrlError(channelConfig.url);
     if (urlError) {
       res.status(400).json({ error: urlError });
       return;
@@ -260,7 +223,12 @@ router.post('/notifications/:id/test', requireRole('admin'), asyncHandler(async 
     return;
   }
 
-  await sendTestNotification(channel);
+  try {
+    await sendTestNotification(channel);
+  } catch (err: any) {
+    res.status(502).json({ error: `Test notification failed: ${err?.message || 'delivery error'}` });
+    return;
+  }
   res.json({ success: true });
 }));
 

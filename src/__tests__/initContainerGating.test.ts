@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as util from 'util';
+import * as yaml from 'js-yaml';
 import { generateComposeFile } from '../services/composeGenerator';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
 
@@ -52,20 +53,11 @@ function render(services: any[]): string {
   });
 }
 
-/** Extract the `depends_on:` block of one service from generated compose YAML. */
-function dependsOnBlock(yml: string, serviceName: string): string {
-  const lines = yml.split('\n');
-  const start = lines.findIndex(l => l === `  ${serviceName}:`);
-  expect(start, `service '${serviceName}' not found in generated compose`).toBeGreaterThan(-1);
-  const dependsIdx = lines.findIndex((l, i) => i > start && l === '    depends_on:');
-  if (dependsIdx === -1) return '';
-  const block: string[] = [];
-  for (let i = dependsIdx + 1; i < lines.length; i++) {
-    // Stop at the next key at service-property depth (4 spaces) or the next service.
-    if (!/^ {6}/.test(lines[i])) break;
-    block.push(lines[i]);
-  }
-  return block.join('\n');
+/** The parsed `depends_on` of one service from generated compose YAML. */
+function dependsOn(yml: string, serviceName: string): unknown {
+  const doc = yaml.load(yml) as any;
+  expect(doc.services?.[serviceName], `service '${serviceName}' not found in generated compose`).toBeDefined();
+  return doc.services[serviceName].depends_on;
 }
 
 describe('composeGenerator depends_on gating', () => {
@@ -75,9 +67,9 @@ describe('composeGenerator depends_on gating', () => {
       { name: 'migrator', image_suffix: 'backend', is_init_container: true },
     ]);
 
-    expect(dependsOnBlock(yml, 'backend')).toBe(
-      '      migrator:\n        condition: service_completed_successfully',
-    );
+    expect(dependsOn(yml, 'backend')).toEqual({
+      migrator: { condition: 'service_completed_successfully' },
+    });
   });
 
   it('keeps start-order semantics when depending on a normal service', () => {
@@ -86,9 +78,9 @@ describe('composeGenerator depends_on gating', () => {
       { name: 'frontend', image_suffix: 'frontend', required: true, depends_on: ['backend'] },
     ]);
 
-    expect(dependsOnBlock(yml, 'frontend')).toBe(
-      '      backend:\n        condition: service_started',
-    );
+    expect(dependsOn(yml, 'frontend')).toEqual({
+      backend: { condition: 'service_started' },
+    });
   });
 
   it('renders one consistent long-form block for mixed dependencies', () => {
@@ -98,16 +90,15 @@ describe('composeGenerator depends_on gating', () => {
       { name: 'worker', image_suffix: 'worker', depends_on: ['migrator', 'backend'] },
     ]);
 
-    // Short-form and long-form cannot be mixed inside one depends_on block.
-    expect(dependsOnBlock(yml, 'worker')).toBe(
-      [
-        '      migrator:',
-        '        condition: service_completed_successfully',
-        '      backend:',
-        '        condition: service_started',
-      ].join('\n'),
-    );
-    expect(yml).not.toMatch(/^ {6}- (migrator|backend)$/m);
+    // Short-form and long-form cannot be mixed inside one depends_on block:
+    // every entry is a mapping with an explicit condition, never a list item.
+    const deps = dependsOn(yml, 'worker');
+    expect(Array.isArray(deps)).toBe(false);
+    expect(deps).toEqual({
+      migrator: { condition: 'service_completed_successfully' },
+      backend: { condition: 'service_started' },
+    });
+    expect(Object.keys(deps as object)).toEqual(['migrator', 'backend']);
   });
 
   it('fails loudly rather than emitting a dangling dependency', () => {
@@ -127,6 +118,7 @@ describe('composeGenerator depends_on gating', () => {
 
   it('omits depends_on entirely for services that declare none', () => {
     const yml = render([{ name: 'backend', image_suffix: 'backend', required: true }]);
+    expect(yaml.load(yml)).toHaveProperty('services.backend');
     expect(yml).not.toContain('depends_on');
   });
 });

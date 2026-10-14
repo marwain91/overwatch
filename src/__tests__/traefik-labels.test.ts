@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildTraefikLabels, resolveTlsTermination } from '../services/traefikLabels';
 import type { AppDefinition, AppService } from '../models/app';
 import type { TraefikGlobal, TraefikTenant } from '../models/traefik';
+import { HttpError } from '../utils/httpErrors';
 
 function baseApp(traefikOverride?: Partial<AppDefinition['traefik']>): AppDefinition {
   return {
@@ -34,8 +35,9 @@ describe('buildTraefikLabels', () => {
       service: baseService as any,
       certResolverName: 'cf-prod',
     });
+    // Plain `key=value` strings; composeGenerator does the YAML.
+    expect(labels[0]).toBe('traefik.enable=true');
     const joined = labels.join('\n');
-    expect(joined).toMatch(/traefik\.enable=true/);
     expect(joined).toMatch(/traefik\.http\.routers\.myapp-t1-web\.rule=Host\(`t1\.app\.example\.com`\)/);
     expect(joined).toMatch(/traefik\.http\.routers\.myapp-t1-web\.tls=true/);
     expect(joined).toMatch(/traefik\.http\.routers\.myapp-t1-web\.tls\.certresolver=cf-prod/);
@@ -128,7 +130,7 @@ describe('buildTraefikLabels', () => {
         enabled: true,
         strip_prefix: false,
         raw_labels: {
-          'traefik.http.middlewares.custom.basicauth.users': 'user:hash',
+          'traefik.http.middlewares.myapp-t1-web-custom.basicauth.users': 'user:hash',
           'traefik.enable': 'false', // denylisted — should be filtered out
         },
       },
@@ -141,7 +143,7 @@ describe('buildTraefikLabels', () => {
       certResolverName: 'cf-prod',
     });
     const joined = labels.join('\n');
-    expect(joined).toMatch(/traefik\.http\.middlewares\.custom\.basicauth\.users=user:hash/);
+    expect(joined).toMatch(/traefik\.http\.middlewares\.myapp-t1-web-custom\.basicauth\.users=user:hash/);
     // The traefik.enable=true line is emitted by us; the denylisted false attempt should not flip it.
     const enableMatches = joined.match(/traefik\.enable=/g) ?? [];
     expect(enableMatches.length).toBe(1);
@@ -162,7 +164,7 @@ describe('buildTraefikLabels', () => {
           'traefik.http.routers.evil.rule ': 'Host(`admin.example.com`)',
           'com.overwatch.app-id': 'admin.example.com',
           'COM.DOCKER.compose.project': 'admin.example.com',
-          'traefik.http.middlewares.ok.headers.customrequestheaders.X-Re': '^https://(.*)\\.example\\.com',
+          'traefik.http.middlewares.myapp-t1-web-ok.headers.customrequestheaders.X-Re': '^https://(.*)\\.example\\.com',
         },
       },
     };
@@ -175,19 +177,19 @@ describe('buildTraefikLabels', () => {
     });
     const joined = labels.join('\n');
     expect(joined).not.toMatch(/admin\.example\.com/);
-    // Backslashes in values (regexes) are still passed through untouched.
-    expect(joined).toContain('customrequestheaders.X-Re=^https://(.*)\\.example\\.com');
+    // Backslashes in values (regexes) are passed through untouched.
+    expect(labels).toContain('traefik.http.middlewares.myapp-t1-web-ok.headers.customrequestheaders.X-Re=^https://(.*)\\.example\\.com');
   });
 
-  it('never emits a raw line break, so label values cannot add compose keys', () => {
+  it('folds raw line breaks in label values to a space and keeps quotes verbatim', () => {
     const svc = {
       ...baseService,
       routing: {
         enabled: true,
         strip_prefix: false,
         raw_labels: {
-          'traefik.http.middlewares.x.headers.customrequestheaders.X-A': 'v\\"\n    privileged: true\r\n#',
-          'traefik.http.middlewares.y.headers.customrequestheaders.X-B': 'a\u2028b\u0085c',
+          'traefik.http.middlewares.myapp-t1-web-x.headers.customrequestheaders.X-A': 'v\\"\n    privileged: true\r\n#',
+          'traefik.http.middlewares.myapp-t1-web-y.headers.customrequestheaders.X-B': 'a\u2028b\u0085c',
         },
       },
     };
@@ -201,7 +203,8 @@ describe('buildTraefikLabels', () => {
     for (const line of labels) {
       expect(line).not.toMatch(/[\r\n\u0085\u2028\u2029]/);
     }
-    expect(labels.join('\n')).toMatch(/X-B=a b c"/);
+    expect(labels).toContain('traefik.http.middlewares.myapp-t1-web-x.headers.customrequestheaders.X-A=v\\"     privileged: true #');
+    expect(labels).toContain('traefik.http.middlewares.myapp-t1-web-y.headers.customrequestheaders.X-B=a b c');
   });
 
   it('routes through the upstream entrypoint and skips TLS labels when termination=upstream', () => {
@@ -275,6 +278,40 @@ describe('buildTraefikLabels', () => {
       traefik,
     });
     expect(labels.join('\n')).toMatch(/entrypoints=edge/);
+  });
+
+  it('names the missing middleware in an error the operator gets back', () => {
+    const build = () => buildTraefikLabels({
+      app: baseApp({ middlewares: {} }),
+      tenantId: 't1',
+      domain: 't1.app.example.com',
+      service: { ...baseService, routing: { ...baseService.routing, middlewares: ['api-auth'] } } as any,
+      certResolverName: 'cf-prod',
+    });
+
+    let caught: unknown;
+    try { build(); } catch (err) { caught = err; }
+
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).expose).toBe(true);
+    expect((caught as HttpError).clientMessage).toMatch(/Middleware "api-auth" referenced by myapp\/t1\/web is not defined/);
+  });
+
+  it('names the unknown middleware a chain references in an error the operator gets back', () => {
+    let caught: unknown;
+    try {
+      buildTraefikLabels({
+        app: baseApp({ middlewares: { secure: { type: 'chain', middlewares: ['api-auth'] } } }),
+        tenantId: 't1',
+        domain: 't1.app.example.com',
+        service: { ...baseService, routing: { ...baseService.routing, middlewares: ['secure'] } } as any,
+        certResolverName: 'cf-prod',
+      });
+    } catch (err) { caught = err; }
+
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).expose).toBe(true);
+    expect((caught as HttpError).clientMessage).toBe('Chain middleware "secure" references unknown middleware "api-auth"');
   });
 });
 

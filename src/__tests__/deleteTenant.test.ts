@@ -35,8 +35,9 @@ async function loadDeleteTenant(composeDown: (cb: (err: any, stdout: string, std
   };
   const deleteTenantAllOverrides = vi.fn(async () => { calls.push('deleteOverrides'); });
   vi.doMock('child_process', () => ({
-    execFile: vi.fn((_cmd: string, _args: string[], cb: (err: any, stdout: string, stderr: string) => void) => composeDown(cb)),
+    execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => composeDown(cb)),
   }));
+  vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
   vi.doMock('../config', () => ({
     loadConfig: () => ({ project: { name: 'T', prefix: 'test', db_prefix: 'test' } }),
     getAppsDir: () => appsDir,

@@ -1,38 +1,46 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { isAdminEmail } from '../services/users';
+import { verifySession } from '../auth/session';
+import { getUserRole, AdminRole } from '../services/users';
 
-// JWT_SECRET is validated at startup in index.ts
-const JWT_SECRET = process.env.JWT_SECRET!;
+/** Authenticated caller, set on `res.locals.user` by authMiddleware. */
+export interface AuthUser {
+  email: string;
+  role: AdminRole;
+}
 
 /**
- * JWT authentication middleware
- * Verifies Bearer token in Authorization header and confirms user is still an admin.
+ * Session authentication middleware.
+ * Verifies the Bearer session token, then resolves the user against admin-users
+ * once per request (so tokens outlive neither admin removal nor a role change).
+ * requireRole, audit and route handlers read `res.locals.user` instead of
+ * re-verifying the token or re-reading the store.
  */
-export function authMiddleware(req: Request, res: Response, next: NextFunction) {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
-
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { email: string };
-
-      // Re-validate that user is still an admin (handles token issued before removal)
-      isAdminEmail(decoded.email).then((isAdmin) => {
-        if (!isAdmin) {
-          console.warn(`[Auth] Rejected token for removed admin: ${decoded.email}`);
-          return res.status(403).json({ error: 'Access revoked' });
-        }
-        return next();
-      }).catch(() => {
-        return res.status(500).json({ error: 'Auth check failed' });
-      });
-      return; // Response will be sent by the promise chain above
-    } catch (error: any) {
-      const reason = error.name === 'TokenExpiredError' ? 'expired' : 'invalid';
-      console.warn(`[Auth] JWT ${reason}: ${error.message}`);
-    }
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  return res.status(401).json({ error: 'Unauthorized' });
+  let email: string;
+  try {
+    email = verifySession(authHeader.substring(7)).email;
+  } catch (error: any) {
+    const reason = error.name === 'TokenExpiredError' ? 'expired' : 'invalid';
+    console.warn(`[Auth] JWT ${reason}: ${error.message}`);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const role = await getUserRole(email);
+    if (!role) {
+      // Fail closed: valid signature, but no longer an admin user.
+      console.warn(`[Auth] Rejected token for removed admin: ${email}`);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    res.locals.user = { email, role } satisfies AuthUser;
+    return next();
+  } catch (err: any) {
+    console.error(`[Auth] Auth check failed: ${err?.message || err}`);
+    return res.status(500).json({ error: 'Auth check failed' });
+  }
 }

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fetchNoRedirect } from '../adapters/registry/safeFetch';
 
 export interface ImageRef {
   registry: string;
@@ -60,7 +61,7 @@ async function exchangeToken(registry: string, repo: string, auth: RegistryAuth 
     const basic = Buffer.from(`${auth.user}:${auth.token}`).toString('base64');
     headers.Authorization = `Basic ${basic}`;
   }
-  const res = await fetch(url, { headers });
+  const res = await fetchNoRedirect(url, { headers });
   if (!res.ok) {
     throw new Error(`registry token exchange failed (HTTP ${res.status})`);
   }
@@ -75,7 +76,14 @@ function parseNextLink(link: string | null, registry: string): string | null {
   const match = link.match(/<([^>]+)>\s*;\s*rel="next"/i);
   if (!match) return null;
   const raw = match[1];
-  if (/^https?:\/\//i.test(raw)) return raw;
+  // The Bearer token is sent to this URL: never follow it off the registry's origin.
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      return new URL(raw).origin === `https://${registry}` ? raw : null;
+    } catch {
+      return null;
+    }
+  }
   return `https://${registry}${raw.startsWith('/') ? '' : '/'}${raw}`;
 }
 
@@ -92,7 +100,7 @@ export async function listImageTags(image: string): Promise<string[]> {
   const tags: string[] = [];
   let url: string | null = `https://${registry}/v2/${repo}/tags/list?n=100`;
   while (url) {
-    const res: Response = await fetch(url, {
+    const res: Response = await fetchNoRedirect(url, {
       headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json' },
     });
     if (!res.ok) throw new Error(`registry tag list failed (HTTP ${res.status})`);

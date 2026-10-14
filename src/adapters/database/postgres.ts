@@ -1,11 +1,8 @@
 import { Pool } from 'pg';
-import { execFile, spawn } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { createReadStream, createWriteStream } from 'fs';
-import { DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from './types';
+import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
 import { BaseDatabaseAdapter } from './base';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * PostgreSQL database adapter
@@ -25,6 +22,10 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       password: this.config.rootPassword,
       database: 'postgres', // Connect to default db for admin operations
       max: 5,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+      // Admin queries only; dumps/restores run via docker exec, not this pool.
+      statement_timeout: 30000,
     });
     // pg emits 'error' when an idle pooled client dies (DB restart,
     // pg_terminate_backend). With no listener that EventEmitter error is
@@ -39,7 +40,17 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     await this.pool!.query('SELECT 1');
   }
 
-  async createDatabase(tenantId: string, password: string): Promise<void> {
+  async databaseExists(tenantId: string): Promise<boolean> {
+    if (!this.pool) {
+      await this.initialize();
+    }
+    const dbName = this.getDatabaseName(tenantId);
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
+    const result = await this.pool!.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [dbName]);
+    return result.rows.length > 0;
+  }
+
+  async createDatabase(tenantId: string, password: string): Promise<CreateDatabaseResult> {
     if (!this.pool) {
       await this.initialize();
     }
@@ -50,41 +61,60 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     this.validateIdentifiers(dbName, userName);
 
     const client = await this.pool!.connect();
+    // CREATE DATABASE cannot use parameterized queries; escape identifiers as defense-in-depth
+    const safeDb = dbName.replace(/"/g, '""');
+    const safeUser = userName.replace(/"/g, '""');
+    let created = false;
+    let userCreated = false;
 
     try {
-      // Create user if not exists (PostgreSQL doesn't have IF NOT EXISTS for CREATE USER)
       // Use format() with %I for identifiers and %L for literals to prevent SQL injection
-      await client.query(`
-        DO $body$ BEGIN
-          EXECUTE format('CREATE USER %I WITH PASSWORD %L', $1, $2);
-        EXCEPTION WHEN duplicate_object THEN
-          EXECUTE format('ALTER USER %I WITH PASSWORD %L', $1, $2);
-        END $body$;
-      `, [userName, password]);
+      const roleExists = await client.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [userName]);
+      if (roleExists.rows.length === 0) {
+        await client.query(`
+          DO $body$ BEGIN
+            EXECUTE format('CREATE USER %I WITH PASSWORD %L', $1, $2);
+          END $body$;
+        `, [userName, password]);
+        userCreated = true;
+      } else {
+        await client.query(`
+          DO $body$ BEGIN
+            EXECUTE format('ALTER USER %I WITH PASSWORD %L', $1, $2);
+          END $body$;
+        `, [userName, password]);
+      }
 
-      // Check if database exists
       const dbExists = await client.query(
         `SELECT 1 FROM pg_database WHERE datname = $1`,
         [dbName]
       );
 
       if (dbExists.rows.length === 0) {
-        // CREATE DATABASE cannot use parameterized queries; escape identifiers as defense-in-depth
-        const safeDb = dbName.replace(/"/g, '""');
-        const safeUser = userName.replace(/"/g, '""');
         await client.query(`CREATE DATABASE "${safeDb}" OWNER "${safeUser}"`);
+        created = true;
       }
 
       // Grant privileges
-      const safeDb = dbName.replace(/"/g, '""');
-      const safeUser = userName.replace(/"/g, '""');
       await client.query(`GRANT ALL PRIVILEGES ON DATABASE "${safeDb}" TO "${safeUser}"`);
+
+      // New databases are connectable by PUBLIC, so any tenant role could open
+      // another tenant's DB. Restrict CONNECT to the owning role; runs for
+      // existing databases too so they are tightened on the next createDatabase.
+      await client.query(`REVOKE CONNECT ON DATABASE "${safeDb}" FROM PUBLIC`);
+      await client.query(`GRANT CONNECT ON DATABASE "${safeDb}" TO "${safeUser}"`);
+      return { created, userCreated };
+    } catch (error) {
+      // Undo only what this call created; never touch pre-existing objects
+      if (created) await client.query(`DROP DATABASE IF EXISTS "${safeDb}"`).catch(() => {});
+      if (userCreated) await client.query(`DROP USER IF EXISTS "${safeUser}"`).catch(() => {});
+      throw error;
     } finally {
       client.release();
     }
   }
 
-  async dropDatabase(tenantId: string): Promise<void> {
+  async dropDatabase(tenantId: string, options: { keepUser?: boolean } = {}): Promise<void> {
     if (!this.pool) {
       await this.initialize();
     }
@@ -95,8 +125,12 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     this.validateIdentifiers(dbName, userName);
 
     const client = await this.pool!.connect();
+    let releaseError: Error | undefined;
 
     try {
+      // The admin pool's 30s statement_timeout must not cut off a large DROP
+      await client.query('SET statement_timeout = 0');
+
       // Terminate connections to the database
       await client.query(`
         SELECT pg_terminate_backend(pg_stat_activity.pid)
@@ -110,10 +144,17 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       const safeUser = userName.replace(/"/g, '""');
       await client.query(`DROP DATABASE IF EXISTS "${safeDb}"`);
 
-      // Drop user
-      await client.query(`DROP USER IF EXISTS "${safeUser}"`);
+      if (!options.keepUser) {
+        await client.query(`DROP USER IF EXISTS "${safeUser}"`);
+      }
     } finally {
-      client.release();
+      // Restore the pool default; if that fails, discard the client instead of pooling it
+      try {
+        await client.query('RESET statement_timeout');
+      } catch (err) {
+        releaseError = err instanceof Error ? err : new Error(String(err));
+      }
+      client.release(releaseError);
     }
   }
 
@@ -139,12 +180,13 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
 
     // Stream pg_dump's stdout directly to disk. See mysql.ts for the same fix —
     // the previous execFile-with-stdout-buffer pattern broke for dumps larger
-    // than the 100 MB cap. Password passed via PGPASSWORD env, never argv.
+    // than the 100 MB cap. PGPASSWORD is named in argv but its value comes from the spawned
+    // process env, so the password never shows up in `ps` output.
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', [
-        'exec', '-e', `PGPASSWORD=${this.config.rootPassword}`,
+        'exec', '-e', 'PGPASSWORD',
         containerName, 'pg_dump', '-U', this.config.rootUser, '-d', dbName,
-      ]);
+      ], { env: { ...process.env, PGPASSWORD: this.config.rootPassword } });
 
       const out = createWriteStream(outputPath, { mode: 0o600 });
       proc.stdout.pipe(out);
@@ -167,12 +209,12 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Use spawn (no shell) with stdin pipe to avoid password injection
+    // spawn (no shell) with stdin pipe; password goes via env, not argv
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', [
-        'exec', '-i', '-e', `PGPASSWORD=${this.config.rootPassword}`,
+        'exec', '-i', '-e', 'PGPASSWORD',
         containerName, 'psql', '-U', this.config.rootUser, '-d', dbName,
-      ]);
+      ], { env: { ...process.env, PGPASSWORD: this.config.rootPassword } });
 
       const input = createReadStream(inputPath);
       input.pipe(proc.stdin);

@@ -3,26 +3,41 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { loadConfig, getAppsDir, resolveAppDbPrefix } from '../config';
+import { loadConfig } from '../config';
 import { resolveCertResolver } from '../config/loader';
-import { readTenantTraefik } from './tenantTraefik';
+import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
-import { generateSharedEnvFile, deleteTenantAllOverrides } from './envVars';
+import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue } from './envVars';
 import { getApp, applyApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
+import { applyManifestPolicy, manifestPolicyBaseline } from './manifestPolicy';
 import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
 import { describeFailedInitContainers } from './initContainerDiagnostics';
 import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
 import { eventBus } from './eventBus';
-import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
+import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from './eventBus';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
+import { tenantDir, tenantsDir, assertTenantDir } from './tenantStore';
 import { SLUG_RE } from '../utils/validators';
-import { parseEnv } from '../utils/env';
+import { resolveTenantDbId } from './tenantDb';
+import { getDockerEnv } from '../utils/runDocker';
+import { writeFileAtomic } from '../utils/atomicJson';
+import { withTenantLock } from './fileLock';
 import { extractComposeErrorMessage } from '../utils/composeErrors';
+import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
+import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 
 const execFileAsync = promisify(execFile);
+// Compose resolves ${VAR} against its own environment, so docker runs with the
+// curated one rather than Overwatch's (which holds operator secrets).
+// Timeout and maxBuffer follow runDocker's pattern: a hung daemon or a registry
+// stall must not pin the tenant lock (and a request) forever.
+const DOCKER_MAX_BUFFER = 64 * 1024 * 1024;
+const COMPOSE_TIMEOUT_MS = 300_000;
+const execDocker = (args: string[], timeoutMs: number = COMPOSE_TIMEOUT_MS) =>
+  execFileAsync('docker', args, { env: getDockerEnv(), timeout: timeoutMs, maxBuffer: DOCKER_MAX_BUFFER });
 
 export interface CreateTenantInput {
   appId: string;
@@ -80,7 +95,7 @@ export function validateTenantDomain(domain: unknown): { valid: boolean; error?:
  * Get the path for a tenant directory: apps/{appId}/tenants/{tenantId}
  */
 export function getTenantPath(appId: string, tenantId: string): string {
-  return path.join(getAppsDir(), appId, 'tenants', tenantId);
+  return tenantDir(appId, tenantId);
 }
 
 /**
@@ -130,7 +145,11 @@ function toStaticAppDefinition(app: AppDefinition): AppDefinitionStatic {
   return staticDef as AppDefinitionStatic;
 }
 
-export async function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
+export function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
+  return withTenantLock(String(input.appId), String(input.tenantId), () => createTenantLocked(input));
+}
+
+async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfig> {
   const { domain, imageTag } = input;
   const config = loadConfig();
 
@@ -140,54 +159,57 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   // and breaks taint flow into path.join for static analysis.
   const appIdMatch = input.appId.match(SLUG_RE);
   if (!appIdMatch) {
-    throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
+    throw new ValidationError('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
   }
   const appId = appIdMatch[0];
   const tenantIdMatch = input.tenantId.match(SLUG_RE);
   if (!tenantIdMatch) {
-    throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
+    throw new ValidationError('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
   const tenantId = tenantIdMatch[0];
   const domainValidation = validateTenantDomain(domain);
   if (!domainValidation.valid) {
-    throw new Error(domainValidation.error);
+    throw new ValidationError(domainValidation.error || 'Invalid domain');
   }
 
   // Load app definition first — adapter is scoped to the app's effective db_prefix
   const app = await getApp(appId);
   if (!app) {
-    throw new Error(`App '${appId}' not found`);
+    throw new NotFoundError(`App '${appId}' not found`);
   }
-  const db = getDatabaseAdapter(app);
+  // Reserved Overwatch hosts and other tenants' domains/aliases (create-from-backup goes through here too).
+  await assertTenantDomainAllowed(appId, tenantId, domain);
 
   const tag = imageTag || app.default_image_tag || 'latest';
   const tagValidation = validateImageTag(tag);
   if (!tagValidation.valid) {
-    throw new Error(tagValidation.error);
+    throw new ValidationError(tagValidation.error || 'Invalid image tag');
   }
+  const db = getDatabaseAdapter(app);
   const tenantPath = getTenantPath(appId, tenantId);
-  const tenantsDir = path.join(getAppsDir(), appId, 'tenants');
+  const appTenantsDir = tenantsDir(appId);
   const dbTenantId = `${appId}_${tenantId}`;
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   let tenantDirCreated = false;
   let dbCreated = false;
+  let userCreated = false;
   let composeWritten = false;
 
   try {
     // Atomically create tenant directory — fails if already exists (prevents TOCTOU race)
-    await fs.mkdir(tenantsDir, { recursive: true });
+    await fs.mkdir(appTenantsDir, { recursive: true });
     try {
       await fs.mkdir(tenantPath); // NOT recursive — fails if exists
       tenantDirCreated = true;
     } catch (err: any) {
       if (err.code === 'EEXIST') {
-        throw new Error(`Tenant '${tenantId}' already exists in app '${appId}'`);
+        throw new ConflictError(`Tenant '${tenantId}' already exists in app '${appId}'`);
       }
       throw err;
     }
 
     // Verify the path hasn't been manipulated via symlinks
-    await assertWithinDir(tenantPath, tenantsDir);
+    await assertWithinDir(tenantPath, appTenantsDir);
 
     // Get credential lengths from app or global config
     const dbPasswordLength = app.credentials?.db_password_length || config.credentials?.db_password_length || 32;
@@ -200,8 +222,13 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     // Initialize database adapter and create database.
     // Adapter prepends the app's effective db_prefix (empty prefix → no prepend).
     await db.initialize();
-    await db.createDatabase(dbTenantId, dbPassword);
-    dbCreated = true;
+    // Never adopt a database that already exists: a later rollback would drop it.
+    if (await db.databaseExists(dbTenantId)) {
+      throw new ConflictError(`A database for tenant '${tenantId}' already exists on the database server`);
+    }
+    const dbResult = await db.createDatabase(dbTenantId, dbPassword);
+    dbCreated = dbResult.created;
+    userCreated = dbResult.userCreated;
 
     // Generate .env file
     const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
@@ -233,7 +260,7 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
 
     // Create external volumes and start tenant
     await ensureExternalVolumes(composePath);
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], COMPOSE_LONG_TIMEOUT_MS);
   } catch (error) {
     // Rollback in reverse order of creation. If compose was written and `up` was
     // attempted, containers may exist even when the original command failed —
@@ -243,19 +270,22 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
     let initFailures = '';
     if (composeWritten) {
       initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
-      await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
+      await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
     }
     if (tenantDirCreated) {
       await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
     }
     if (dbCreated) {
-      await db.dropDatabase(dbTenantId).catch(() => {});
+      await db.dropDatabase(dbTenantId, { keepUser: !userCreated }).catch(() => {});
     }
     if (!tenantDirCreated && error instanceof Error && error.message.includes(`Tenant '${tenantId}' already exists`)) {
       throw error;
     }
+    if (error instanceof ConflictError) {
+      throw error;
+    }
     const reason = extractComposeErrorMessage(error);
-    throw new Error(`Failed to create tenant: ${reason}${initFailures ? `\n\n${initFailures}` : ''}`);
+    throw new HttpError(500, `Failed to create tenant: ${reason}${initFailures ? `\n\n${initFailures}` : ''}`, { expose: true });
   }
 
   return {
@@ -267,54 +297,41 @@ export async function createTenant(input: CreateTenantInput): Promise<TenantConf
   };
 }
 
-export async function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
+export function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
+  return withTenantLock(appId, tenantId, () => deleteTenantLocked(appId, tenantId, keepData));
+}
+
+async function deleteTenantLocked(appId: string, tenantId: string, keepData: boolean): Promise<void> {
   const tenantPath = getTenantPath(appId, tenantId);
   const app = await getApp(appId);
   const db = getDatabaseAdapter(app ?? undefined);
-  const effectivePrefix = resolveAppDbPrefix(app ?? undefined);
 
   // Check if tenant exists
   try {
     await fs.access(tenantPath);
   } catch {
-    throw new Error(`Tenant '${tenantId}' not found in app '${appId}'`);
+    throw new NotFoundError(`Tenant '${tenantId}' not found in app '${appId}'`);
   }
 
   // Verify path hasn't been manipulated via symlinks
-  const appsDir = getAppsDir();
-  await assertWithinDir(tenantPath, appsDir);
+  await assertTenantDir(appId, tenantId);
 
-  // Read DB_NAME from tenant .env (may differ from constructed name for migrated tenants)
-  // The adapter prepends the app's effective db_prefix, so we pass appId_tenantId as the identifier
-  let dbTenantId = `${appId}_${tenantId}`;
-  try {
-    const envContent = await fs.readFile(path.join(tenantPath, '.env'), 'utf-8');
-    const env = parseEnv(envContent);
-    if (env.DB_NAME) {
-      // Strip the effective prefix if present, since the adapter re-adds it.
-      // When the app has an empty prefix, pass DB_NAME through as-is.
-      if (effectivePrefix) {
-        const prefix = `${effectivePrefix}_`;
-        dbTenantId = env.DB_NAME.startsWith(prefix) ? env.DB_NAME.slice(prefix.length) : env.DB_NAME;
-      } else {
-        dbTenantId = env.DB_NAME;
-      }
-    }
-  } catch {
-    // Fall back to constructed name
-  }
+  // DB_NAME in the tenant .env may differ from the constructed name (migrated tenants)
+  const dbTenantId = await resolveTenantDbId(appId, tenantId, app);
 
   // Stop containers. If this fails we refuse to drop the DB — orphaned
   // containers running against a gone DB are worse than an incomplete delete.
   // Caller can retry once the compose issue is resolved.
   let composeDownOk = true;
   try {
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
   } catch (err: any) {
     composeDownOk = false;
     if (!keepData) {
-      throw new Error(
-        `Failed to stop tenant containers: ${err?.message || err}. Refusing to drop database — fix and retry.`
+      throw new HttpError(
+        500,
+        `Failed to stop tenant containers: ${err?.message || err}. Refusing to drop database — fix and retry.`,
+        { expose: true },
       );
     }
     // With keepData=true, containers may already be gone; continue.
@@ -336,23 +353,37 @@ export async function deleteTenant(appId: string, tenantId: string, keepData: bo
   await fs.rm(tenantPath, { recursive: true, force: true });
 }
 
-export async function updateTenant(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
+export function updateTenant(
+  rawAppId: string,
+  rawTenantId: string,
+  newTag: string,
+  onProgress?: (progress: TenantUpdateProgress) => void,
+): Promise<void> {
+  return withTenantLock(String(rawAppId), String(rawTenantId), () => updateTenantLocked(rawAppId, rawTenantId, newTag, onProgress));
+}
+
+async function updateTenantLocked(
+  rawAppId: string,
+  rawTenantId: string,
+  newTag: string,
+  onProgress?: (progress: TenantUpdateProgress) => void,
+): Promise<void> {
   // Extract IDs via regex match so subsequent path.join calls operate on the
   // captured strings, not the raw inputs. Route middleware already enforces;
   // this breaks taint flow visibly for static analysis and protects CLI callers.
   const appIdMatch = rawAppId.match(SLUG_RE);
   if (!appIdMatch) {
-    throw new Error('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
+    throw new ValidationError('Invalid app ID. Must be lowercase alphanumeric with hyphens.');
   }
   const appId = appIdMatch[0];
   const tenantIdMatch = rawTenantId.match(SLUG_RE);
   if (!tenantIdMatch) {
-    throw new Error('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
+    throw new ValidationError('Invalid tenant ID. Must be lowercase alphanumeric with hyphens.');
   }
   const tenantId = tenantIdMatch[0];
   const tagValidation = validateImageTag(newTag);
   if (!tagValidation.valid) {
-    throw new Error(tagValidation.error);
+    throw new ValidationError(tagValidation.error || 'Invalid image tag');
   }
 
   const config = loadConfig();
@@ -367,24 +398,25 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   const emit = (step: TenantUpdateStep, status: TenantUpdateStatus, detail?: string) => {
     const payload: TenantUpdateProgress = { appId, tenantId, newTag, step, status, detail };
     try { eventBus.emit('tenant:update:progress', payload); } catch { /* swallow */ }
+    try { onProgress?.(payload); } catch { /* swallow */ }
   };
 
   // Check if tenant exists
   try {
     await fs.access(envPath);
   } catch {
-    throw new Error(`Tenant '${tenantId}' not found in app '${appId}'`);
+    throw new NotFoundError(`Tenant '${tenantId}' not found in app '${appId}'`);
   }
 
   // Verify path hasn't been manipulated via symlinks
-  await assertWithinDir(tenantPath, getAppsDir());
+  await assertTenantDir(appId, tenantId);
 
   // Load this tenant's current app definition. Prefer the per-tenant
   // snapshot; fall back to apps.d/<id>.json for legacy tenants without
   // a snapshot (boot seeds these, but this keeps the path resilient).
   let app = await readTenantAppDef(appId, tenantId);
   if (!app) {
-    throw new Error(`App '${appId}' not found`);
+    throw new NotFoundError(`App '${appId}' not found`);
   }
   // Overlay infrastructure-level fields (`registry`, `default_image_tag`)
   // from the global definition. The frozen snapshot owns service-level
@@ -431,7 +463,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     } else {
       await writeSecretFile(sharedEnvPath, originalSharedEnvContent);
     }
-    await fs.writeFile(composePath, originalComposeContent);
+    await writeFileAtomic(composePath, originalComposeContent);
     await restoreAppDefinitions();
   };
 
@@ -457,21 +489,31 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
       const parsed = AppDefinitionStaticSchema.safeParse(manifest);
       if (!parsed.success) {
         const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-        throw new Error(`Image manifest failed validation: ${errors}`);
+        throw new HttpError(500, `Image manifest failed validation: ${errors}`, { expose: true });
       }
       const globalForManifest = await getApp(appId);
       const normalizedManifest = overlayRuntimeIdentityAndInfrastructure(parsed.data, globalForManifest);
-      await writeTenantAppDef(appId, tenantId, normalizedManifest);
-      const result = await applyApp(normalizedManifest, `manifest:${resolveManifestImageRef(app, newTag)}`);
+      // The image may only change allowlisted fields; protected ones keep the
+      // admin's value. The snapshot and the global definition get the same result.
+      const { next: allowedManifest, ignored } = applyManifestPolicy(
+        manifestPolicyBaseline(globalForManifest ? toStaticAppDefinition(globalForManifest) : null, originalTenantAppStatic),
+        normalizedManifest,
+      );
+      const ignoredNote = ignored.length > 0 ? `; ignored protected fields: ${ignored.join(', ')}` : '';
+      if (ignored.length > 0) {
+        console.warn(`[manifest] ignored protected fields from image ${newTag}: ${ignored.join(', ')} (app '${appId}', tenant '${tenantId}')`);
+      }
+      await writeTenantAppDef(appId, tenantId, allowedManifest);
+      const result = await applyApp(allowedManifest, `manifest:${resolveManifestImageRef(app, newTag)}`);
       manifestApplied = true;
       if (result.result === 'updated') {
         console.log(`[manifest] Updated app '${appId}' from image ${newTag} for tenant '${tenantId}' (changed: ${result.changedKeys.join(', ')})`);
-        emit('manifest', 'completed', `updated (changed: ${result.changedKeys.join(', ') || 'none'})`);
+        emit('manifest', 'completed', `updated (changed: ${result.changedKeys.join(', ') || 'none'})${ignoredNote}`);
       } else if (result.result === 'created') {
         console.log(`[manifest] Created app '${appId}' from image ${newTag} for tenant '${tenantId}'`);
-        emit('manifest', 'completed', 'created');
+        emit('manifest', 'completed', `created${ignoredNote}`);
       } else {
-        emit('manifest', 'completed', 'noop (manifest matches current definition)');
+        emit('manifest', 'completed', `noop (manifest matches current definition)${ignoredNote}`);
       }
       const reloaded = await readTenantAppDef(appId, tenantId);
       // Re-apply the overlay: manifest sync can overwrite the registry block
@@ -503,10 +545,10 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     try {
       const tenantTraefik = await readTenantTraefik(appId, tenantId);
       const composeContent = generateComposeFile({ app, tenantId, domain, config, tenantTraefik });
-      await fs.writeFile(composePath, composeContent);
+      await writeFileAtomic(composePath, composeContent);
     } catch (err) {
       console.warn('Failed to regenerate docker-compose.yml:', err);
-      await fs.writeFile(composePath, originalComposeContent);
+      await writeFileAtomic(composePath, originalComposeContent);
       throw err;
     }
     emit('config', 'completed');
@@ -522,7 +564,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // not found') leaves the tenant exactly as it was.
   emit('pull', 'started');
   try {
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'pull']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull'], COMPOSE_LONG_TIMEOUT_MS);
     await ensureExternalVolumes(composePath);
     emit('pull', 'completed');
   } catch (error: any) {
@@ -530,7 +572,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     const detail = extractComposeErrorMessage(error);
     emit('pull', 'failed', detail);
     emit('failed', 'failed', detail);
-    throw new Error(detail);
+    throw new HttpError(500, detail, { expose: true });
   }
 
   // Restart containers with new images. --remove-orphans sweeps containers
@@ -538,7 +580,7 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
   // file (e.g. a service removed via an upstream manifest update).
   emit('restart', 'started');
   try {
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans'], COMPOSE_LONG_TIMEOUT_MS);
     emit('restart', 'completed');
     await pruneReplacedImages(oldImages, tenantPath, composePath, appId, tenantId);
     emit('done', 'completed');
@@ -552,12 +594,12 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
     const initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
     const detail = initFailures ? `${composeError}\n\n${initFailures}` : composeError;
     await restoreTenantUpdateStateBestEffort('restart failure');
-    await execFileAsync('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate']).catch((rollbackErr: any) => {
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], COMPOSE_LONG_TIMEOUT_MS).catch((rollbackErr: any) => {
       console.error(`[tenant:update] Failed to restart restored compose for ${appId}/${tenantId}: ${rollbackErr?.message || rollbackErr}`);
     });
     emit('restart', 'failed', detail);
     emit('failed', 'failed', detail);
-    throw new Error(detail);
+    throw new HttpError(500, detail, { expose: true });
   }
 }
 
@@ -568,8 +610,8 @@ export async function updateTenant(rawAppId: string, rawTenantId: string, newTag
  * extends, includes) keep working.
  */
 async function listComposeImages(tenantPath: string, composePath: string): Promise<string[]> {
-  const { stdout } = await execFileAsync(
-    'docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'config', '--images'],
+  const { stdout } = await execDocker(
+    ['compose', '--project-directory', tenantPath, '-f', composePath, 'config', '--images'],
   );
   return stdout.split('\n').map(line => line.trim()).filter(Boolean);
 }
@@ -592,7 +634,7 @@ async function pruneReplacedImages(
     const newImages = new Set(await listComposeImages(tenantPath, composePath));
     for (const img of oldImages) {
       if (newImages.has(img)) continue;
-      await execFileAsync('docker', ['rmi', img]).catch((err: any) => {
+      await execDocker(['rmi', img]).catch((err: any) => {
         const detail = (err?.stderr ?? '').toString().trim() || err?.message || String(err);
         console.log(`[tenant:update] skip rmi ${img} for ${appId}/${tenantId}: ${detail}`);
       });
@@ -649,33 +691,33 @@ function generateEnvContent(
 COMPOSE_PROJECT_NAME=${app.id}-${tenantId}
 
 # App Identification
-APP_ID=${app.id}
+APP_ID=${formatEnvValue(app.id)}
 
 # Tenant Identification
-TENANT_ID=${tenantId}
-TENANT_DOMAIN=${domain}
+TENANT_ID=${formatEnvValue(tenantId)}
+TENANT_DOMAIN=${formatEnvValue(domain)}
 
 # Container Image Configuration
-IMAGE_REGISTRY=${imageRegistry}
-IMAGE_TAG=${imageTag}
+IMAGE_REGISTRY=${formatEnvValue(imageRegistry)}
+IMAGE_TAG=${formatEnvValue(imageTag)}
 
 # Project Configuration
-PROJECT_PREFIX=${config.project.prefix}
+PROJECT_PREFIX=${formatEnvValue(config.project.prefix)}
 
 # Database Configuration
-DB_HOST=${config.database.host}
-DB_PORT=${config.database.port}
-DB_NAME=${dbName}
-DB_USER=${dbName}
-DB_PASSWORD=${dbPassword}
+DB_HOST=${formatEnvValue(config.database.host)}
+DB_PORT=${formatEnvValue(config.database.port)}
+DB_NAME=${formatEnvValue(dbName)}
+DB_USER=${formatEnvValue(dbName)}
+DB_PASSWORD=${formatEnvValue(dbPassword)}
 
 # Application Security
-JWT_SECRET=${jwtSecret}
+JWT_SECRET=${formatEnvValue(jwtSecret)}
 
 # Network Configuration
-SHARED_NETWORK=${sharedNetwork}
+SHARED_NETWORK=${formatEnvValue(sharedNetwork)}
 
 # TLS Configuration
-CERT_RESOLVER=${certResolver}
+CERT_RESOLVER=${formatEnvValue(certResolver)}
 `;
 }

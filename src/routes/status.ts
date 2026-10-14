@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { loadConfig } from '../config';
 import { VERSION } from '../version';
-import { listContainers, getContainerLogs, restartContainer, listTenants } from '../services/docker';
+import { listContainers, findManagedContainer, getContainerLogs, restartContainer, listTenants } from '../services/docker';
 import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
 import { getBackupInfoCached, listSnapshotsCached } from '../services/backupCache';
@@ -11,18 +11,12 @@ import { requireRole } from '../middleware/requireRole';
 
 const router = Router();
 
-function containerIdMatches(requested: string, managedId: string): boolean {
-  return requested === managedId || requested.startsWith(managedId) || managedId.startsWith(requested);
-}
-
 async function findManagedContainerId(containerId: string): Promise<string | null> {
-  const containers = await listContainers();
-  const managed = containers.find(c => containerIdMatches(containerId, c.id));
-  return managed?.id ?? null;
+  return (await findManagedContainer(containerId))?.id ?? null;
 }
 
 // Get all containers managed by Overwatch
-router.get('/containers', asyncHandler(async (req, res) => {
+router.get('/containers', asyncHandler(async (_req, res) => {
   const containers = await listContainers();
   res.json(containers);
 }));
@@ -58,15 +52,21 @@ router.post('/containers/:containerId/restart', requireRole('admin'), asyncHandl
 }));
 
 // Get system health
-router.get('/health', asyncHandler(async (req, res) => {
+router.get('/health', asyncHandler(async (_req, res) => {
   const db = getDatabaseAdapter();
 
-  const dbConnected = await db.testConnection();
-  const containers = await listContainers();
+  const appsPromise = listApps();
   // listDatabases throws when the DB is unreachable; report 'disconnected'
   // instead of failing the whole health endpoint during a DB outage.
-  const databases = dbConnected ? await db.listDatabases() : [];
-  const apps = await listApps();
+  const dbStatus = db.testConnection().then(async (connected) => ({
+    connected,
+    databases: connected ? await db.listDatabases() : [],
+  }));
+  const [apps, containers, { connected: dbConnected, databases }] = await Promise.all([
+    appsPromise,
+    appsPromise.then(a => listContainers(a)),
+    dbStatus,
+  ]);
 
   // Build set of init container service names to exclude from counts
   const initServices = new Set<string>();
@@ -97,7 +97,7 @@ router.get('/health', asyncHandler(async (req, res) => {
 }));
 
 // Get project configuration (for frontend)
-router.get('/config', asyncHandler(async (req, res) => {
+router.get('/config', asyncHandler(async (_req, res) => {
   const config = loadConfig();
   const apps = await listApps();
   res.json({
@@ -120,7 +120,7 @@ router.get('/config', asyncHandler(async (req, res) => {
 }));
 
 // Get backup summaries for all apps
-router.get('/backup-summaries', asyncHandler(async (req, res) => {
+router.get('/backup-summaries', asyncHandler(async (_req, res) => {
   const apps = await listApps();
 
   const entries = await Promise.all(apps.map(async (app) => {
@@ -157,7 +157,7 @@ router.get('/backup-summaries', asyncHandler(async (req, res) => {
 }));
 
 // Get all tenants across all apps (global view)
-router.get('/tenants', asyncHandler(async (req, res) => {
+router.get('/tenants', asyncHandler(async (_req, res) => {
   const tenants = await listTenants();
   res.json(tenants);
 }));

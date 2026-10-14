@@ -62,3 +62,60 @@ describe('health checker container identity', () => {
     }
   });
 });
+
+describe('health checker retention', () => {
+  it('emits a transition to unknown after 10 minutes and forgets containers that no longer exist', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    let stopped: any[] = [];
+    let running: any[] = [{
+      Id: 'abcdef123456', Names: ['/app-t1-web'],
+      Labels: { 'com.overwatch.managed': 'true', 'com.overwatch.app-id': 'app', 'com.overwatch.tenant-id': 't1', 'com.overwatch.service': 'web' },
+    }];
+    vi.doMock('node-cron', () => ({
+      default: { validate: () => true, schedule: (_e: string, fn: () => void) => { (globalThis as any).__hcTick = fn; return { stop: () => {} }; } },
+    }));
+    vi.doMock('dockerode', () => ({ default: class { async listContainers(o: any) { return o?.all ? [...running, ...stopped] : running; } } }));
+    vi.doMock('net', () => {
+      const createConnection = (_o: unknown, onConnect: () => void) => {
+        const socket = Object.assign(new EventEmitter(), { destroy: () => {} });
+        Promise.resolve().then(onConnect);
+        return socket;
+      };
+      return { default: { createConnection }, createConnection };
+    });
+    vi.doMock('../services/app', () => ({
+      listApps: vi.fn(async () => [{ id: 'app', services: [{ name: 'web', ports: { internal: 80 }, health_check: { type: 'tcp', port: 80 } }] }]),
+    }));
+
+    const { eventBus } = await import('../services/eventBus');
+    const changes: any[] = [];
+    eventBus.on('health:change', (c) => changes.push(c));
+    const mod = await import('../services/healthChecker');
+    mod.startHealthChecker();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mod.getHealthStates()).toHaveLength(1);
+    expect(changes.map(c => c.newState)).toEqual(['healthy']);
+
+    stopped = [{ Id: 'abcdef123456', Names: ['/app-t1-web'] }];
+    running = [];
+    vi.setSystemTime(new Date('2026-01-01T00:09:00Z'));
+    await (globalThis as any).__hcTick();
+    expect(mod.getHealthStates()).toHaveLength(1);
+
+    vi.setSystemTime(new Date('2026-01-01T00:10:01Z'));
+    await (globalThis as any).__hcTick();
+    expect(mod.getHealthStates()).toHaveLength(1); // stopped but still exists: kept as unknown
+    expect(mod.getHealthStates()[0].state).toBe('unknown');
+
+    stopped = [];
+    await (globalThis as any).__hcTick();
+    expect(mod.getHealthStates()).toHaveLength(0);
+    expect(changes.map(c => c.newState)).toEqual(['healthy', 'unknown']);
+    expect(changes[1]).toMatchObject({ containerName: 'app-t1-web', previousState: 'healthy' });
+    mod.stopHealthChecker();
+    vi.useRealTimers();
+    vi.doUnmock('node-cron');
+  });
+});

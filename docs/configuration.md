@@ -42,6 +42,14 @@ networking:
     default: string               #   migrate via `overwatch config traefik migrate`.
 ```
 
+### Data Directory
+
+```yaml
+data_dir: string      # Optional. Default: /app/data
+```
+
+Where Overwatch keeps its stores (`apps.d/`, trash, admin users, audit log, snapshots, and so on). The default `/app/data` is the path inside the container (`./data` is mounted there by the shipped `docker-compose.yml`). When the CLI runs on the host and the configured path does not exist, it falls back to `data/` next to `overwatch.yaml` (`<deploy dir>/overwatch/data`). Set it only for a non-standard layout.
+
 ### Traefik Configuration
 
 The `traefik:` section gives you full control of the reverse proxy: cert resolvers
@@ -245,6 +253,8 @@ retention:
 
 Apps are created and managed through the web UI, the HTTP API (`POST /api/apps`), or the `overwatch apps apply <file>` CLI (recommended for deploy pipelines — writes one file per app, so pipelines cannot stomp each other's registrations). Each app defines its own registry, services, backup, and admin access settings. App definitions are stored one-per-file in `data/apps.d/<id>.json`; runtime state (`createdAt`, `updatedAt`) lives in `data/apps.runtime.json`.
 
+Deleting an app that still has tenants soft-deletes it (moved to the trash, tenant data kept). From the CLI, `overwatch apps restore <id>` brings a trashed app back, and `overwatch apps purge <id> [--yes]` permanently removes it (it asks you to retype the id unless `--yes` is given; non-interactive runs require `--yes`).
+
 ### App Schema
 
 ```json
@@ -301,6 +311,8 @@ Apps are created and managed through the web UI, the HTTP API (`POST /api/apps`)
   }
 }
 ```
+
+`admin_access.secret_env` and registry `token_env` / `username_env` must not name an Overwatch core secret (`JWT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, the database root password env, `RESTIC_PASSWORD`, `R2_*`, `AWS_*`, `GHCR_TOKEN`). Token minting and registry adapter creation refuse these with an error, and a stored definition that names one logs a warning at load. `AUTH_SERVICE_SECRET` is the intended tenant-admin secret, and `GHCR_TOKEN` stays valid as a GHCR registry token.
 
 ### Services
 
@@ -368,7 +380,9 @@ Maps environment variable names inside the container to their resolved values. V
 |------|--------|----------|
 | Auto-resolved | `"DB_HOST": "DB_HOST"` | Known variable names are resolved at compose generation time to literal values from config/context |
 | `${VAR}` fallback | `"CUSTOM_KEY": "CUSTOM_KEY"` | Unknown variable names produce `${VAR}` for Docker Compose interpolation from `.env` |
-| Static | `"DB_HOST": { "static": "custom-db" }` | Always emits the literal value as-is |
+| Static | `"DB_HOST": { "static": "custom-db" }` | Always emits the literal value as-is (a `$` in it is escaped, so `${X}` is not interpolated) |
+
+Compose runs with a curated environment (`PATH`, `HOME`, `DOCKER_*`, and the compose tuning variables `COMPOSE_HTTP_TIMEOUT`, `COMPOSE_COMPATIBILITY`, `COMPOSE_PARALLEL_LIMIT`, `COMPOSE_ANSI`, `COMPOSE_STATUS_STDOUT`, `COMPOSE_MENU`; selection variables such as `COMPOSE_PROJECT_NAME` and `COMPOSE_FILE` are never forwarded), not Overwatch's own, so a `${VAR}` source resolves only from the tenant's `.env`. Registry credential helpers configured in the host docker config are not supported for tenant pulls; use `docker login` state (as the built-in adapters do).
 
 **Auto-resolvable variable names:**
 
@@ -424,6 +438,20 @@ environment:
 
 ---
 
+## Roles (RBAC)
+
+Who may sign in, and what they may do, is stored in `data/admin-users.json` and managed from the Admin Users page, `POST`/`PATCH /api/admin-users`, or the CLI (`overwatch admins add <email> [--role viewer|editor|admin]`, `overwatch admins role <email> <role>`).
+
+| Role | Access |
+|------|--------|
+| `viewer` | Read-only |
+| `editor` | Mutations except destructive operations (delete, force, purge) and user management |
+| `admin` | Everything, including user management |
+
+- New users default to `viewer`. Pass a role explicitly to grant more.
+- Records without a `role` (created before RBAC) are treated as `admin`, and count as admins for the last-admin guard.
+- The last remaining admin cannot be demoted or removed. Users seeded from `ALLOWED_ADMIN_EMAILS` have no stored role and are therefore admins until you change them.
+
 ## Environment Variables
 
 ### Required
@@ -451,7 +479,8 @@ environment:
 | `AWS_ACCESS_KEY_ID` | AWS access key (ECR) |
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key (ECR) |
 | `AWS_REGION` | AWS region (ECR) |
-| `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL` | `1` to allow registries/APIs on private networks (RFC1918, loopback). Off by default. |
+| `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL` | `1` to allow registries/APIs on private networks (RFC1918, loopback). Off by default. Every resolved A/AAAA address must be public, and redirects are never followed. |
+| `OVERWATCH_ALLOW_PRIVATE_WEBHOOK` | `1` to allow notification webhooks to target private networks (on-prem collector). Off by default; checked when a channel is saved and again at send time. Redirects are never followed and a user `Host` header is ignored. |
 
 ### Backup (optional, from app config)
 
@@ -475,3 +504,5 @@ environment:
 |----------|---------|-------------|
 | `PORT` | `3002` | Overwatch HTTP port |
 | `ALLOWED_ADMIN_EMAILS` | (none) | Comma-separated initial admin emails |
+| `OVERWATCH_DEPLOY_DIR` | (none) | Deploy root used by `overwatch infra deploy` only; a legacy alias of `DEPLOY_DIR`, which takes precedence when both are set. Without either, the root is the parent of the directory holding `overwatch.yaml`. Other CLI commands read `DEPLOY_DIR` only (see [updating.md](updating.md)). |
+| `OVERWATCH_SKIP_CHECKSUM` | (none) | `1` lets `overwatch self-update` install a CLI binary when the release has no `<asset>.sha256` companion file. **Security risk, leave unset.** The checksum is the only proof the downloaded binary is the one the maintainers published (TLS only shows the bytes came from GitHub), so skipping it means a tampered or corrupted release asset is installed and run as-is. It does not bypass a hash mismatch: a present checksum that does not match always aborts the update. |

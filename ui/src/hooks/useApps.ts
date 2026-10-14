@@ -73,6 +73,16 @@ export function useRestoreApp() {
   });
 }
 
+export function usePurgeApp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (appId: string) => api.delete<{ success: boolean }>(`/apps/${appId}/purge`, appId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['apps'] });
+    },
+  });
+}
+
 export function useProjectConfig() {
   return useQuery({
     queryKey: ['project-config'],

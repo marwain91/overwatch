@@ -2,17 +2,29 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { loadConfig, resolveEnvValue, getAppsDir } from '../config';
+import { loadConfig } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { getTenantInfo, listTenants } from './docker';
-import { getApp, listApps } from './app';
+import { getApp } from './app';
 import { readTenantAppDef } from './tenantAppDef';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
+import { tenantDir } from './tenantStore';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { invalidateBackupCache } from './backupCache';
+import { resolveTenantDbId } from './tenantDb';
+import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
-const execFileAsync = promisify(execFile);
+const rawExecFile = promisify(execFile);
+// Every restic/docker shell-out gets a timeout and a bounded buffer. Without
+// maxBuffer, large `restic snapshots` output used to overflow Node's 1 MB
+// default and surface as an empty list.
+const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
+const EXEC_TIMEOUT_MS = 600_000;
+const RESTIC_LONG_TIMEOUT_MS = 3_600_000; // backup / restore / prune / docker cp of data volumes move real data
+const RESTIC_SNAPSHOTS_TIMEOUT_MS = 120_000;
+const execFileAsync = (cmd: string, args: string[], opts: Record<string, unknown> = {}) =>
+  rawExecFile(cmd, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER, ...opts });
 
 /** Validate that a path is safe for use in docker exec/cp (no shell metacharacters, no traversal) */
 function isValidContainerPath(p: string): boolean {
@@ -31,7 +43,7 @@ function getResticEnv(app: AppDefinition): NodeJS.ProcessEnv {
   const backup = app.backup;
 
   if (!backup || !backup.enabled) {
-    throw new Error(`Backup not configured for app '${app.id}'`);
+    throw new ValidationError(`Backup not configured for app '${app.id}'`);
   }
 
   let repository: string;
@@ -41,13 +53,13 @@ function getResticEnv(app: AppDefinition): NodeJS.ProcessEnv {
     // Refuse plaintext S3 endpoints — credentials in headers would travel unencrypted.
     // Escape hatch for dev/localstack: OVERWATCH_ALLOW_INSECURE_S3=1.
     if (endpoint && endpoint.startsWith('http://') && process.env.OVERWATCH_ALLOW_INSECURE_S3 !== '1') {
-      throw new Error(
+      throw new ValidationError(
         `S3 endpoint '${endpoint}' uses http:// — refusing. Set OVERWATCH_ALLOW_INSECURE_S3=1 if you really intend this (e.g. localstack).`
       );
     }
     repository = `s3:${endpoint}/${bucket}`;
   } else {
-    throw new Error(`Invalid backup S3 configuration for app '${app.id}'`);
+    throw new ValidationError(`Invalid backup S3 configuration for app '${app.id}'`);
   }
 
   // Allowlist, not spread. `...process.env` leaked JWT_SECRET / GOOGLE_CLIENT_ID
@@ -168,8 +180,13 @@ export async function getBackupInfo(appId: string): Promise<BackupInfo & { isLoc
 
 export async function initializeRepository(appId: string): Promise<void> {
   const app = await getApp(appId);
-  if (!app) throw new Error(`App '${appId}' not found`);
-  await execFileAsync('restic', ['init'], { env: getResticEnv(app) });
+  if (!app) throw new NotFoundError(`App '${appId}' not found`);
+  try {
+    await execFileAsync('restic', ['init'], { env: getResticEnv(app) });
+  } catch (err: any) {
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(500, `Failed to initialize repository: ${err?.stderr?.toString().trim() || err?.message || err}`, { expose: true });
+  }
   invalidateBackupCache(appId);
 }
 
@@ -216,7 +233,7 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
     if (tenantId) tags.push(`tenant:${tenantId}`);
     const args = ['snapshots', '--json', '--tag', tags.join(',')];
 
-    const { stdout } = await execFileAsync('restic', args, { env: getResticEnv(app) });
+    const { stdout } = await execFileAsync('restic', args, { env: getResticEnv(app), timeout: RESTIC_SNAPSHOTS_TIMEOUT_MS });
     const snapshots = JSON.parse(stdout || '[]') as any[];
 
     return snapshots.map(s => ({
@@ -230,8 +247,10 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
       tenantId: s.tags?.find((t: string) => t.startsWith('tenant:'))?.replace('tenant:', ''),
     })).sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
   } catch (error) {
+    // Rethrow: an empty list here would be cached as "no backups" and hide a
+    // real failure (timeout, output overflow, unreachable repository).
     console.error('Failed to list snapshots:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -260,7 +279,6 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
 
   const config = loadConfig();
   const db = getDatabaseAdapter(app);
-  const appsDir = getAppsDir();
 
   // Get backup-enabled services from THIS tenant's app definition. A sibling
   // tenant on a different image version may have a different service list;
@@ -290,12 +308,12 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     // try/catch so the backup is reported as failed — do NOT swallow, or restic
     // will happily archive a folder without database.sql and the scheduler will
     // report success while the backup is silently unrestorable.
-    const dbName = `${appId}_${tenantId}`;
+    const dbName = await resolveTenantDbId(appId, tenantId, app);
     await db.initialize();
     await db.dumpDatabase(dbName, path.join(tenantBackupDir, 'database.sql'));
 
     // Copy tenant .env — required artifact. Fail the backup if missing or unreadable.
-    const tenantConfigDir = path.join(appsDir, appId, 'tenants', tenant.tenantId);
+    const tenantConfigDir = tenantDir(appId, tenant.tenantId);
     const envContent = await fs.readFile(path.join(tenantConfigDir, '.env'), 'utf-8');
     await fs.writeFile(path.join(tenantBackupDir, '.env'), envContent, { mode: 0o600 });
 
@@ -318,13 +336,21 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
             incompletePaths.push({ service: service.name, path: pathConfig.local, error: 'unsafe path' });
             continue;
           }
-          const { stdout: checkOutput } = await execFileAsync(
-            'docker', ['exec', containerName, 'ls', '-A', pathConfig.container]
-          ).catch(() => ({ stdout: '' }));
+          // Only a missing directory counts as empty; any other exec failure
+          // (container stopped, daemon error) means the path was not backed up.
+          let checkOutput = '';
+          try {
+            ({ stdout: checkOutput } = await execFileAsync(
+              'docker', ['exec', containerName, 'ls', '-A', pathConfig.container]
+            ));
+          } catch (lsErr: any) {
+            const detail = `${lsErr?.stderr || ''} ${lsErr?.message || ''}`;
+            if (!/No such file or directory/i.test(detail)) throw lsErr;
+          }
           if (checkOutput.trim()) {
             const localDir = path.join(tenantBackupDir, pathConfig.local);
             await fs.mkdir(localDir, { recursive: true });
-            await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`]);
+            await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
           }
         } catch (error: any) {
           const msg = error?.message || String(error);
@@ -349,7 +375,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     // Run restic backup with app and tenant tags (execFile avoids shell injection)
     const { stdout } = await execFileAsync(
       'restic', ['backup', backupDir, '--tag', `app:${appId}`, '--tag', `tenant:${tenantId}`, '--json'],
-      { env: getResticEnv(app) }
+      { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS }
     );
 
     // Parse output to get snapshot ID
@@ -419,7 +445,7 @@ export async function restoreBackup(
   snapshotId: string,
   targetTenantId: string,
   options: { createNew?: boolean; newDomain?: string } = {}
-): Promise<{ success: boolean; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
+): Promise<{ success: boolean; warnings?: string[]; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
   const app = await getApp(appId);
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
@@ -447,7 +473,7 @@ export async function restoreBackup(
     // Restore from restic (execFile avoids shell injection on snapshotId)
     await execFileAsync(
       'restic', ['restore', snapshotId, '--target', restoreDir],
-      { env: getResticEnv(app) }
+      { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS }
     );
 
     // Find the backup data
@@ -496,7 +522,7 @@ export async function restoreBackup(
     }
 
     // Restore database using adapter
-    const dbName = `${appId}_${targetTenantId}`;
+    const dbName = await resolveTenantDbId(appId, targetTenantId, app);
     const sqlFile = path.join(tenantBackupDir, 'database.sql');
     try {
       await fs.access(sqlFile);
@@ -507,6 +533,17 @@ export async function restoreBackup(
       return { success: false, error: 'Failed to restore database. Check server logs.' };
     }
 
+    const warnings: string[] = [];
+    if (metadata.incomplete) {
+      // Only fixed text plus well-formed container paths: metadata comes from the archive.
+      const missing = Array.isArray(metadata.missingPaths)
+        ? metadata.missingPaths
+            .map((m: any) => m?.path)
+            .filter((m: unknown): m is string => typeof m === 'string' && isValidContainerPath(m))
+        : [];
+      warnings.push(`The backup was incomplete when taken${missing.length ? `; missing paths: ${missing.join(', ')}` : ''}`);
+    }
+
     // Restore paths to service containers
     for (const service of backupServices) {
       const containerName = `${appId}-${targetTenantId}-${service.name}`;
@@ -515,23 +552,33 @@ export async function restoreBackup(
         try {
           if (!isValidContainerPath(pathConfig.container)) {
             console.error(`Skipping unsafe container path: ${pathConfig.container}`);
+            warnings.push(`${service.name}: a configured path was skipped (unsafe path)`);
             continue;
           }
           if (!isValidContainerPath(pathConfig.local)) {
             console.error(`Skipping unsafe local path: ${pathConfig.local}`);
+            warnings.push(`${service.name}: a configured path was skipped (unsafe path)`);
             continue;
           }
           const localBackupDir = path.join(tenantBackupDir, pathConfig.local);
-          await fs.access(localBackupDir);
+          try {
+            await fs.access(localBackupDir);
+          } catch (accessErr: any) {
+            if (accessErr?.code === 'ENOENT') continue; // path was empty/absent when the backup was taken
+            console.error(`[Backup] Cannot read ${localBackupDir} from the backup: ${accessErr?.message || accessErr}`);
+            warnings.push(`${pathConfig.container}: not restored (backup data unreadable; see server logs)`);
+            continue;
+          }
           await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
-          await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`]);
-        } catch {
-          // No data to restore or container not running
+          await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
+        } catch (error: any) {
+          console.error(`[Backup] Failed to restore ${pathConfig.container} into ${containerName}: ${error?.message || error}`);
+          warnings.push(`${pathConfig.container}: not restored (copy failed; see server logs)`);
         }
       }
     }
 
-    return { success: true };
+    return warnings.length > 0 ? { success: true, warnings } : { success: true };
   } catch (error: any) {
     console.error('Restore failed:', error);
     const formatted = formatError(error);
@@ -573,7 +620,7 @@ export async function pruneBackups(appId: string, keepDaily: number = 7, keepWee
       '--keep-weekly', String(keepWeekly),
       '--keep-monthly', String(keepMonthly),
       '--prune',
-    ], { env: getResticEnv(app) });
+    ], { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS });
     invalidateBackupCache(appId);
     return { success: true };
   } catch (error: any) {

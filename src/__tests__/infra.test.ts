@@ -153,6 +153,18 @@ describe('overwatch infra deploy — deploy dir resolution', () => {
     const { runInfra } = await import('../cli/infra');
     await runInfra(['deploy', '--dry-run']);
 
-    expect(deployInfra).toHaveBeenCalledWith({ deployDir, dryRun: true });
+    expect(deployInfra).toHaveBeenCalledWith({ deployDir, dryRun: true, allowDbDowngrade: false });
+  });
+
+  it('passes --allow-db-downgrade through to deployInfra', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const deployInfra = vi.fn(async () => ({ changes: [], composeRestarted: true }));
+    vi.doMock('../services/infraTemplates', () => ({ deployInfra }));
+    process.env.DEPLOY_DIR = deployDir;
+
+    const { runInfra } = await import('../cli/infra');
+    await runInfra(['deploy', '--allow-db-downgrade']);
+
+    expect(deployInfra).toHaveBeenCalledWith({ deployDir, dryRun: false, allowDbDowngrade: true });
   });
 });

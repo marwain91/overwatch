@@ -1,6 +1,7 @@
 import type { AppDefinition, AppService } from '../models/app';
 import type { MiddlewareSpec, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
-import { isBlockedRawLabelKey } from '../models/traefik';
+import { rawLabelOwnerForAppService, rawLabelOwnerForRouter, rawLabelProblem } from '../models/traefik';
+import { HttpError, ValidationError } from '../utils/httpErrors';
 
 /**
  * Resolve the effective TLS termination mode for a single router.
@@ -37,8 +38,9 @@ export interface BuildLabelsContext {
 }
 
 /**
- * Build the array of Traefik label lines for a single service. Each entry is
- * a fully formatted YAML array element ('      - "traefik.foo=bar"').
+ * Build the Traefik labels for a single service as `key=value` strings. The
+ * compose generator serialises them, so values are emitted verbatim
+ * (backslashes and quotes included).
  *
  * Returns an empty array when the service shouldn't be exposed (init container
  * without ports, or routing.enabled=false).
@@ -52,11 +54,10 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
 
   const routerName = `${app.id}-${tenantId}-${service.name}`;
   const labels: string[] = [];
-  // Raw line breaks are folded to a space — what YAML already does to a break
-  // inside a double-quoted scalar — so editor-supplied values (raw_labels,
-  // middleware fields) can never start a new line of docker-compose.yml.
-  // YAML parsers also treat NEL/LS/PS as line breaks.
-  const push = (s: string) => labels.push(`      - "${s.replace(/[\r\n\u0085\u2028\u2029]+/g, ' ').replace(/"/g, '\\"')}"`);
+  // Raw line breaks (YAML also counts NEL/LS/PS) in editor-supplied values
+  // (raw_labels, middleware fields) are folded to a space, as they were when
+  // the compose file was built from strings, so a label stays one line.
+  const push = (label: string) => labels.push(label.replace(/[\r\n\u0085\u2028\u2029]+/g, ' '));
 
   push('traefik.enable=true');
 
@@ -106,9 +107,12 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
   for (const name of resolvedNames) {
     const spec = lookupMiddleware(name, app, traefik);
     if (!spec) {
-      throw new Error(
+      // Exposed: the operator has to know which middleware to add, and the
+      // message holds only names from the definition.
+      throw new HttpError(500,
         `Middleware "${name}" referenced by ${app.id}/${tenantId}/${service.name} ` +
         `is not defined in app.traefik.middlewares or traefik.middlewares`,
+        { expose: true },
       );
     }
     expandMiddleware(name, spec, app, traefik, expanded);
@@ -152,12 +156,53 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
     service.routing?.raw_labels,
     tenantOverrides?.raw_labels?.[service.name],
   );
+  const generated = new Set(routerMws.map(n => n.toLowerCase()));
+  const owner = { ...rawLabelOwnerForRouter(routerName), isGeneratedMiddleware: (n: string) => generated.has(n) };
   for (const [k, v] of Object.entries(merged)) {
-    if (isBlockedRawLabelKey(k)) continue;
+    const problem = rawLabelProblem(k, v, owner);
+    if (problem) {
+      // Key only: label values may hold credentials.
+      console.warn(`[traefik] dropped raw label "${k}" on ${routerName}: ${problem}`);
+      continue;
+    }
     push(`${k}=${v}`);
   }
 
   return labels;
+}
+
+function assertRawLabels(
+  where: string,
+  labels: unknown,
+  owner: ReturnType<typeof rawLabelOwnerForRouter>,
+): void {
+  if (!labels || typeof labels !== 'object') return;
+  for (const [k, v] of Object.entries(labels as Record<string, unknown>)) {
+    const problem = rawLabelProblem(k, typeof v === 'string' ? v : '', owner);
+    if (problem) throw new ValidationError(`Raw label "${k}" on ${where} is not allowed: ${problem}`);
+  }
+}
+
+/**
+ * Save-time check for app-level raw labels (service.routing.raw_labels), run by
+ * the API and CLI paths that store an app definition. Takes the unparsed body
+ * because it runs before/alongside schema parsing.
+ */
+export function assertAppRawLabelsOwned(appId: string, services: unknown): void {
+  if (!Array.isArray(services)) return;
+  for (const svc of services) {
+    const name = svc?.name;
+    if (typeof name !== 'string') continue;
+    assertRawLabels(`service "${name}"`, svc?.routing?.raw_labels, rawLabelOwnerForAppService(appId, name));
+  }
+}
+
+/** Save-time check for a tenant's `raw_labels` (service name -> labels). */
+export function assertTenantRawLabelsOwned(appId: string, tenantId: string, rawLabels: unknown): void {
+  if (!rawLabels || typeof rawLabels !== 'object') return;
+  for (const [service, labels] of Object.entries(rawLabels as Record<string, unknown>)) {
+    assertRawLabels(`service "${service}"`, labels, rawLabelOwnerForRouter(`${appId}-${tenantId}-${service}`));
+  }
 }
 
 function resolveServiceMiddlewareNames(
@@ -201,7 +246,7 @@ function expandMiddleware(
     for (const ref of spec.middlewares) {
       const refSpec = lookupMiddleware(ref, app, traefik);
       if (!refSpec) {
-        throw new Error(`Chain middleware "${name}" references unknown middleware "${ref}"`);
+        throw new HttpError(500, `Chain middleware "${name}" references unknown middleware "${ref}"`, { expose: true });
       }
       expandMiddleware(ref, refSpec, app, traefik, out);
     }

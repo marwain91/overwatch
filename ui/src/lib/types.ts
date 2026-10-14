@@ -1,20 +1,40 @@
-// App
-export interface AppDefinition {
-  id: string;
-  name: string;
-  domain_template: string;
-  registry: AppRegistry;
-  services: AppService[];
-  backup?: AppBackup;
-  admin_access?: AppAdminAccess;
-  credentials?: { db_password_length?: number; jwt_secret_length?: number };
-  default_image_tag: string;
-  traefik?: TraefikApp;
-  createdAt: string;
-  updatedAt: string;
-}
+// ─── API contract types ───────────────────────────────────────────────────
+// Generated from the backend Zod schemas (scripts/gen-ui-types.mjs); never hand-copy
+// them here. Hand-written types below are UI-only or describe ad-hoc route payloads.
+import type { AdminRole, AdminUser as ApiAdminUser, EnvVar, LockInfo } from './api-types.generated';
 
-// ─── Traefik types (mirror Zod schemas in src/models/traefik.ts) ──────────
+export type {
+  AdminRole,
+  AppAdminAccess,
+  AppBackup,
+  AppCredentials,
+  AppDefinition,
+  AppEnvVarDeclaration,
+  AppHealthCheck,
+  AppManifest,
+  AppRegistry,
+  AppService,
+  AppServiceRouting,
+  BackupSnapshot,
+  CertResolver,
+  CertResolverDns,
+  CertResolverHttp,
+  CreateApp,
+  Entrypoint,
+  EnvVar,
+  LockInfo,
+  MiddlewareSpec,
+  NotificationChannel,
+  TlsTermination,
+  TraefikApp,
+  TraefikDashboard,
+  TraefikGlobal,
+  TraefikOverwatchRouting,
+  TraefikTenant,
+  WebhookConfig,
+} from './api-types.generated';
+
+// ─── Traefik UI helpers (the schemas themselves are generated above) ──────
 
 export type MiddlewareType =
   | 'rateLimit' | 'basicAuth' | 'forwardAuth' | 'ipAllowList' | 'headers'
@@ -26,130 +46,6 @@ export const MIDDLEWARE_TYPES: MiddlewareType[] = [
   'redirectScheme', 'redirectRegex', 'compress', 'retry', 'circuitBreaker',
   'replacePath', 'replacePathRegex', 'inFlightReq', 'chain',
 ];
-
-export interface MiddlewareSpec {
-  type: MiddlewareType;
-  [k: string]: unknown;
-}
-
-export type CertResolver = CertResolverDns | CertResolverHttp;
-
-export interface CertResolverDns {
-  name: string;
-  challenge: 'dns';
-  provider: string;
-  acme_email: string;
-  ca_server?: string;
-  env?: Record<string, string>;
-  domain_patterns?: string[];
-  resolvers?: string[];
-  delay_before_check?: string;
-}
-
-export interface CertResolverHttp {
-  name: string;
-  challenge: 'http';
-  acme_email: string;
-  ca_server?: string;
-  entrypoint?: string;
-  domain_patterns?: string[];
-}
-
-export interface Entrypoint {
-  name: string;
-  port: number;
-  redirect_to?: string;
-  forwarded_headers?: { trusted_ips: string[] };
-  proxy_protocol?: { trusted_ips: string[] };
-}
-
-export type TlsTermination = 'traefik' | 'upstream';
-
-export interface TraefikDashboard {
-  enabled: boolean;
-  host?: string;
-  cert_resolver?: string;
-  middlewares?: string[];
-  raw_labels?: Record<string, string>;
-}
-
-export interface TraefikOverwatchRouting {
-  host: string;
-  cert_resolver?: string;
-  middlewares?: string[];
-  raw_labels?: Record<string, string>;
-}
-
-export interface TraefikGlobal {
-  log_level?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-  dashboard?: TraefikDashboard;
-  entrypoints?: Entrypoint[];
-  cert_resolvers?: CertResolver[];
-  middlewares?: Record<string, MiddlewareSpec>;
-  default_middlewares?: string[];
-  overwatch?: TraefikOverwatchRouting;
-  tls_termination?: TlsTermination;
-  upstream_entrypoint?: string;
-}
-
-export interface TraefikApp {
-  middlewares?: Record<string, MiddlewareSpec>;
-  default_middlewares?: string[];
-}
-
-export interface TraefikTenant {
-  cert_resolver?: string;
-  host_aliases?: string[];
-  middleware_overrides?: Record<string, string[]>;
-  raw_labels?: Record<string, Record<string, string>>;
-  tls_termination?: TlsTermination;
-}
-
-export interface AppRegistry {
-  type: 'ghcr' | 'dockerhub' | 'ecr' | 'custom' | 'gitlab';
-  url: string;
-  api_url?: string;
-  repository: string;
-  auth: {
-    type: 'token' | 'aws_iam' | 'basic';
-    username_env?: string;
-    token_env?: string;
-    aws_region_env?: string;
-  };
-  tag_pattern?: string;
-}
-
-export interface AppService {
-  name: string;
-  required: boolean;
-  is_init_container: boolean;
-  image_suffix?: string;
-  user?: string;
-  ports?: { internal: number; external?: number };
-  health_check?: { type: string; path?: string; port?: number; interval?: string; start_period?: string; tool?: 'wget' | 'curl' };
-  backup?: { enabled: boolean; paths?: Array<{ container: string; local: string }> };
-  command?: string[];
-  env_mapping?: Record<string, string | { static: string }>;
-  routing?: { enabled: boolean; path_prefix?: string; additional_path_prefixes?: string[]; priority?: number; strip_prefix?: boolean };
-  volumes?: Array<{ name: string; container_path: string; name_template?: string; external?: boolean }>;
-  depends_on?: string[];
-  networks?: Array<'external' | 'internal'>;
-}
-
-export interface AppBackup {
-  enabled: boolean;
-  schedule?: string;
-  provider: 's3' | 'local' | 'azure' | 'gcs';
-  s3?: { endpoint_env: string; bucket_env: string; access_key_env: string; secret_key_env: string };
-  restic_password_env?: string;
-}
-
-export interface AppAdminAccess {
-  enabled: boolean;
-  url_template?: string;
-  secret_env?: string;
-  token_payload?: Record<string, string>;
-}
 
 // Tenant
 export interface Tenant {
@@ -174,13 +70,6 @@ export interface ContainerInfo {
 }
 
 // Env Vars
-export interface EnvVar {
-  key: string;
-  value: string;
-  sensitive: boolean;
-  description?: string;
-}
-
 export interface TenantEnvVar extends EnvVar {
   source: 'global' | 'override' | 'tenant-only';
 }
@@ -230,14 +119,6 @@ export interface AlertEntry {
   resolvedAt: string | null;
 }
 
-export interface NotificationChannel {
-  id: string;
-  name: string;
-  type: string;
-  enabled: boolean;
-  config: { url: string };
-}
-
 // Audit
 export interface AuditEntry {
   action: string;
@@ -247,11 +128,9 @@ export interface AuditEntry {
 }
 
 // Admin
-export interface AdminUser {
-  email: string;
-  addedAt: string;
-  addedBy: string;
-  role?: 'viewer' | 'editor' | 'admin';
+export interface AdminUser extends Omit<ApiAdminUser, 'role'> {
+  // The API always returns the effective role (legacy records report 'admin').
+  role: AdminRole;
 }
 
 // Status
@@ -271,19 +150,11 @@ export interface ProjectConfig {
 }
 
 // Backup
-export interface BackupSnapshot {
-  id: string;
-  shortId: string;
-  time: string;
-  tags: string[];
-  tenantId?: string;
-}
-
 export interface BackupStatus {
   configured: boolean;
   initialized: boolean;
   isLocked?: boolean;
-  lockInfo?: { pid?: string; host?: string; user?: string; createdAt?: string; age?: string };
+  lockInfo?: LockInfo;
 }
 
 export interface BackupSummary {
@@ -336,4 +207,6 @@ export interface AuthUser {
   email: string;
   name: string;
   picture: string;
+  /** Current role as resolved by the server (/auth/verify, login). */
+  role?: AdminRole;
 }

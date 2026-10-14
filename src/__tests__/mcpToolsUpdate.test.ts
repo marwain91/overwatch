@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { updateTenant, validateImageTag } = vi.hoisted(() => ({
   updateTenant: vi.fn(),
-  validateImageTag: vi.fn(() => ({ valid: true })),
+  validateImageTag: vi.fn((_imageTag: unknown): { valid: boolean; error?: string } => ({ valid: true })),
 }));
 
 vi.mock('../services/tenant', () => ({
   updateTenant: (...a: any[]) => updateTenant(...a),
-  validateImageTag: (...a: any[]) => validateImageTag(...a),
+  validateImageTag: (imageTag: unknown) => validateImageTag(imageTag),
 }));
 
 vi.mock('../mcp/audit', async (orig) => {
@@ -15,6 +15,7 @@ vi.mock('../mcp/audit', async (orig) => {
   return { ...actual, writeMcpAudit: vi.fn() };
 });
 
+import { HttpError } from '../utils/httpErrors';
 import { eventBus } from '../services/eventBus';
 import { updateTenantHandler } from '../mcp/tools/update';
 import { writeMcpAudit } from '../mcp/audit';
@@ -32,9 +33,9 @@ describe('update_tenant tool', () => {
 
   it('forwards progress steps and returns success', async () => {
     const notes: any[] = [];
-    updateTenant.mockImplementation(async (appId: string, tenantId: string) => {
-      eventBus.emit('tenant:update:progress', { appId, tenantId, newTag: 'v2', step: 'pull', status: 'started' });
-      eventBus.emit('tenant:update:progress', { appId, tenantId, newTag: 'v2', step: 'done', status: 'completed' });
+    updateTenant.mockImplementation(async (appId: string, tenantId: string, _tag: string, onProgress?: (p: any) => void) => {
+      onProgress?.({ appId, tenantId, newTag: 'v2', step: 'pull', status: 'started' });
+      onProgress?.({ appId, tenantId, newTag: 'v2', step: 'done', status: 'completed' });
     });
     const r = await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async (n) => { notes.push(n); } });
     expect(r.isError).toBeFalsy();
@@ -43,11 +44,16 @@ describe('update_tenant tool', () => {
     expect(writeMcpAudit).toHaveBeenCalledWith(expect.objectContaining({ tool: 'update_tenant', status: 200, email: 'a@b.c' }));
   });
 
-  it('unsubscribes after completion (no listener leak)', async () => {
-    updateTenant.mockResolvedValue(undefined);
+  it('does not listen on the global bus (progress comes through the callback)', async () => {
+    const notes: any[] = [];
+    updateTenant.mockImplementation(async (appId: string, tenantId: string) => {
+      // Another tenant's progress on the global bus must not reach this call.
+      eventBus.emit('tenant:update:progress', { appId, tenantId, newTag: 'v2', step: 'pull', status: 'started' });
+    });
     const before = eventBus.listenerCount('tenant:update:progress');
-    await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async () => {} });
+    await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async (n) => { notes.push(n); } });
     expect(eventBus.listenerCount('tenant:update:progress')).toBe(before);
+    expect(notes).toEqual([]);
   });
 
   it('viewer is denied', async () => {
@@ -57,10 +63,18 @@ describe('update_tenant tool', () => {
   });
 
   it('returns tool error on update failure', async () => {
-    updateTenant.mockRejectedValueOnce(new Error('pull failed'));
+    updateTenant.mockRejectedValueOnce(new HttpError(500, 'pull failed', { expose: true }));
     const r = await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async () => {} });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain('pull failed');
+  });
+
+  it('hides the message of an unexpected update failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    updateTenant.mockRejectedValueOnce(new Error('ENOENT: /srv/apps/x/.env'));
+    const r = await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async () => {} });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Failed to update tenant');
   });
 
   it('rejects an invalid image tag with a tool error (update not called)', async () => {

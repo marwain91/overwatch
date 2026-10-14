@@ -1,3 +1,4 @@
+import { fetchNoRedirect } from './safeFetch';
 import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 
@@ -38,7 +39,7 @@ export class DockerHubAdapter implements RegistryAdapter {
 
   async getImageTags(): Promise<string[]> {
     try {
-      const response = await fetch(
+      const response = await fetchNoRedirect(
         `https://hub.docker.com/v2/repositories/${this.config.repository}/tags?page_size=100`
       );
 

@@ -1,11 +1,8 @@
 import mysql from 'mysql2/promise';
-import { execFile, spawn } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { createReadStream, createWriteStream } from 'fs';
-import { DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from './types';
+import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
 import { BaseDatabaseAdapter } from './base';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * MySQL/MariaDB database adapter
@@ -25,6 +22,8 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       password: this.config.rootPassword,
       waitForConnections: true,
       connectionLimit: 5,
+      connectTimeout: 10000,
+      queueLimit: 50,
     });
   }
 
@@ -32,7 +31,20 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     await this.pool!.query('SELECT 1');
   }
 
-  async createDatabase(tenantId: string, password: string): Promise<void> {
+  async databaseExists(tenantId: string): Promise<boolean> {
+    if (!this.pool) {
+      await this.initialize();
+    }
+    const dbName = this.getDatabaseName(tenantId);
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
+    const [rows] = await this.pool!.query(
+      'SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?',
+      [dbName]
+    );
+    return (rows as any[]).length > 0;
+  }
+
+  async createDatabase(tenantId: string, password: string): Promise<CreateDatabaseResult> {
     if (!this.pool) {
       await this.initialize();
     }
@@ -43,25 +55,49 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     this.validateIdentifiers(dbName, userName);
 
     const connection = await this.pool!.getConnection();
+    let created = false;
+    let userCreated = false;
 
     try {
-      await connection.query(
-        `CREATE DATABASE IF NOT EXISTS \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+      const [dbRows] = await connection.query(
+        'SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?',
+        [dbName]
       );
-      await connection.query(
-        `CREATE USER IF NOT EXISTS '${userName}'@'%' IDENTIFIED BY ?`,
-        [password]
+      if ((dbRows as any[]).length === 0) {
+        await connection.query(
+          `CREATE DATABASE \`${dbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+        );
+        created = true;
+      }
+
+      const [userRows] = await connection.query(
+        `SELECT 1 FROM mysql.user WHERE User = ? AND Host = '%'`,
+        [userName]
       );
+      if ((userRows as any[]).length === 0) {
+        await connection.query(`CREATE USER '${userName}'@'%' IDENTIFIED BY ?`, [password]);
+        userCreated = true;
+      } else {
+        // Pre-existing user: set the password so it matches the .env we write
+        await connection.query(`ALTER USER '${userName}'@'%' IDENTIFIED BY ?`, [password]);
+      }
+
       await connection.query(
         `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${userName}'@'%'`
       );
       await connection.query('FLUSH PRIVILEGES');
+      return { created, userCreated };
+    } catch (error) {
+      // Undo only what this call created; never touch pre-existing objects
+      if (created) await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``).catch(() => {});
+      if (userCreated) await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`).catch(() => {});
+      throw error;
     } finally {
       connection.release();
     }
   }
 
-  async dropDatabase(tenantId: string): Promise<void> {
+  async dropDatabase(tenantId: string, options: { keepUser?: boolean } = {}): Promise<void> {
     if (!this.pool) {
       await this.initialize();
     }
@@ -75,7 +111,9 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
 
     try {
       await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
-      await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`);
+      if (!options.keepUser) {
+        await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`);
+      }
       await connection.query('FLUSH PRIVILEGES');
     } finally {
       connection.release();
@@ -103,13 +141,14 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     // entire dump in memory via execFile (with a 100 MB cap), which broke for
     // any DB whose dump exceeded that — and crashed the Overwatch container
     // for very large dumps even before the cap. spawn + pipe handles arbitrary
-    // sizes. Password is passed via MYSQL_PWD env, never as an argv flag.
+    // sizes. MYSQL_PWD is named in argv but its value comes from the spawned
+    // process env, so the password never shows up in `ps` output.
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', [
-        'exec', '-e', `MYSQL_PWD=${this.config.rootPassword}`,
+        'exec', '-e', 'MYSQL_PWD',
         containerName, 'mysqldump', '-u', this.config.rootUser,
         '--single-transaction', dbName,
-      ]);
+      ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
 
       const out = createWriteStream(outputPath, { mode: 0o600 });
       proc.stdout.pipe(out);
@@ -132,12 +171,12 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const containerName = this.getContainerName();
 
-    // Use spawn (no shell) with stdin pipe to avoid password injection
+    // spawn (no shell) with stdin pipe; password goes via env, not argv
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', [
-        'exec', '-i', '-e', `MYSQL_PWD=${this.config.rootPassword}`,
+        'exec', '-i', '-e', 'MYSQL_PWD',
         containerName, 'mysql', '-u', this.config.rootUser, dbName,
-      ]);
+      ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
 
       const input = createReadStream(inputPath);
       input.pipe(proc.stdin);

@@ -1,18 +1,37 @@
 import { Router } from 'express';
 import { listApps, getApp, createApp, updateApp, deleteApp, listTrashedApps, restoreApp, purgeApp } from '../services/app';
 import { getImageTagsForApp } from '../adapters/registry';
-import { CreateAppSchema } from '../models/app';
+import { CreateAppSchema, UpdateAppSchema } from '../models/app';
+import { ValidationError } from '../utils/httpErrors';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validateAppId } from '../middleware/validators';
 import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
 import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
+import { assertAppRawLabelsOwned } from '../services/traefikLabels';
+import { assertServiceNamesValid } from '../utils/validators';
 
 const router = Router();
 
+// Registry adapters throw plain Errors whose messages can name tokens, repos and
+// hosts; the client gets a category, the detail stays in the server log.
+function classifyTagError(error: any): string {
+  const text = `${error?.message ?? ''} ${error?.cause?.code ?? ''} ${error?.code ?? ''}`;
+  if (/HTTP (401|403)|denied access|unauthori[sz]ed|not configured/i.test(text)) {
+    return 'Registry authentication failed. Check the registry credentials.';
+  }
+  if (/not found|HTTP 404/i.test(text)) {
+    return 'Registry repository not found, or not accessible to the configured credentials.';
+  }
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|ECONNRESET|EAI_AGAIN|EHOSTUNREACH|blocked address|private IP/i.test(text)) {
+    return 'Registry unreachable. Check the registry URL and network access.';
+  }
+  return 'Failed to list tags from registry.';
+}
+
 // List all apps
-router.get('/', asyncHandler(async (req, res) => {
+router.get('/', asyncHandler(async (_req, res) => {
   const apps = await listApps();
   res.json(apps);
 }));
@@ -33,6 +52,8 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
     return res.status(400).json({ error: `Invalid app definition: ${errors}` });
   }
 
+  assertServiceNamesValid(parseResult.data.services);
+  assertAppRawLabelsOwned(parseResult.data.id, parseResult.data.services);
   const app = await createApp(parseResult.data);
   res.status(201).json(app);
 }));
@@ -49,7 +70,17 @@ router.get('/:appId', validateAppId, asyncHandler(async (req, res) => {
 // Update app config. Admin-only — update payload can change registry creds,
 // admin_access (token-mint URL template), and backup targets.
 router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
-  const app = await updateApp({ ...req.body, id: (req.params as Record<string, string>).appId });
+  const appId = (req.params as Record<string, string>).appId;
+  // The path id wins over any body id. Parsing here also strips fields outside
+  // the schema (e.g. createdAt) that the shallow merge in updateApp would keep.
+  const parseResult = UpdateAppSchema.safeParse({ ...req.body, id: appId });
+  if (!parseResult.success) {
+    const errors = parseResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    throw new ValidationError(`Invalid app definition: ${errors}`);
+  }
+  assertServiceNamesValid(parseResult.data.services);
+  assertAppRawLabelsOwned(appId, parseResult.data.services);
+  const app = await updateApp(parseResult.data);
   res.json(app);
 }));
 
@@ -89,7 +120,7 @@ router.get('/:appId/tags', validateAppId, asyncHandler(async (req, res) => {
     res.json({ tags });
   } catch (error: any) {
     console.error(`Tag listing failed for app ${app.id}:`, error?.message || error);
-    res.json({ tags: [], error: error?.message || 'Failed to list tags from registry' });
+    res.json({ tags: [], error: classifyTagError(error) });
   }
 }));
 

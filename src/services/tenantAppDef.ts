@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getAppsDir } from '../config';
+import { tenantDir, listTenantDirs } from './tenantStore';
 import {
   AppDefinition,
   AppDefinitionSchema,
@@ -27,7 +27,7 @@ import { getApp } from './app';
 const TENANT_APP_DEF_FILE = 'app-definition.json';
 
 function getTenantAppDefPath(appId: string, tenantId: string): string {
-  return path.join(getAppsDir(), appId, 'tenants', tenantId, TENANT_APP_DEF_FILE);
+  return path.join(tenantDir(appId, tenantId), TENANT_APP_DEF_FILE);
 }
 
 /**
@@ -100,32 +100,16 @@ export async function writeTenantAppDef(
  * after upgrading to v1.6.0, then no-op forever.
  */
 export async function seedMissingTenantAppDefs(): Promise<{ seeded: number; skipped: number }> {
-  const appsDir = getAppsDir();
   let seeded = 0;
   let skipped = 0;
 
-  let appEntries: Array<{ name: string }>;
-  try {
-    appEntries = (await fs.readdir(appsDir, { withFileTypes: true }))
-      .filter(e => e.isDirectory())
-      .map(e => ({ name: e.name }));
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return { seeded: 0, skipped: 0 };
-    throw err;
+  const byApp = new Map<string, string[]>();
+  for (const t of await listTenantDirs(undefined, { onError: () => {} })) {
+    const list = byApp.get(t.appId);
+    if (list) list.push(t.tenantId); else byApp.set(t.appId, [t.tenantId]);
   }
 
-  for (const { name: appId } of appEntries) {
-    const tenantsDir = path.join(appsDir, appId, 'tenants');
-    let tenantEntries: string[];
-    try {
-      tenantEntries = (await fs.readdir(tenantsDir, { withFileTypes: true }))
-        .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-        .map(e => e.name);
-    } catch {
-      continue;
-    }
-    if (tenantEntries.length === 0) continue;
-
+  for (const [appId, tenantEntries] of byApp) {
     const app = await getApp(appId);
     if (!app) {
       // The directory exists but the app isn't registered — leave it alone.

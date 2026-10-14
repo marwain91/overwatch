@@ -1,12 +1,13 @@
 import Docker from 'dockerode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { loadConfig, getAppsDir } from '../config';
+import * as yaml from 'js-yaml';
 import { listApps } from './app';
 import type { AppDefinition } from '../models/app';
-import { assertWithinDir } from '../utils/security';
-import { parseEnv } from '../utils/env';
+import { assertTenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { runDocker } from '../utils/runDocker';
+import { withTenantLock } from './fileLock';
+import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 export { docker };
 
@@ -62,20 +63,35 @@ function extractContainerInfoFromLabels(labels: ContainerLabels): { appId: strin
   return { appId, tenantId, service };
 }
 
+type KnownApp = Pick<AppDefinition, 'id' | 'services'>;
+interface PreparedApp { id: string; serviceNames: string[] }
+
+// Callers pass the same apps array for every container of a pass; sort once per array.
+const preparedApps = new WeakMap<object, PreparedApp[]>();
+
+function prepareKnownApps(apps: KnownApp[]): PreparedApp[] {
+  let prepared = preparedApps.get(apps);
+  if (!prepared) {
+    prepared = [...apps]
+      .sort((a, b) => b.id.length - a.id.length)
+      .map(app => ({ id: app.id, serviceNames: app.services.map(s => s.name).sort((a, b) => b.length - a.length) }));
+    preparedApps.set(apps, prepared);
+  }
+  return prepared;
+}
+
 function extractContainerInfoFromKnownApps(
   containerName: string,
-  apps: Array<Pick<AppDefinition, 'id' | 'services'>>,
+  apps: KnownApp[],
 ): { appId: string; tenantId: string; service: string } | null {
   const baseName = stripReplicaSuffix(containerName);
-  const sortedApps = [...apps].sort((a, b) => b.id.length - a.id.length);
 
-  for (const app of sortedApps) {
+  for (const app of prepareKnownApps(apps)) {
     const prefix = `${app.id}-`;
     if (!baseName.startsWith(prefix)) continue;
 
     const rest = baseName.slice(prefix.length);
-    const serviceNames = app.services.map(s => s.name).sort((a, b) => b.length - a.length);
-    for (const service of serviceNames) {
+    for (const service of app.serviceNames) {
       const suffix = `-${service}`;
       if (!rest.endsWith(suffix)) continue;
 
@@ -140,12 +156,12 @@ export function extractContainerInfo(
   return null;
 }
 
-export async function listContainers(): Promise<ContainerInfo[]> {
-  const containers = await docker.listContainers({ all: true });
-  const apps = await listApps();
+type RawContainer = Awaited<ReturnType<typeof docker.listContainers>>[number];
+
+function toManagedContainers(raw: RawContainer[], apps: AppDefinition[]): ContainerInfo[] {
   const appIds = new Set(apps.map(a => a.id));
 
-  return containers
+  return raw
     .map(c => {
       const name = c.Names[0].replace(/^\//, '');
       const labels = normaliseLabels((c as any).Labels);
@@ -163,6 +179,29 @@ export async function listContainers(): Promise<ContainerInfo[]> {
       };
     })
     .filter(c => c.appId !== undefined && appIds.has(c.appId));
+}
+
+/** Managed containers. Pass `apps` when the caller already read them. */
+export async function listContainers(apps?: AppDefinition[]): Promise<ContainerInfo[]> {
+  const [containers, knownApps] = await Promise.all([
+    docker.listContainers({ all: true }),
+    apps ?? listApps(),
+  ]);
+  return toManagedContainers(containers, knownApps);
+}
+
+/**
+ * Look one container up by id (or id prefix) without listing them all, and
+ * apply the same managed-container rules as listContainers. Ambiguous or
+ * unmanaged ids resolve to null (fail closed).
+ */
+export async function findManagedContainer(idOrPrefix: string): Promise<ContainerInfo | null> {
+  const [raw, apps] = await Promise.all([
+    docker.listContainers({ all: true, filters: { id: [idOrPrefix] } }),
+    listApps(),
+  ]);
+  const matches = toManagedContainers(raw, apps);
+  return raw.length === 1 && matches.length === 1 ? matches[0] : null;
 }
 
 export async function getTenantContainers(appId: string, tenantId: string): Promise<ContainerInfo[]> {
@@ -188,84 +227,63 @@ export async function restartContainer(containerId: string): Promise<void> {
 }
 
 export async function listTenants(): Promise<TenantStatus[]> {
-  const tenants: TenantStatus[] = [];
-  const appsDir = getAppsDir();
-
   try {
     const apps = await listApps();
 
+    // Pass 1: tenants that have a readable .env (others are skipped).
+    const found: Array<{ app: AppDefinition; dir: string; env: Record<string, string> }> = [];
     for (const app of apps) {
-      const tenantsDir = path.join(appsDir, app.id, 'tenants');
-      let dirs: string[];
-      try {
-        dirs = await fs.readdir(tenantsDir);
-      } catch {
-        continue;
-      }
-
-      // Determine init and required services from app definition
-      const initServices = app.services
-        .filter(s => s.is_init_container)
-        .map(s => s.name);
-      const requiredServices = app.services
-        .filter(s => s.required && !s.is_init_container)
-        .map(s => s.name);
-
-      for (const dir of dirs) {
-        const tenantPath = path.join(tenantsDir, dir);
-        const stat = await fs.stat(tenantPath);
-        if (!stat.isDirectory()) continue;
-
-        const envPath = path.join(tenantPath, '.env');
+      // An unreadable tenants dir just means this app has no tenants to report.
+      for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {}, followSymlinks: true })) {
         try {
-          const envContent = await fs.readFile(envPath, 'utf-8');
-          const env = parseEnv(envContent);
-
-          const containers = await getTenantContainers(app.id, dir);
-
-          // Exclude init containers from counts
-          const nonInitContainers = containers.filter(c => {
-            return c.service ? !initServices.includes(c.service) : true;
-          });
-
-          const running = nonInitContainers.filter(c => c.state === 'running');
-
-          // Check if all required services are running
-          const healthy = requiredServices.every(serviceName =>
-            running.some(c => c.service === serviceName)
-          );
-
-          tenants.push({
-            appId: app.id,
-            tenantId: dir,
-            domain: env.TENANT_DOMAIN || 'unknown',
-            version: env.IMAGE_TAG || 'unknown',
-            containers,
-            runningContainers: running.length,
-            totalContainers: nonInitContainers.length,
-            healthy,
-          });
+          found.push({ app, dir: tenantId, env: await readTenantEnv(app.id, tenantId) });
         } catch {
           // Skip if no .env file
         }
       }
     }
-  } catch {
-    // Apps directory doesn't exist yet
-  }
+    if (found.length === 0) return [];
 
-  return tenants;
+    // One Docker call for all tenants, grouped by app and tenant.
+    const byTenant = new Map<string, ContainerInfo[]>();
+    for (const c of toManagedContainers(await docker.listContainers({ all: true }), apps)) {
+      const key = `${c.appId}:${c.tenantId}`;
+      const list = byTenant.get(key);
+      if (list) list.push(c); else byTenant.set(key, [c]);
+    }
+
+    return found.map(({ app, dir, env }) => {
+      const initServices = new Set(app.services.filter(s => s.is_init_container).map(s => s.name));
+      const requiredServices = app.services
+        .filter(s => s.required && !s.is_init_container)
+        .map(s => s.name);
+      const containers = byTenant.get(`${app.id}:${dir}`) ?? [];
+
+      // Exclude init containers from counts
+      const nonInitContainers = containers.filter(c => (c.service ? !initServices.has(c.service) : true));
+      const running = nonInitContainers.filter(c => c.state === 'running');
+
+      return {
+        appId: app.id,
+        tenantId: dir,
+        domain: env.TENANT_DOMAIN || 'unknown',
+        version: env.IMAGE_TAG || 'unknown',
+        containers,
+        runningContainers: running.length,
+        totalContainers: nonInitContainers.length,
+        healthy: requiredServices.every(name => running.some(c => c.service === name)),
+      };
+    });
+  } catch {
+    // Apps directory doesn't exist yet, or Docker is unreachable: no tenants to report
+    return [];
+  }
 }
 
 export async function getTenantInfo(appId: string, tenantId: string): Promise<{ appId: string; tenantId: string; domain: string; version: string } | null> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
-  const envPath = path.join(tenantPath, '.env');
-
   try {
-    await assertWithinDir(tenantPath, appsDir);
-    const envContent = await fs.readFile(envPath, 'utf-8');
-    const env = parseEnv(envContent);
+    await assertTenantDir(appId, tenantId);
+    const env = await readTenantEnv(appId, tenantId);
 
     return {
       appId,
@@ -278,12 +296,19 @@ export async function getTenantInfo(appId: string, tenantId: string): Promise<{ 
   }
 }
 
+/** Names of the top-level volumes a compose file declares `external: true`. */
+function externalVolumeNames(composeText: string): string[] {
+  const doc = yaml.load(composeText) as { volumes?: Record<string, { external?: unknown } | null> } | null;
+  const volumes = doc && typeof doc === 'object' ? doc.volumes : undefined;
+  if (!volumes || typeof volumes !== 'object') return [];
+  return Object.entries(volumes)
+    .filter(([, def]) => def && typeof def === 'object' && def.external === true)
+    .map(([name]) => name);
+}
+
 export async function ensureExternalVolumes(composePath: string): Promise<void> {
   const content = await fs.readFile(composePath, 'utf-8');
-  const volumeRegex = /^  ([^\s:]+):\s*\n\s+external:\s*true/gm;
-  let match;
-  while ((match = volumeRegex.exec(content)) !== null) {
-    const volumeName = match[1];
+  for (const volumeName of externalVolumeNames(content)) {
     try {
       await runDocker('docker', ['volume', 'inspect', volumeName], { timeoutMs: 15_000 });
     } catch {
@@ -292,28 +317,34 @@ export async function ensureExternalVolumes(composePath: string): Promise<void> 
   }
 }
 
-export async function startTenant(appId: string, tenantId: string): Promise<void> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
-  await assertWithinDir(tenantPath, appsDir);
-  const composePath = path.join(tenantPath, 'docker-compose.yml');
-  await ensureExternalVolumes(composePath);
-  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: 300_000 });
+export function startTenant(appId: string, tenantId: string): Promise<void> {
+  return withTenantLock(appId, tenantId, () => startTenantLocked(appId, tenantId));
 }
 
-export async function stopTenant(appId: string, tenantId: string): Promise<void> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
-  await assertWithinDir(tenantPath, appsDir);
+async function startTenantLocked(appId: string, tenantId: string): Promise<void> {
+  const tenantPath = await assertTenantDir(appId, tenantId);
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
+  await ensureExternalVolumes(composePath);
+  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
+}
+
+export function stopTenant(appId: string, tenantId: string): Promise<void> {
+  return withTenantLock(appId, tenantId, () => stopTenantLocked(appId, tenantId));
+}
+
+async function stopTenantLocked(appId: string, tenantId: string): Promise<void> {
+  const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down'], { timeoutMs: 120_000 });
 }
 
-export async function restartTenant(appId: string, tenantId: string): Promise<void> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
-  await assertWithinDir(tenantPath, appsDir);
+export function restartTenant(appId: string, tenantId: string): Promise<void> {
+  return withTenantLock(appId, tenantId, () => restartTenantLocked(appId, tenantId));
+}
+
+async function restartTenantLocked(appId: string, tenantId: string): Promise<void> {
+  const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
-  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: 300_000 });
+  await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }

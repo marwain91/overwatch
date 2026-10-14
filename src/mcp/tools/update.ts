@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { updateTenant, validateImageTag } from '../../services/tenant';
-import { eventBus } from '../../services/eventBus';
-import { requireToolRole, writeMcpAudit, ToolRoleError } from '../audit';
+import { requireToolRole, writeMcpAudit, ToolRoleError, toolErrorMessage } from '../audit';
 import { McpAuthExtra } from '../auth';
 import { slugInput } from './read';
-import type { TenantUpdateProgress } from '../../websocket/types';
+import type { TenantUpdateProgress } from '../../services/eventBus';
+import { HttpError } from '../../utils/httpErrors';
 
 type ToolResult = { isError?: boolean; content: { type: 'text'; text: string }[]; structuredContent?: any };
 
@@ -43,7 +43,6 @@ export async function updateTenantHandler(
   if (!tag.valid) return { isError: true, content: [{ type: 'text', text: tag.error || 'invalid image tag' }] };
 
   const onProgress = (p: TenantUpdateProgress) => {
-    if (p.appId !== args.appId || p.tenantId !== args.tenantId) return;
     // Fire-and-forget; notify errors must not break the update.
     void ctx.notify({
       progress: STEP_ORDER[p.step] ?? 0,
@@ -51,16 +50,12 @@ export async function updateTenantHandler(
       message: `${p.step}: ${p.status}${p.detail ? ` — ${p.detail}` : ''}`,
     }).catch(() => {});
   };
-  eventBus.on('tenant:update:progress', onProgress);
-
   try {
-    await updateTenant(args.appId, args.tenantId, args.imageTag);
+    await updateTenant(args.appId, args.tenantId, args.imageTag, onProgress);
     writeMcpAudit({ email: auth.email, tool: 'update_tenant', args, status: 200 });
     return { content: [{ type: 'text', text: `Updated ${args.appId}/${args.tenantId} to ${args.imageTag}` }], structuredContent: { success: true, ...args } };
   } catch (e: any) {
-    writeMcpAudit({ email: auth.email, tool: 'update_tenant', args, status: 500 });
-    return { isError: true, content: [{ type: 'text', text: e?.message || String(e) }] };
-  } finally {
-    eventBus.off('tenant:update:progress', onProgress);
+    writeMcpAudit({ email: auth.email, tool: 'update_tenant', args, status: e instanceof HttpError ? e.status : 500 });
+    return { isError: true, content: [{ type: 'text', text: toolErrorMessage(e, 'Failed to update tenant') }] };
   }
 }

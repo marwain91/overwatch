@@ -1,3 +1,4 @@
+import { fetchNoRedirect } from './safeFetch';
 import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 import { validateRegistryUrl } from './urlValidation';
@@ -53,7 +54,7 @@ export class CustomRegistryAdapter implements RegistryAdapter {
         headers['Authorization'] = `Basic ${auth}`;
       }
 
-      const response = await fetch(repoUrl, { headers });
+      const response = await fetchNoRedirect(repoUrl, { headers });
 
       if (!response.ok) {
         console.error('Custom registry API error:', response.status);

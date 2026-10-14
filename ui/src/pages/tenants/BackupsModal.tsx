@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { toast } from 'sonner';
 import { useBackupStatus, useTenantBackups, useCreateBackup, useRestoreBackup, useDeleteBackup } from '../../hooks/useTenants';
 import { useBackupSummary } from '../../hooks/useApps';
+import { useCan } from '../../hooks/useRole';
 import { Modal } from '../../components/Modal';
 import { cn } from '../../lib/cn';
 import { formatCron } from '../../lib/format';
@@ -55,6 +56,8 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
   const createBackup = useCreateBackup(appId);
   const restoreBackup = useRestoreBackup(appId);
   const deleteBackup = useDeleteBackup(appId);
+  const isAdmin = useCan('admin');
+  const canEdit = useCan('editor');
 
   const [viewMonth, setViewMonth] = useState(() => new Date());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -100,6 +103,7 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
         <p className="text-xs text-content-muted">
           Schedule: {summary?.schedule ? formatCron(summary.schedule) : 'Manual only'}
         </p>
+        {canEdit && (
         <button
           className="btn btn-primary btn-sm"
           disabled={createBackup.isPending}
@@ -110,6 +114,7 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
         >
           {createBackup.isPending ? 'Backing up...' : '+ Create Backup'}
         </button>
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -166,6 +171,7 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
                       </p>
                       <p className="text-xs text-content-faint">{b.shortId}</p>
                     </div>
+                    {isAdmin && (
                     <div className="flex gap-1">
                       <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId })}>Restore</button>
                       <button
@@ -178,6 +184,7 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
                         Delete
                       </button>
                     </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -199,7 +206,11 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
           </select>
           <div className="flex gap-2">
             <button className="btn btn-danger btn-sm" onClick={() => restoreBackup.mutate(restoreTarget, {
-              onSuccess: () => { toast.success('Backup restored'); setRestoreTarget(null); },
+              onSuccess: (res) => {
+                if (res?.warnings?.length) toast.warning(`Backup restored with warnings: ${res.warnings.join('; ')}`);
+                else toast.success('Backup restored');
+                setRestoreTarget(null);
+              },
               onError: (err) => toast.error(err.message),
             })} disabled={restoreBackup.isPending}>
               {restoreBackup.isPending ? 'Restoring...' : 'Restore'}

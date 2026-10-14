@@ -45,12 +45,12 @@ jobs:
           esac
 
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -65,7 +65,7 @@ jobs:
         run: npm run build
 
       - name: Log in to Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -73,7 +73,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # Derive the version from the tag being built. On a manual rebuild the
@@ -93,7 +93,7 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
           push: true
@@ -120,12 +120,12 @@ jobs:
           esac
 
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -141,8 +141,8 @@ jobs:
 
       - name: Build CLI binaries
         run: |
-          npx @yao-pkg/pkg dist/cli.js --target node20-linux-x64 --output dist/bin/overwatch-linux-x64 --compress GZip
-          npx @yao-pkg/pkg dist/cli.js --target node20-linux-arm64 --output dist/bin/overwatch-linux-arm64 --compress GZip
+          npx @yao-pkg/pkg dist/cli.js --target node22-linux-x64 --output dist/bin/overwatch-linux-x64 --compress GZip
+          npx @yao-pkg/pkg dist/cli.js --target node22-linux-arm64 --output dist/bin/overwatch-linux-arm64 --compress GZip
 
       - name: Generate SHA256 checksums
         run: |
@@ -151,7 +151,7 @@ jobs:
           sha256sum overwatch-linux-arm64 > overwatch-linux-arm64.sha256
 
       - name: Upload binaries to release
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           # On dispatch the ref is a branch, so name the release explicitly.
           # No `body:` — an existing release keeps its notes; a release created

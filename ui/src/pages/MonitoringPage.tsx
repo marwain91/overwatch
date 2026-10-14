@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useMetrics, useHealthStates, useAlertHistory, useNotificationChannels, useCreateNotification, useUpdateNotification, useDeleteNotification, useTestNotification } from '../hooks/useMonitoring';
 import { useWSStore } from '../stores/wsStore';
+import { useCan } from '../hooks/useRole';
 import { formatBytes } from '../lib/format';
 import { cn } from '../lib/cn';
 import { Modal } from '../components/Modal';
@@ -21,6 +22,7 @@ export function MonitoringPage() {
 
   const [metricsSearch, setMetricsSearch] = useState('');
   const [healthSearch, setHealthSearch] = useState('');
+  const isAdmin = useCan('admin');
   const [showChannelModal, setShowChannelModal] = useState<NotificationChannel | 'new' | null>(null);
 
   // Filter metrics by app
@@ -157,9 +159,11 @@ export function MonitoringPage() {
       <section className="card">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-content-primary">Notification Channels</h2>
-          <button className="btn btn-primary btn-sm" onClick={() => setShowChannelModal('new')}>
-            + Add Webhook
-          </button>
+          {isAdmin && (
+            <button className="btn btn-primary btn-sm" onClick={() => setShowChannelModal('new')}>
+              + Add Webhook
+            </button>
+          )}
         </div>
         {channels && channels.length > 0 ? (
           <div className="space-y-2">
@@ -185,6 +189,7 @@ export function MonitoringPage() {
 function ChannelRow({ channel, onEdit }: { channel: NotificationChannel; onEdit: () => void }) {
   const deleteChannel = useDeleteNotification();
   const testChannel = useTestNotification();
+  const isAdmin = useCan('admin');
 
   return (
     <div className="flex items-center justify-between rounded border border-border-subtle bg-surface-muted px-3 py-2">
@@ -196,6 +201,7 @@ function ChannelRow({ channel, onEdit }: { channel: NotificationChannel; onEdit:
         <span className={cn('badge', channel.enabled ? 'badge-green' : 'badge-gray')}>
           {channel.enabled ? 'Enabled' : 'Disabled'}
         </span>
+        {isAdmin && <>
         <button className="btn btn-secondary btn-xs" onClick={() => testChannel.mutate(channel.id, {
           onSuccess: () => toast.success('Test sent'),
           onError: (err) => toast.error(err.message),
@@ -205,6 +211,7 @@ function ChannelRow({ channel, onEdit }: { channel: NotificationChannel; onEdit:
           onSuccess: () => toast.success('Channel deleted'),
           onError: (err) => toast.error(err.message),
         })}>Delete</button>
+        </>}
       </div>
     </div>
   );

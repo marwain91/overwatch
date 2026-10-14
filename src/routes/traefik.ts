@@ -26,7 +26,7 @@ const router = Router();
 
 // ─── Full config ────────────────────────────────────────────────────────────
 
-router.get('/', asyncHandler(async (req: Request, res: Response) => {
+router.get('/', asyncHandler(async (_req: Request, res: Response) => {
   const t = await getTraefikConfig();
   res.json(t ?? null);
 }));
@@ -51,7 +51,7 @@ router.post('/validate', asyncHandler(async (req: Request, res: Response) => {
 
 // ─── Cert resolvers ─────────────────────────────────────────────────────────
 
-router.get('/cert-resolvers', asyncHandler(async (req: Request, res: Response) => {
+router.get('/cert-resolvers', asyncHandler(async (_req: Request, res: Response) => {
   res.json(await listCertResolvers());
 }));
 
@@ -72,7 +72,7 @@ router.delete('/cert-resolvers/:name', requireRole('admin'), requireConfirmId('n
 
 // ─── Global middlewares ─────────────────────────────────────────────────────
 
-router.get('/middlewares', asyncHandler(async (req: Request, res: Response) => {
+router.get('/middlewares', asyncHandler(async (_req: Request, res: Response) => {
   res.json(await listGlobalMiddlewares());
 }));
 

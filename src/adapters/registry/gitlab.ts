@@ -1,3 +1,4 @@
+import { fetchNoRedirect } from './safeFetch';
 import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 import { validateRegistryUrl } from './urlValidation';
@@ -79,7 +80,7 @@ export class GitLabAdapter implements RegistryAdapter {
 
     const projectId = encodeURIComponent(this.config.repository);
     const url = `${apiBase}/api/v4/projects/${projectId}/repository/tags?per_page=100&order_by=name&sort=desc`;
-    const response = await fetch(url, {
+    const response = await fetchNoRedirect(url, {
       headers: {
         'PRIVATE-TOKEN': this.config.token,
         Accept: 'application/json',
