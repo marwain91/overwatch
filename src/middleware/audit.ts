@@ -1,9 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
-import { getCurrentUserEmail } from '../utils/jwt';
+import type { AuthUser } from './auth';
 import { writeAuditEntry } from '../services/auditLog';
 
-function getUserFromRequest(req: Request): string {
-  return getCurrentUserEmail(req) || 'anonymous';
+function getUserFromResponse(res: Response): string {
+  return (res.locals.user as AuthUser | undefined)?.email || 'anonymous';
 }
 
 function describeAction(
@@ -99,7 +99,7 @@ export function auditLog(req: Request, res: Response, next: NextFunction) {
     const query = req.query as Record<string, unknown>;
     const force = query?.force === 'true' || req.body?.force === true;
     writeAuditEntry({
-      user: getUserFromRequest(req),
+      user: getUserFromResponse(res),
       action: describeAction(req.method, fullPath, req.body, query),
       method: req.method,
       path: fullPath,

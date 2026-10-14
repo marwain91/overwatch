@@ -13,8 +13,6 @@ import { loadConfig } from '../config';
 import { SLUG_RE, CONTAINER_NAME_RE, UUID_RE } from '../utils/validators';
 import { queryString, queryInt } from '../utils/query';
 import { requireRole } from '../middleware/requireRole';
-import { getCurrentUserEmail } from '../utils/jwt';
-import { getUserRole } from '../services/users';
 import { assertPublicUrl } from '../utils/ssrf';
 import { ValidationError } from '../utils/httpErrors';
 
@@ -107,11 +105,9 @@ function redactWebhookUrl(url: string): string {
 // only role that can edit channels — get them unredacted.
 router.get('/notifications', asyncHandler(async (req, res) => {
   const channels = await getNotificationChannelsData();
-  const email = getCurrentUserEmail(req);
-  const role = email ? await getUserRole(email) : undefined;
-  // Explicit check: can(undefined, ...) treats a missing role as legacy admin,
-  // which would fail open for a caller that isn't an admin user at all.
-  if (role === 'admin') {
+  // Role was resolved once by authMiddleware. Explicit check: can(undefined, ...)
+  // treats a missing role as legacy admin, which would fail open.
+  if (res.locals.user?.role === 'admin') {
     res.json(channels);
     return;
   }

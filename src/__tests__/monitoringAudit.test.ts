@@ -16,11 +16,6 @@ beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-monitoring-audit-'));
   vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as any);
   vi.doMock('../config', () => ({ getDataDir: () => dataDir, loadConfig: () => ({}) }));
-  vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'admin@example.test' }));
-  vi.doMock('../services/users', async () => ({
-    ...(await vi.importActual<typeof import('../services/users')>('../services/users')),
-    getUserRole: vi.fn(async () => 'admin'),
-  }));
   vi.doMock('../services/alertEngine', () => ({
     getAlertHistory: vi.fn(),
     getNotificationChannelsData: vi.fn(async () => []),
@@ -34,7 +29,7 @@ afterEach(async () => {
   else process.env.OVERWATCH_ALLOW_PRIVATE_WEBHOOK = prev;
   vi.restoreAllMocks();
   vi.resetModules();
-  for (const m of ['../config', '../utils/jwt', '../services/users', '../services/alertEngine']) vi.doUnmock(m);
+  for (const m of ['../config', '../services/alertEngine']) vi.doUnmock(m);
   await fs.rm(dataDir, { recursive: true, force: true });
 });
 
@@ -43,6 +38,8 @@ async function appWithAudit() {
   const { auditLog } = await import('../middleware/audit');
   const app = express();
   app.use(express.json());
+  // Stands in for authMiddleware, which resolves the caller once per request.
+  app.use((_req, res, next) => { res.locals.user = { email: 'admin@example.test', role: 'admin' }; next(); });
   app.use('/api/monitoring', auditLog, router);
   return app;
 }

@@ -1,20 +1,11 @@
 import { Request } from 'express';
-import jwt from 'jsonwebtoken';
+import type { AuthUser } from '../middleware/auth';
 
-const JWT_SECRET = process.env.JWT_SECRET!;
-
-/** Extract the current user's email from the JWT in the Authorization header */
+/**
+ * The current user's email, as resolved by authMiddleware (`res.locals.user`).
+ * Returns null on routes that did not run authMiddleware.
+ */
 export function getCurrentUserEmail(req: Request): string | null {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null;
-  }
-
-  try {
-    const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }) as { email: string };
-    return decoded.email || null;
-  } catch {
-    return null;
-  }
+  const user = req.res?.locals?.user as AuthUser | undefined;
+  return user?.email || null;
 }

@@ -8,13 +8,11 @@ let dataDir: string;
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-audit-service-'));
   vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
-  vi.doMock('../utils/jwt', () => ({ getCurrentUserEmail: () => 'root@example.test' }));
 });
 
 afterEach(async () => {
   vi.resetModules();
   vi.doUnmock('../config');
-  vi.doUnmock('../utils/jwt');
   await fs.rm(dataDir, { recursive: true, force: true });
 });
 
@@ -71,7 +69,7 @@ describe('audit middleware', () => {
     const mod = await import('../middleware/audit');
     const svc = await import('../services/auditLog');
     const req: any = { method, baseUrl, path: p, query: {}, body, ip: '1.2.3.4', socket: { remoteAddress: '1.2.3.4' } };
-    const res: any = { statusCode: 200, json: (b: any) => b };
+    const res: any = { statusCode: 200, json: (b: any) => b, locals: { user: { email: 'root@example.test', role: 'admin' } } };
     mod.auditLog(req, res, () => {});
     res.json({ ok: true });
     await svc.flushAuditLog();

@@ -1,19 +1,24 @@
+import { lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthGuard } from './components/AuthGuard';
 import { AppShell } from './components/AppShell';
 import { LoginPage } from './pages/LoginPage';
 import { AppListPage } from './pages/AppListPage';
-import { AppCreateWizard } from './pages/AppCreateWizard';
-import { AppSettingsPage } from './pages/AppSettingsPage';
 import { TenantsPage } from './pages/TenantsPage';
-import { MonitoringPage } from './pages/MonitoringPage';
 import { ActivityPage } from './pages/ActivityPage';
 import { EnvironmentPage } from './pages/EnvironmentPage';
-import { BackupsPage } from './pages/BackupsPage';
 import { AdminsPage } from './pages/AdminsPage';
-import { DatabasePage } from './pages/DatabasePage';
 import { TenantDetailPage } from './pages/TenantDetailPage';
-import { InfrastructureTraefikPage } from './pages/InfrastructureTraefikPage';
+
+// Heavy, rarely-first-visited pages load on demand (Suspense lives in AppShell).
+const AppCreateWizard = lazy(() => import('./pages/AppCreateWizard').then((m) => ({ default: m.AppCreateWizard })));
+const AppSettingsPage = lazy(() => import('./pages/AppSettingsPage').then((m) => ({ default: m.AppSettingsPage })));
+const MonitoringPage = lazy(() => import('./pages/MonitoringPage').then((m) => ({ default: m.MonitoringPage })));
+const BackupsPage = lazy(() => import('./pages/BackupsPage').then((m) => ({ default: m.BackupsPage })));
+const DatabasePage = lazy(() => import('./pages/DatabasePage').then((m) => ({ default: m.DatabasePage })));
+const InfrastructureTraefikPage = lazy(() =>
+  import('./pages/InfrastructureTraefikPage').then((m) => ({ default: m.InfrastructureTraefikPage })),
+);
 
 export default function App() {
   return (
