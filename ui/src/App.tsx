@@ -42,10 +42,10 @@ export default function App() {
         <Route path="apps/:appId/activity" element={<ActivityPage />} />
         <Route path="apps/:appId/backups" element={<BackupsPage />} />
         <Route path="apps/:appId/environment" element={<EnvironmentPage />} />
-        <Route path="trash" element={<RequireRole min="admin"><TrashPage /></RequireRole>} />
-        <Route path="admins" element={<RequireRole min="admin"><AdminsPage /></RequireRole>} />
+        <Route path="trash" element={<TrashPage />} />
+        <Route path="admins" element={<AdminsPage />} />
         <Route path="database" element={<DatabasePage />} />
-        <Route path="infrastructure/traefik" element={<RequireRole min="admin"><InfrastructureTraefikPage /></RequireRole>} />
+        <Route path="infrastructure/traefik" element={<InfrastructureTraefikPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
