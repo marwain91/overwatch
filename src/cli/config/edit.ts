@@ -1,7 +1,7 @@
 import inquirer from 'inquirer';
 import { loadConfig, loadRawConfig, findConfigPath } from '../../config/loader';
 import { writeOverwatchConfig } from '../../config/writer';
-import { header, success, warn, fail, info, BOLD, DIM, CYAN, GREEN, RED, NC } from './utils';
+import { header, success, warn, fail, info, BOLD, DIM, GREEN, RED, NC } from './utils';
 
 const EDITABLE_SECTIONS = [
   'project',
@@ -71,7 +71,7 @@ function displayValue(value: unknown): string {
   return String(value);
 }
 
-async function editSection(section: EditableSection, rawConfig: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+async function editSection(section: EditableSection, _rawConfig: Record<string, unknown>): Promise<Record<string, unknown> | null> {
   const config = loadConfig() as Record<string, unknown>;
   const sectionData = config[section];
 

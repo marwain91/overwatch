@@ -12,7 +12,7 @@ const router = Router();
 const RoleSchema = z.enum(['viewer', 'editor', 'admin']);
 
 // List all admin users
-router.get('/', asyncHandler(async (req: Request, res: Response) => {
+router.get('/', asyncHandler(async (_req: Request, res: Response) => {
   const users = await listAdminUsers();
   // Legacy records without a stored role are effectively admin; report that.
   res.json(users.map(u => ({ ...u, role: normaliseRole(u.role) })));

@@ -2,7 +2,6 @@ import Docker from 'dockerode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { loadConfig } from '../config';
 import { listApps } from './app';
 import type { AppDefinition } from '../models/app';
 import { assertTenantDir, listTenantDirs, readTenantEnv } from './tenantStore';

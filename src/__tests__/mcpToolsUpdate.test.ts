@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { updateTenant, validateImageTag } = vi.hoisted(() => ({
   updateTenant: vi.fn(),
-  validateImageTag: vi.fn(() => ({ valid: true })),
+  validateImageTag: vi.fn((_imageTag: unknown): { valid: boolean; error?: string } => ({ valid: true })),
 }));
 
 vi.mock('../services/tenant', () => ({
   updateTenant: (...a: any[]) => updateTenant(...a),
-  validateImageTag: (...a: any[]) => validateImageTag(...a),
+  validateImageTag: (imageTag: unknown) => validateImageTag(imageTag),
 }));
 
 vi.mock('../mcp/audit', async (orig) => {

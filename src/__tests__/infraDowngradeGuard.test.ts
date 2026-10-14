@@ -9,7 +9,7 @@ const running: Record<string, string> = {};
 const dockerCalls: string[][] = [];
 vi.mock('child_process', async (orig) => {
   const actual = await orig<typeof import('child_process')>();
-  const execFile = (cmd: string, args: string[], ...rest: any[]) => {
+  const execFile = (_cmd: string, args: string[], ...rest: any[]) => {
     const cb = rest[rest.length - 1];
     dockerCalls.push(args);
     if (args[0] === 'inspect' && args[1] === '--format') {

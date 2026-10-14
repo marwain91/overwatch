@@ -31,7 +31,8 @@
     "build:all": "npm run build && cd ui && npm ci && npm run build",
     "build:cli": "npm run build && pkg dist/cli.js --targets node22-linux-x64,node22-linux-arm64 --output dist/bin/overwatch --compress GZip",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck:test": "tsc -p tsconfig.test.json"
   },
   "pkg": {
     "assets": [

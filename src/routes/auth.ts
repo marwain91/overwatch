@@ -71,7 +71,7 @@ router.get('/verify', (req: Request, res: Response) => {
 });
 
 // Get Google Client ID for frontend
-router.get('/config', (req: Request, res: Response) => {
+router.get('/config', (_req: Request, res: Response) => {
   res.json({
     googleClientId: GOOGLE_CLIENT_ID,
     configured: !!GOOGLE_CLIENT_ID,

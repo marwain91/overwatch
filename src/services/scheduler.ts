@@ -1,6 +1,5 @@
 import cron, { ScheduledTask } from 'node-cron';
 import * as path from 'path';
-import * as fs from 'fs/promises';
 import { backupAllTenants } from './backup';
 import { listApps } from './app';
 import { getDataDir } from '../config';
