@@ -84,17 +84,17 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
   await fs.writeFile(path.join(tenantPath, 'shared.env'), 'SHARED=1\n', { mode: 0o600 });
   await fs.writeFile(composePath, ORIGINAL_COMPOSE);
 
-  const globalApp = { ...appStatic, ...TIMESTAMPS };
+  let globalApp: any = { ...appStatic, ...TIMESTAMPS };
   // Stateful snapshot so the regenerated compose reflects what was written.
   let tenantSnapshot: any = globalApp;
   const writeTenantAppDef = vi.fn(async (_appId: string, _tenantId: string, staticDef: any) => {
     tenantSnapshot = { ...staticDef, ...TIMESTAMPS };
   });
-  const applyApp = vi.fn(async (staticDef: any) => ({
-    result: 'updated',
-    app: { ...staticDef, ...TIMESTAMPS },
-    changedKeys: ['services'],
-  }));
+  // Stateful like the real store: the rollback only restores what this update applied.
+  const applyApp = vi.fn(async (staticDef: any) => {
+    globalApp = { ...staticDef, ...TIMESTAMPS };
+    return { result: 'updated', app: globalApp, changedKeys: ['services'] };
+  });
 
   vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
 

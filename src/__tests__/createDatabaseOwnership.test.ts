@@ -158,6 +158,7 @@ describe('createTenant database ownership', () => {
     vi.doMock('../config', () => ({
       loadConfig: () => ({
         project: { name: 'T', prefix: 'test', db_prefix: 'test' },
+        database: { type: 'mariadb', host: 'db', port: 3306 },
         networking: { external_network: 'n', internal_network_template: '${prefix}-${tenantId}-internal', apps_path: '/a' },
         traefik: { log_level: 'INFO', tls_termination: 'upstream', upstream_entrypoint: 'web' },
       }),
@@ -176,7 +177,7 @@ vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async (
       })),
       applyApp: vi.fn(),
     }));
-    vi.doMock('../services/envVars', () => ({ generateSharedEnvFile: vi.fn(async () => undefined) }));
+    vi.doMock('../services/envVars', () => ({ generateSharedEnvFile: vi.fn(async () => undefined), formatEnvValue: (v: unknown) => String(v) }));
     vi.doMock('../services/tenantAppDef', () => ({ writeTenantAppDef: vi.fn(async () => undefined) }));
     const mod = await import('../services/tenant');
     const errors = await import('../utils/httpErrors');
@@ -188,6 +189,7 @@ vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async (
   it('rejects with ConflictError and creates/drops nothing when the database already exists', async () => {
     const db = {
       initialize: vi.fn(async () => undefined),
+      getDatabaseName: (id: string) => id,
       databaseExists: vi.fn(async () => true),
       createDatabase: vi.fn(),
       dropDatabase: vi.fn(async () => undefined),
@@ -202,6 +204,7 @@ vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async (
   it('drops the database after a compose failure when this call created it', async () => {
     const db = {
       initialize: vi.fn(async () => undefined),
+      getDatabaseName: (id: string) => id,
       databaseExists: vi.fn(async () => false),
       createDatabase: vi.fn(async () => ({ created: true, userCreated: true })),
       dropDatabase: vi.fn(async () => undefined),
@@ -214,6 +217,7 @@ vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async (
   it('does not drop a database this call did not create, and keeps an adopted user', async () => {
     const db = {
       initialize: vi.fn(async () => undefined),
+      getDatabaseName: (id: string) => id,
       databaseExists: vi.fn(async () => false),
       createDatabase: vi.fn(async () => ({ created: false, userCreated: false })),
       dropDatabase: vi.fn(async () => undefined),
@@ -226,6 +230,7 @@ vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async (
   it('keeps a pre-existing user when rolling back a database it created', async () => {
     const db = {
       initialize: vi.fn(async () => undefined),
+      getDatabaseName: (id: string) => id,
       databaseExists: vi.fn(async () => false),
       createDatabase: vi.fn(async () => ({ created: true, userCreated: false })),
       dropDatabase: vi.fn(async () => undefined),
