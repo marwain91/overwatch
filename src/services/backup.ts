@@ -2,13 +2,14 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { loadConfig, resolveEnvValue, getAppsDir } from '../config';
+import { loadConfig, resolveEnvValue } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
 import { getTenantInfo, listTenants } from './docker';
 import { getApp, listApps } from './app';
 import { readTenantAppDef } from './tenantAppDef';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
+import { tenantDir } from './tenantStore';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { invalidateBackupCache } from './backupCache';
 import { resolveTenantDbId } from './tenantDb';
@@ -278,7 +279,6 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
 
   const config = loadConfig();
   const db = getDatabaseAdapter(app);
-  const appsDir = getAppsDir();
 
   // Get backup-enabled services from THIS tenant's app definition. A sibling
   // tenant on a different image version may have a different service list;
@@ -313,7 +313,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     await db.dumpDatabase(dbName, path.join(tenantBackupDir, 'database.sql'));
 
     // Copy tenant .env — required artifact. Fail the backup if missing or unreadable.
-    const tenantConfigDir = path.join(appsDir, appId, 'tenants', tenant.tenantId);
+    const tenantConfigDir = tenantDir(appId, tenant.tenantId);
     const envContent = await fs.readFile(path.join(tenantConfigDir, '.env'), 'utf-8');
     await fs.writeFile(path.join(tenantBackupDir, '.env'), envContent, { mode: 0o600 });
 
