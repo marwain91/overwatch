@@ -8,6 +8,9 @@ afterEach(() => {
   vi.doUnmock('../middleware/requireRole');
 });
 
+const regenerate = vi.fn(async (_appId?: string, _opts?: { busy?: string[] }) => 0);
+const regenerateTenant = vi.fn(async (..._a: unknown[]) => ({ busy: false }));
+
 async function makeApp(setEnvVar: ReturnType<typeof vi.fn>) {
   vi.doMock('../services/envVars', () => ({
     listEnvVars: vi.fn(async () => [{ key: 'API_TOKEN', value: 's3cret', sensitive: true }]),
@@ -16,7 +19,8 @@ async function makeApp(setEnvVar: ReturnType<typeof vi.fn>) {
     getEffectiveEnvVars: vi.fn(),
     setTenantOverride: vi.fn(),
     deleteTenantOverride: vi.fn(),
-    regenerateAllSharedEnvFiles: vi.fn(async () => 0),
+    regenerateAllSharedEnvFiles: regenerate,
+    regenerateTenantSharedEnv: regenerateTenant,
     generateSharedEnvFile: vi.fn(),
   }));
   vi.doMock('../middleware/requireRole', () => ({ requireRole: () => (_req: any, _res: any, next: any) => next() }));
@@ -91,5 +95,37 @@ describe('POST /api/apps/:appId/env-vars', () => {
       .expect(200);
 
     expect(setEnvVar).toHaveBeenCalledWith('demo', 'API_TOKEN', 'new', false, undefined);
+  });
+});
+
+describe('busy tenants are a warning, not a failure', () => {
+  const warning = (id: string) => `${id} is busy; its shared.env will be updated when the current operation finishes`;
+  const setEnvVar = async (_a: string, key: string, value: string, sensitive: boolean) => ({ key, value, sensitive });
+
+  it('POST /env-vars returns 200 with a warning per busy tenant', async () => {
+    regenerate.mockImplementationOnce(async (_a, opts) => { opts?.busy?.push('demo/a', 'demo/b'); return 1; });
+    const res = await request(await makeApp(vi.fn(setEnvVar))).post('/api/apps/demo/env-vars').send({ key: 'K', value: 'v' }).expect(200);
+    expect(res.body.tenantsAffected).toBe(1);
+    expect(res.body.warnings).toEqual([warning('demo/a'), warning('demo/b')]);
+  });
+
+  it('omits warnings when nothing was busy', async () => {
+    const res = await request(await makeApp(vi.fn(setEnvVar))).post('/api/apps/demo/env-vars').send({ key: 'K', value: 'v' }).expect(200);
+    expect(res.body.warnings).toBeUndefined();
+  });
+
+  it('DELETE /env-vars/:key returns the warnings too', async () => {
+    regenerate.mockImplementationOnce(async (_a, opts) => { opts?.busy?.push('demo/a'); return 0; });
+    const res = await request(await makeApp(vi.fn())).delete('/api/apps/demo/env-vars/K').expect(200);
+    expect(res.body.warnings).toEqual([warning('demo/a')]);
+  });
+
+  it('tenant override set/delete return a warning when the tenant is busy', async () => {
+    regenerateTenant.mockResolvedValue({ busy: true });
+    const app = await makeApp(vi.fn());
+    const set = await request(app).post('/api/apps/demo/env-vars/tenants/a/overrides').send({ key: 'K', value: 'v' }).expect(200);
+    expect(set.body.warnings).toEqual([warning('demo/a')]);
+    const del = await request(app).delete('/api/apps/demo/env-vars/tenants/a/overrides/K').expect(200);
+    expect(del.body.warnings).toEqual([warning('demo/a')]);
   });
 });

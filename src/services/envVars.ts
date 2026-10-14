@@ -3,9 +3,10 @@ import * as path from 'path';
 import { z } from 'zod';
 import { getDataDir } from '../config';
 import { withFileLock, withTenantLock } from './fileLock';
+import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 import { writeSecretFile } from '../utils/security';
 import { tenantDir, assertTenantDir, listTenantDirs } from './tenantStore';
-import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
+import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const EnvVarSchema = z.object({
   key: z.string(),
@@ -428,6 +429,53 @@ export function generateSharedEnvFile(
   return withTenantLock(appId, tenantId, () => generateSharedEnvFileUnlocked(appId, tenantId));
 }
 
+/** How long an HTTP-triggered regeneration waits for a tenant that is mid-operation before deferring it. */
+const SHARED_ENV_BUSY_WAIT_MS = 2_000;
+
+// Tenants with a deferred regeneration queued for the lock. An entry is removed
+// the moment the lock is acquired (before the store is read), so a request made
+// after that point schedules a fresh run instead of being swallowed.
+const pendingBackground = new Map<string, symbol>();
+
+function scheduleBackgroundSharedEnv(appId: string, tenantId: string): void {
+  const id = `${appId}/${tenantId}`;
+  if (pendingBackground.has(id)) return;
+  const token = Symbol(id);
+  pendingBackground.set(id, token);
+  withTenantLock(appId, tenantId, async () => {
+    pendingBackground.delete(id);
+    // Reads the env-var store now, so it can never write a value older than the save that scheduled it.
+    await generateSharedEnvFileUnlocked(appId, tenantId);
+  }, { waitMs: COMPOSE_LONG_TIMEOUT_MS, unref: true }).then(
+    () => console.log(`[env-vars] background shared.env regeneration for ${id} done`),
+    (err: any) => {
+      // Only clear our own entry: a newer run may have been scheduled after we got the lock.
+      if (pendingBackground.get(id) === token) pendingBackground.delete(id);
+      console.error(`[env-vars] background shared.env regeneration for ${id} failed: ${err?.message || err}`);
+    },
+  );
+}
+
+/**
+ * Regenerate one tenant's shared.env for a request: waits briefly for the tenant
+ * lock; a tenant that is mid-operation is not a failure, its regeneration is
+ * deferred until the lock frees and the caller is told it was busy.
+ */
+export async function regenerateTenantSharedEnv(
+  appId: string,
+  tenantId: string,
+  opts: { waitMs?: number } = {},
+): Promise<{ busy: boolean }> {
+  try {
+    await withTenantLock(appId, tenantId, () => generateSharedEnvFileUnlocked(appId, tenantId), { waitMs: opts.waitMs ?? SHARED_ENV_BUSY_WAIT_MS });
+    return { busy: false };
+  } catch (err) {
+    if (!(err instanceof ConflictError)) throw err;
+    scheduleBackgroundSharedEnv(appId, tenantId);
+    return { busy: true };
+  }
+}
+
 async function generateSharedEnvFileUnlocked(appId: string, tenantId: string): Promise<void> {
   const tenantPath = tenantDir(appId, tenantId);
 
@@ -553,9 +601,13 @@ export class SharedEnvRegenerationError extends HttpError {
  * Only a missing apps/tenants directory or a directory without `.env` (not a
  * tenant) is skipped. Any other failure is collected and thrown after the loop
  * as a SharedEnvRegenerationError, so a save never reports success while a
- * shared.env stays stale.
+ * shared.env stays stale. A tenant whose lock stays busy past `waitMs` is not a
+ * failure: it is listed in `opts.busy` and regenerated in the background.
  */
-export async function regenerateAllSharedEnvFiles(onlyAppId?: string): Promise<number> {
+export async function regenerateAllSharedEnvFiles(
+  onlyAppId?: string,
+  opts: { busy?: string[]; waitMs?: number } = {},
+): Promise<number> {
   let count = 0;
   const failures: SharedEnvFailure[] = [];
 
@@ -576,8 +628,9 @@ export async function regenerateAllSharedEnvFiles(onlyAppId?: string): Promise<n
       continue;
     }
     try {
-      await generateSharedEnvFile(appId, tenantId);
-      count++;
+      const { busy } = await regenerateTenantSharedEnv(appId, tenantId, { waitMs: opts.waitMs });
+      if (busy) opts.busy?.push(`${appId}/${tenantId}`);
+      else count++;
     } catch (err: any) {
       console.error(`[env-vars] shared.env regeneration failed for ${appId}/${tenantId}: ${err?.message || err}`);
       failures.push({ appId, tenantId });

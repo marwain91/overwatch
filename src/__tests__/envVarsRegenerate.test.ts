@@ -147,3 +147,88 @@ describe('shared.env regeneration vs the tenant lock', () => {
     expect(await exists(sharedEnv())).toBe(true);
   });
 });
+
+describe('busy tenants during shared.env regeneration', () => {
+  const sharedEnv = (id: string) => path.join(appsDir, 'demo', 'tenants', id, 'shared.env');
+  const exists = (p: string) => fs.access(p).then(() => true, () => false);
+  async function until(cond: () => Promise<boolean>) {
+    for (let i = 0; i < 100; i++) { if (await cond()) return; await new Promise(r => setTimeout(r, 20)); }
+    throw new Error('condition not met');
+  }
+  async function hold(id: string) {
+    const { withTenantLock } = await import('../services/fileLock');
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    let acquired!: () => void;
+    const held = new Promise<void>(r => { acquired = r; });
+    const holder = withTenantLock('demo', id, async () => { acquired(); await gate; });
+    await held;
+    return { release, holder };
+  }
+
+  it('does not fail on a busy tenant: reports it and regenerates it in the background with the then-current store', async () => {
+    await tenant('demo', 'a');
+    await tenant('demo', 'b');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    log.mockClear(); // spies from earlier tests in this file are not restored
+    const { regenerateAllSharedEnvFiles, setEnvVar } = await import('../services/envVars');
+    const { release, holder } = await hold('a');
+    const busy: string[] = [];
+    const count = await regenerateAllSharedEnvFiles('demo', { busy, waitMs: 50 });
+    expect(count).toBe(1);
+    expect(busy).toEqual(['demo/a']);
+    expect(await exists(sharedEnv('a'))).toBe(false);
+    expect(await exists(sharedEnv('b'))).toBe(true);
+
+    // A value saved after the sweep gave up must still reach the busy tenant.
+    await setEnvVar('demo', 'LATE_VALUE', 'x1');
+    release();
+    await holder;
+    await until(() => exists(sharedEnv('a')));
+    expect(await fs.readFile(sharedEnv('a'), 'utf-8')).toContain('LATE_VALUE=x1');
+    await until(async () => log.mock.calls.some(c => /background shared\.env regeneration.*demo\/a/.test(String(c[0]))));
+  });
+
+  it('schedules at most one background regeneration per tenant', async () => {
+    await tenant('demo', 'a');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    log.mockClear(); // spies from earlier tests in this file are not restored
+    const { regenerateAllSharedEnvFiles } = await import('../services/envVars');
+    const { release, holder } = await hold('a');
+    await regenerateAllSharedEnvFiles('demo', { busy: [], waitMs: 30 });
+    await regenerateAllSharedEnvFiles('demo', { busy: [], waitMs: 30 });
+    release();
+    await holder;
+    await until(() => exists(sharedEnv('a')));
+    await new Promise(r => setTimeout(r, 100));
+    expect(log.mock.calls.filter(c => /background shared\.env regeneration/.test(String(c[0])))).toHaveLength(1);
+  });
+
+  it('regenerateTenantSharedEnv reports busy instead of throwing, and is not busy when free', async () => {
+    await tenant('demo', 'a');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { regenerateTenantSharedEnv } = await import('../services/envVars');
+    expect(await regenerateTenantSharedEnv('demo', 'a')).toEqual({ busy: false });
+    await fs.rm(sharedEnv('a'));
+    const { release, holder } = await hold('a');
+    expect(await regenerateTenantSharedEnv('demo', 'a', { waitMs: 30 })).toEqual({ busy: true });
+    release();
+    await holder;
+    await until(() => exists(sharedEnv('a')));
+  });
+
+  it('uses the short default wait (not the 30 s lock default) when no waitMs is given', async () => {
+    await tenant('demo', 'a');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { regenerateAllSharedEnvFiles } = await import('../services/envVars');
+    const { release, holder } = await hold('a');
+    const busy: string[] = [];
+    const started = Date.now();
+    await regenerateAllSharedEnvFiles('demo', { busy });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(busy).toEqual(['demo/a']);
+    release();
+    await holder;
+    await until(() => exists(sharedEnv('a')));
+  }, 10_000);
+});
