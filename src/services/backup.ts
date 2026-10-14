@@ -476,6 +476,11 @@ export async function restoreBackupLocked(
 
   const db = getDatabaseAdapter(app);
 
+  const timestamp = Date.now();
+  const restoreDir = path.join(getBackupTempDir(), `restore-${timestamp}`);
+
+  try {
+    // Inside the try: an invalid tenant snapshot is reported like any other restore failure.
   // The tenant's own snapshot decides which services/paths exist for it (it may
   // run a different image version than the global definition); falls back to
   // the global definition when the tenant has none.
@@ -487,10 +492,6 @@ export async function restoreBackupLocked(
       paths: s.backup!.paths!,
     }));
 
-  const timestamp = Date.now();
-  const restoreDir = path.join(getBackupTempDir(), `restore-${timestamp}`);
-
-  try {
     await fs.mkdir(restoreDir, { recursive: true, mode: 0o700 });
 
     // Restore from restic (execFile avoids shell injection on snapshotId)

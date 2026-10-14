@@ -240,4 +240,13 @@ describe('backup/restore integrity', () => {
     await restoreBackup('gadgets', 'abcd1234', 't1');
     expect(dockerCmds.some(a => a[0] === 'exec' && a.includes('mkdir'))).toBe(true);
   });
+
+  it('reports an invalid tenant snapshot as a failed restore instead of rejecting', async () => {
+    mockReadTenantAppDef.mockRejectedValue(new Error('app-definition.json failed validation'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await restoreBackup('gadgets', 'abcd1234', 't1');
+    expect(r.success).toBe(false);
+    expect(r.error).toBeTruthy();
+    expect(mockRestore).not.toHaveBeenCalled();
+  });
 });

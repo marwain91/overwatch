@@ -129,9 +129,11 @@ All backup endpoints are scoped to an app: `/api/apps/:appId/backups`.
 | `POST` | `/api/apps/:appId/backups` | `editor` | Create backup for a tenant |
 | `POST` | `/api/apps/:appId/backups/all` | `editor` | Backup all tenants in an app |
 | `POST` | `/api/apps/:appId/backups/:snapshotId/restore` | `admin` | Restore to an existing tenant |
-| `POST` | `/api/apps/:appId/backups/:snapshotId/create-tenant` | `admin` | Create a new tenant from a backup |
+| `POST` | `/api/apps/:appId/backups/:snapshotId/create-tenant` | `admin` | Create a new tenant from a backup (restored while the containers are stopped, then started) |
 | `DELETE` | `/api/apps/:appId/backups/:snapshotId` | `admin`, `confirm` | Delete a snapshot |
 | `POST` | `/api/apps/:appId/backups/prune` | `admin` | Prune old backups |
+
+When a tenant is created from a backup, its data is copied into the containers while they are stopped (before the app first starts). Backed-up paths must therefore be volume mount points or exist in the image; any other path is reported as a "not restored (copy failed)" warning.
 
 **Create backup request:**
 ```json
