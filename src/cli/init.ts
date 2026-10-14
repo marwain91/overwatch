@@ -437,7 +437,9 @@ export function renderInitInfraFiles(c: InitConfig): Array<{ dest: string; conte
     NETWORK_NAME: `${c.projectPrefix}-network`,
     APPS_PATH_ON_HOST: path.join(c.deployDir, 'apps'),
   };
-  return renderInfraFiles(config, vars);
+  const files = renderInfraFiles(config, vars);
+  // The mariadb init-SQL placeholder is meaningless on a Postgres host.
+  return c.dbType === 'postgres' ? files.filter(f => !f.dest.startsWith('infrastructure/mariadb/')) : files;
 }
 
 // ─── Template: overwatch/.env ───────────────────────────────────────────────────
@@ -467,7 +469,8 @@ function generateOverwatchEnv(c: InitConfig): string {
 
 // ─── File Generation ────────────────────────────────────────────────────────────
 
-async function generateFiles(config: InitConfig): Promise<void> {
+/** Exported for the init/infra-deploy parity test. */
+export async function generateFiles(config: InitConfig): Promise<void> {
   header('Generating Files');
 
   const base = config.deployDir;
