@@ -8,8 +8,12 @@ import { ValidationError } from '../utils/httpErrors';
 export const MASK = '••••••••';
 // Raw-label keys whose value is an inline credential list.
 const CREDENTIAL_LABEL_KEY = /\.(basicauth|digestauth)\.users$/i;
-// Names of query/fragment/`;` parameters that carry credentials.
-const SECRET_PARAM_IN_TEXT = /[?&#;]\s*[^=&#;\s]*(auth|credential|signature|sig|token|secret|key|pass|pwd|password|jwt|bearer|session|sid|otp|hmac|code)[^=&#;\s]*\s*=/i;
+// Names of query/fragment/`;` parameters that carry credentials. Tested per
+// segment name only (no unbounded quantifiers), so the check stays linear.
+const SECRET_PARAM_NAME = /(auth|credential|signature|sig|token|secret|key|pass|pwd|password|jwt|bearer|session|sid|otp|hmac|code)/i;
+// No option a non-admin needs to read is this long; longer values are hidden
+// before any parsing, which also bounds the work an editor-stored value can cause.
+const MAX_VISIBLE_TEXT = 2048;
 const ROUTER_REQUEST_MATCHER = /\b(Header|HeaderRegexp|Query|QueryRegexp)\s*\(/i;
 // Only router references are shown in clear (names such as `auth@docker`); other `.middlewares`/`.service` keys (chain, errors) follow the normal rules.
 const ROUTER_REFERENCE_KEY = /^traefik\.http\.routers\.[^.]+\.(middlewares|service)$/i;
@@ -61,8 +65,19 @@ function decoded(text: string): string {
  * query, fragment or `;` segment is hidden entirely rather than rewritten.
  */
 function visibleText(text: string): string {
+  if (text.length > MAX_VISIBLE_TEXT) return MASK;
   const d = decoded(text);
-  return d.includes('@') || text.includes('@') || SECRET_PARAM_IN_TEXT.test(d) || SECRET_PARAM_IN_TEXT.test(text) ? MASK : text;
+  return d.includes('@') || text.includes('@') || hasSecretParam(d) || hasSecretParam(text) ? MASK : text;
+}
+
+/** A `?`, `&`, `#` or `;` segment whose name (before `=`) names a credential. */
+function hasSecretParam(text: string): boolean {
+  const segments = text.split(/[?&#;]/);
+  for (let i = 1; i < segments.length; i++) {
+    const eq = segments[i].indexOf('=');
+    if (eq >= 0 && SECRET_PARAM_NAME.test(segments[i].slice(0, eq))) return true;
+  }
+  return false;
 }
 
 /**
