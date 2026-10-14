@@ -17,6 +17,9 @@ import {
   updateDashboardConfig,
   getOverwatchRouting,
   updateOverwatchRouting,
+  redactTraefikCredentials,
+  redactMiddlewareCredentials,
+  redactRoutingCredentials,
 } from '../services/traefikConfig';
 import { TraefikGlobalSchema } from '../models/traefik';
 import { loadConfig } from '../config';
@@ -24,11 +27,16 @@ import { loadConfig } from '../config';
 const execFileAsync = promisify(execFile);
 const router = Router();
 
+// Reads are open to every role, but inline credentials (basicAuth hashes, auth
+// URLs, secret headers) are for admins, the only role that can edit them.
+// Explicit check: a missing role must not read as admin.
+const isAdmin = (res: Response) => res.locals.user?.role === 'admin';
+
 // ─── Full config ────────────────────────────────────────────────────────────
 
 router.get('/', asyncHandler(async (_req: Request, res: Response) => {
   const t = await getTraefikConfig();
-  res.json(t ?? null);
+  res.json((isAdmin(res) ? t : redactTraefikCredentials(t)) ?? null);
 }));
 
 router.put('/', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {
@@ -73,7 +81,8 @@ router.delete('/cert-resolvers/:name', requireRole('admin'), requireConfirmId('n
 // ─── Global middlewares ─────────────────────────────────────────────────────
 
 router.get('/middlewares', asyncHandler(async (_req: Request, res: Response) => {
-  res.json(await listGlobalMiddlewares());
+  const middlewares = await listGlobalMiddlewares();
+  res.json(isAdmin(res) ? middlewares : redactMiddlewareCredentials(middlewares));
 }));
 
 router.post('/middlewares/:name', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {
@@ -94,7 +103,8 @@ router.delete('/middlewares/:name', requireRole('admin'), requireConfirmId('name
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 
 router.get('/dashboard', asyncHandler(async (_req: Request, res: Response) => {
-  res.json((await getDashboardConfig()) ?? null);
+  const dashboard = await getDashboardConfig();
+  res.json((isAdmin(res) ? dashboard : redactRoutingCredentials(dashboard)) ?? null);
 }));
 
 router.put('/dashboard', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {
@@ -104,7 +114,8 @@ router.put('/dashboard', requireRole('admin'), asyncHandler(async (req: Request,
 // ─── Overwatch self-routing ─────────────────────────────────────────────────
 
 router.get('/overwatch', asyncHandler(async (_req: Request, res: Response) => {
-  res.json((await getOverwatchRouting()) ?? null);
+  const routing = await getOverwatchRouting();
+  res.json((isAdmin(res) ? routing : redactRoutingCredentials(routing)) ?? null);
 }));
 
 router.put('/overwatch', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {

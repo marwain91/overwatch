@@ -40,6 +40,68 @@ export function maskTraefikSecrets(t: TraefikGlobal | undefined): TraefikGlobal 
   return masked;
 }
 
+const MASK = '••••••••';
+// Raw-label keys whose value is an inline credential list.
+const CREDENTIAL_LABEL_KEY = /\.(basicauth|digestauth)\.users$/i;
+// Header names that carry credentials when set as custom request/response headers.
+const SECRET_HEADER = /(authorization|cookie|token|secret|key|password)/i;
+
+function maskUserEntry(entry: string): string {
+  const colon = entry.indexOf(':');
+  return colon < 0 ? MASK : `${entry.slice(0, colon)}:${MASK}`;
+}
+
+/**
+ * Copies for non-admin readers: htpasswd/digest user hashes, credentials embedded
+ * in a forwardAuth URL and secret-looking header values are masked. Admins edit
+ * these fields, so they get the stored values instead.
+ */
+export function redactMiddlewareCredentials(
+  middlewares: Record<string, MiddlewareSpec> | undefined,
+): Record<string, MiddlewareSpec> | undefined {
+  if (!middlewares) return middlewares;
+  const copy: Record<string, any> = JSON.parse(JSON.stringify(middlewares));
+  for (const mw of Object.values(copy)) {
+    if (mw.type === 'basicAuth' && Array.isArray(mw.users)) mw.users = mw.users.map(maskUserEntry);
+    if (mw.type === 'forwardAuth' && typeof mw.address === 'string') {
+      try {
+        const u = new URL(mw.address);
+        if (u.username || u.password) {
+          u.username = '';
+          u.password = '';
+          mw.address = u.toString();
+        }
+      } catch { /* validated on write; leave an odd stored value as is */ }
+    }
+    if (mw.type === 'headers') {
+      for (const bag of [mw.custom_request_headers, mw.custom_response_headers]) {
+        for (const k of Object.keys(bag ?? {})) if (SECRET_HEADER.test(k)) bag[k] = MASK;
+      }
+    }
+  }
+  return copy;
+}
+
+/** Same masking for a dashboard / Overwatch routing block, whose raw labels can define auth users. */
+export function redactRoutingCredentials<T extends { raw_labels?: Record<string, string> } | undefined>(block: T): T {
+  if (!block?.raw_labels) return block;
+  const labels: Record<string, string> = { ...block.raw_labels };
+  for (const [k, v] of Object.entries(labels)) {
+    if (CREDENTIAL_LABEL_KEY.test(k)) labels[k] = v.split(',').map(e => maskUserEntry(e.trim())).join(',');
+  }
+  return { ...block, raw_labels: labels };
+}
+
+export function redactTraefikCredentials(t: TraefikGlobal | undefined): TraefikGlobal | undefined {
+  if (!t) return t;
+  return {
+    ...t,
+    ...(t.middlewares ? { middlewares: redactMiddlewareCredentials(t.middlewares) } : {}),
+    ...(t.overwatch ? { overwatch: redactRoutingCredentials(t.overwatch) } : {}),
+    ...(t.dashboard ? { dashboard: redactRoutingCredentials(t.dashboard) } : {}),
+  };
+}
+
 // ─── Global Traefik config ──────────────────────────────────────────────────
 
 export async function getTraefikConfig(opts: { unmask?: boolean } = {}): Promise<TraefikGlobal | undefined> {

@@ -164,7 +164,7 @@ All env var endpoints are scoped to an app: `/api/apps/:appId/env-vars`.
 | `GET` | `/api/status/config` | `auth` | Get project configuration |
 | `GET` | `/api/status/tenants` | `auth` | List all tenants across all apps |
 | `GET` | `/api/status/containers` | `auth` | List managed containers |
-| `GET` | `/api/status/containers/:containerId/logs` | `auth` | Get container logs |
+| `GET` | `/api/status/containers/:containerId/logs` | `auth` | Get container logs (readable by every role, including `viewer`) |
 | `POST` | `/api/status/containers/:containerId/restart` | `admin` | Restart a specific container |
 
 ## Monitoring
@@ -207,12 +207,16 @@ Query parameters: `?limit=50&user=email&action=create`
 | `GET` | `/api/database/info` | `auth` | Database adapter and connection information |
 | `GET` | `/api/database/stats` | `auth` | Database-level stats |
 | `GET` | `/api/database/databases` | `auth` | List tenant databases |
-| `GET` | `/api/database/processes` | `auth` | List database processes |
+| `GET` | `/api/database/processes` | `auth` | List database processes. The `query` (statement text) of each process is `"[hidden]"` unless the caller is an `admin`, since a running statement can contain credentials |
 | `POST` | `/api/database/processes/:id/kill` | `admin` | Kill a database process |
+
+## Read scope of the `viewer` role
+
+`viewer` is the read-only support role. Container logs (`GET /api/status/containers/:containerId/logs`) and tenant update progress (REST and WebSocket `tenant:update:progress` events) are deliberately readable by viewers so they can diagnose problems; logs and progress detail are not redacted. Credential-bearing fields are redacted for every role below `admin`: notification channel webhook URLs and headers, the text of database processes, and the inline credentials in the global Traefik configuration (see below).
 
 ## Traefik
 
-Global Traefik endpoints manage `overwatch.yaml.traefik`.
+Global Traefik endpoints manage `overwatch.yaml.traefik`. Reads (`GET /api/traefik`, `/middlewares`, `/dashboard`, `/overwatch`) mask inline credentials for callers below `admin`: `basicAuth` user hashes become `user:••••••••`, userinfo is removed from a `forwardAuth` address, values of credential-like custom headers (names containing `authorization`, `cookie`, `token`, `secret`, `key` or `password`) are masked, and so are `basicauth.users` / `digestauth.users` raw labels on the dashboard and Overwatch routers. Admins get the stored values, which they need to edit them.
 
 | Method | Endpoint | Role | Description |
 |--------|----------|------|-------------|
