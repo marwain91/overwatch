@@ -5,6 +5,13 @@ import { BrowserRouter } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import App from './App';
 import './index.css';
+import { armStaleAssetReload, reloadOnceForStaleAssets } from './lib/staleAssets';
+
+// A tab left open across an update requests chunks that no longer exist.
+window.addEventListener('vite:preloadError', (event) => {
+  if (reloadOnceForStaleAssets()) event.preventDefault();
+});
+armStaleAssetReload();
 
 const queryClient = new QueryClient({
   defaultOptions: {

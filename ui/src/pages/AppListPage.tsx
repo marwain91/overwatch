@@ -1,11 +1,13 @@
 import { Link } from 'react-router-dom';
 import { useApps, useBackupSummaries } from '../hooks/useApps';
 import { useQuery } from '@tanstack/react-query';
+import { useCan } from '../hooks/useRole';
 import { api } from '../lib/api';
 import { formatRelativeTime } from '../lib/format';
 import type { SystemHealth } from '../lib/types';
 
 export function AppListPage() {
+  const isAdmin = useCan('admin');
   const { data: apps, isLoading } = useApps();
   const { data: backupSummaries } = useBackupSummaries();
   const { data: health } = useQuery({
@@ -23,9 +25,11 @@ export function AppListPage() {
             Manage your multi-tenant applications
           </p>
         </div>
-        <Link to="/apps/new" className="btn btn-primary">
-          + New App
-        </Link>
+        {isAdmin && (
+          <Link to="/apps/new" className="btn btn-primary">
+            + New App
+          </Link>
+        )}
       </div>
 
       {/* System Status */}
@@ -79,9 +83,11 @@ export function AppListPage() {
       ) : (
         <div className="card text-center py-16">
           <p className="mb-4 text-content-muted">No apps configured yet.</p>
-          <Link to="/apps/new" className="btn btn-primary">
-            Create your first app
-          </Link>
+          {isAdmin && (
+            <Link to="/apps/new" className="btn btn-primary">
+              Create your first app
+            </Link>
+          )}
         </div>
       )}
     </div>

@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { useAppTraefik, useUpdateAppTraefik } from '../hooks/useTraefik';
 import type { MiddlewareSpec, TraefikApp } from '../lib/types';
+import { useCan } from '../hooks/useRole';
 import { MiddlewareEditor } from './MiddlewareEditor';
 
 export function AppTraefikSection({ appId }: { appId: string }) {
   const { data, isLoading } = useAppTraefik(appId);
   const update = useUpdateAppTraefik(appId);
+  const canEdit = useCan('editor');
   const [editing, setEditing] = useState<{ name: string; spec: MiddlewareSpec } | null>(null);
   const [adding, setAdding] = useState(false);
 
@@ -47,9 +49,11 @@ export function AppTraefikSection({ appId }: { appId: string }) {
           <h2 className="text-lg font-semibold text-content-secondary">Traefik</h2>
           <p className="text-xs text-content-faint">App-scoped middleware library and defaults applied to every service. Tenants run their frozen snapshot — run Tenant Update to pick up changes.</p>
         </div>
-        <button onClick={() => setAdding(true)} className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-xs text-content-secondary hover:bg-surface-subtle">
-          Add middleware
-        </button>
+        {canEdit && (
+          <button onClick={() => setAdding(true)} className="rounded-lg border border-border bg-surface-raised px-3 py-1.5 text-xs text-content-secondary hover:bg-surface-subtle">
+            Add middleware
+          </button>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -67,10 +71,10 @@ export function AppTraefikSection({ appId }: { appId: string }) {
                   {JSON.stringify(spec, null, 2)}
                 </pre>
               </div>
-              <div className="flex gap-2">
+              {canEdit && <div className="flex gap-2">
                 <button onClick={() => setEditing({ name, spec })} className="text-xs text-content-muted hover:text-content-primary">Edit</button>
                 <button onClick={() => removeMw(name)} className="text-xs text-red-400 hover:text-red-300">Remove</button>
-              </div>
+              </div>}
             </div>
           </div>
         ))}
@@ -82,6 +86,7 @@ export function AppTraefikSection({ appId }: { appId: string }) {
           <input
             className="w-full rounded-lg border border-border bg-surface-base px-3 py-2 text-sm text-content-primary focus:border-brand-500 focus:outline-none"
             defaultValue={defaults.join(', ')}
+            disabled={!canEdit}
             onBlur={e => {
               const next = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
               if (next.join(',') !== defaults.join(',')) updateDefaults(e.target.value);

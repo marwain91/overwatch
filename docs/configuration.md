@@ -253,6 +253,8 @@ retention:
 
 Apps are created and managed through the web UI, the HTTP API (`POST /api/apps`), or the `overwatch apps apply <file>` CLI (recommended for deploy pipelines — writes one file per app, so pipelines cannot stomp each other's registrations). Each app defines its own registry, services, backup, and admin access settings. App definitions are stored one-per-file in `data/apps.d/<id>.json`; runtime state (`createdAt`, `updatedAt`) lives in `data/apps.runtime.json`.
 
+Deleting an app that still has tenants soft-deletes it (moved to the trash, tenant data kept). From the CLI, `overwatch apps restore <id>` brings a trashed app back, and `overwatch apps purge <id> [--yes]` permanently removes it (it asks you to retype the id unless `--yes` is given; non-interactive runs require `--yes`).
+
 ### App Schema
 
 ```json

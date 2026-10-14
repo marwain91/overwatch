@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { Modal } from '../components/Modal';
 import { useAdminUsers, useAddAdminUser, useSetAdminUserRole, useDeleteAdminUser } from '../hooks/useAdminUsers';
+import { useCan } from '../hooks/useRole';
 import type { AdminRole } from '../lib/types';
 
 const ROLES: { value: AdminRole; hint: string }[] = [
@@ -11,7 +12,8 @@ const ROLES: { value: AdminRole; hint: string }[] = [
 ];
 
 export function AdminsPage() {
-  const { data: admins, isLoading } = useAdminUsers();
+  const { data: admins, isLoading, error } = useAdminUsers();
+  const isAdmin = useCan('admin');
   const addAdmin = useAddAdminUser();
   const setRole = useSetAdminUserRole();
   const deleteAdmin = useDeleteAdminUser();
@@ -59,13 +61,19 @@ export function AdminsPage() {
           <h1 className="text-2xl font-bold text-content-primary">Admin Users</h1>
           <p className="mt-1 text-sm text-content-muted">Manage who can access this admin panel and what they can do.</p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
-          + Add User
-        </button>
+        {isAdmin && (
+          <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
+            + Add User
+          </button>
+        )}
       </div>
 
       {isLoading ? (
         <div className="flex justify-center py-20"><span className="spinner" /></div>
+      ) : error ? (
+        <div className="card text-center py-12 text-red-400">
+          Failed to load admin users: {error.message}
+        </div>
       ) : admins && admins.length > 0 ? (
         <div className="space-y-2">
           {admins.map((admin) => (
@@ -76,6 +84,7 @@ export function AdminsPage() {
                   Added {new Date(admin.addedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by {admin.addedBy}
                 </p>
               </div>
+              {isAdmin ? (
               <div className="flex items-center gap-2">
                 <select
                   className="input w-auto py-1 text-xs"
@@ -90,6 +99,9 @@ export function AdminsPage() {
                   Remove
                 </button>
               </div>
+              ) : (
+                <span className="text-xs text-content-muted">{admin.role}</span>
+              )}
             </div>
           ))}
         </div>

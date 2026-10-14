@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useBackupSummary } from '../hooks/useApps';
 import { useBackupStatus, useAllBackups, useTenants, useRestoreBackup, useDeleteBackup } from '../hooks/useTenants';
+import { useCan } from '../hooks/useRole';
 import { cn } from '../lib/cn';
 import { formatRelativeTime, formatCron } from '../lib/format';
 
@@ -17,6 +18,7 @@ export function BackupsPage() {
   const { data: tenants } = useTenants(appId!);
   const restoreBackup = useRestoreBackup(appId!);
   const deleteBackup = useDeleteBackup(appId!);
+  const isAdmin = useCan('admin');
 
   const [page, setPage] = useState(0);
   const [restoreTarget, setRestoreTarget] = useState<{ snapshotId: string; tenantId: string } | null>(null);
@@ -113,6 +115,7 @@ export function BackupsPage() {
                         </span>
                       )}
                     </div>
+                    {isAdmin && (
                     <div className="flex gap-1">
                       <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId: b.tenantId || '' })}>Restore</button>
                       <button
@@ -125,6 +128,7 @@ export function BackupsPage() {
                         Delete
                       </button>
                     </div>
+                    )}
                   </div>
                 ))}
               </div>

@@ -59,7 +59,14 @@ describe('overwatch apps restore', () => {
 
 describe('overwatch apps purge', () => {
   it('refuses to purge without --yes when stdin is not a terminal', async () => {
-    await expect(runApps(['purge', 'shop'])).rejects.toMatchObject({ code: 2 });
+    const original = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    try {
+      await expect(runApps(['purge', 'shop'])).rejects.toMatchObject({ code: 2 });
+    } finally {
+      if (original) Object.defineProperty(process.stdin, 'isTTY', original);
+      else delete (process.stdin as { isTTY?: boolean }).isTTY;
+    }
     expect(purgeApp).not.toHaveBeenCalled();
     expect(errors.join('\n')).toContain('--yes');
   });

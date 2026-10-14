@@ -1,6 +1,7 @@
 import { lazy } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AuthGuard } from './components/AuthGuard';
+import { RequireRole } from './components/RequireRole';
 import { AppShell } from './components/AppShell';
 import { LoginPage } from './pages/LoginPage';
 import { AppListPage } from './pages/AppListPage';
@@ -33,7 +34,7 @@ export default function App() {
         }
       >
         <Route index element={<AppListPage />} />
-        <Route path="apps/new" element={<AppCreateWizard />} />
+        <Route path="apps/new" element={<RequireRole min="admin"><AppCreateWizard /></RequireRole>} />
         <Route path="apps/:appId/settings" element={<AppSettingsPage />} />
         <Route path="apps/:appId/tenants" element={<TenantsPage />} />
         <Route path="apps/:appId/tenants/:tenantId" element={<TenantDetailPage />} />

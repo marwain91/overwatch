@@ -1,5 +1,6 @@
 import { Suspense, useEffect, useRef } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
+import { RouteErrorBoundary } from './RouteErrorBoundary';
 import { Sidebar } from './Sidebar';
 import { useWSStore } from '../stores/wsStore';
 import { useQueryClient } from '@tanstack/react-query';
@@ -11,6 +12,7 @@ export function AppShell() {
   const subscribe = useWSStore((s) => s.subscribe);
   const connected = useWSStore((s) => s.connected);
   const qc = useQueryClient();
+  const location = useLocation();
 
   useEffect(() => {
     connect();
@@ -66,6 +68,7 @@ export function AppShell() {
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
       <main className="flex-1 overflow-y-auto bg-surface-base p-6">
+        <RouteErrorBoundary key={location.pathname}>
         <Suspense
           fallback={
             <div className="flex justify-center py-20">
@@ -75,6 +78,7 @@ export function AppShell() {
         >
           <Outlet />
         </Suspense>
+        </RouteErrorBoundary>
       </main>
     </div>
   );

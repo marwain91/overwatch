@@ -14,11 +14,13 @@ import {
   CertResolver, CertResolverDns, CertResolverHttp, Entrypoint, MiddlewareSpec,
   TraefikDashboard, TraefikGlobal, TraefikOverwatchRouting, TlsTermination,
 } from '../lib/types';
+import { useCan } from '../hooks/useRole';
 import { MiddlewareEditor } from '../components/MiddlewareEditor';
 
 type Tab = 'resolvers' | 'middlewares' | 'entrypoints' | 'dashboard' | 'overwatch';
 
 export function InfrastructureTraefikPage() {
+  const isAdmin = useCan('admin');
   const [tab, setTab] = useState<Tab>('resolvers');
   const reload = useReloadTraefik();
   const [reloadOpen, setReloadOpen] = useState(false);
@@ -40,12 +42,14 @@ export function InfrastructureTraefikPage() {
             Cert resolvers, middlewares, dashboard, and Overwatch self-routing. Changes that affect cert resolvers, the dashboard, or Overwatch routing require a Traefik restart.
           </p>
         </div>
+        {isAdmin && (
         <button
           onClick={() => setReloadOpen(true)}
           className="rounded-lg border border-border bg-surface-raised px-3 py-2 text-sm text-content-secondary hover:bg-surface-subtle"
         >
           Reload Traefik
         </button>
+        )}
       </div>
 
       <div className="mb-4 flex gap-1 border-b border-border">
@@ -107,6 +111,7 @@ export function InfrastructureTraefikPage() {
 // ─── Cert resolvers ────────────────────────────────────────────────────────
 
 function CertResolversTab() {
+  const isAdmin = useCan('admin');
   const { data, isLoading } = useCertResolvers();
   const upsert = useUpsertCertResolver();
   const del = useDeleteCertResolver();
@@ -118,6 +123,7 @@ function CertResolversTab() {
 
   return (
     <div>
+      {isAdmin && (
       <div className="mb-4 flex justify-end">
         <button
           onClick={() => setAdding(true)}
@@ -126,6 +132,7 @@ function CertResolversTab() {
           Add resolver
         </button>
       </div>
+      )}
 
       {resolvers.length === 0 ? (
         <p className="text-sm text-content-muted">No cert resolvers configured.</p>
@@ -147,7 +154,7 @@ function CertResolversTab() {
                     <div className="mt-1 text-xs text-content-faint">patterns: {r.domain_patterns.join(', ')}</div>
                   )}
                 </div>
-                <div className="flex gap-2">
+                {isAdmin && <div className="flex gap-2">
                   <button onClick={() => setEditing(r)} className="text-xs text-content-muted hover:text-content-primary">Edit</button>
                   <button
                     onClick={() => {
@@ -162,7 +169,7 @@ function CertResolversTab() {
                   >
                     Delete
                   </button>
-                </div>
+                </div>}
               </div>
             </div>
           ))}
@@ -279,6 +286,7 @@ function CertResolverModal({
 // ─── Middlewares ───────────────────────────────────────────────────────────
 
 function MiddlewaresTab() {
+  const isAdmin = useCan('admin');
   const { data, isLoading } = useGlobalMiddlewares();
   const upsert = useUpsertGlobalMiddleware();
   const del = useDeleteGlobalMiddleware();
@@ -291,11 +299,13 @@ function MiddlewaresTab() {
 
   return (
     <div>
+      {isAdmin && (
       <div className="mb-4 flex justify-end">
         <button onClick={() => setAdding(true)} className="rounded-lg bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-500">
           Add middleware
         </button>
       </div>
+      )}
 
       {entries.length === 0 ? (
         <p className="text-sm text-content-muted">No global middlewares defined.</p>
@@ -313,7 +323,7 @@ function MiddlewaresTab() {
                     {JSON.stringify(spec, null, 2)}
                   </pre>
                 </div>
-                <div className="flex gap-2">
+                {isAdmin && <div className="flex gap-2">
                   <button onClick={() => setEditing({ name, spec })} className="text-xs text-content-muted hover:text-content-primary">Edit</button>
                   <button
                     onClick={() => {
@@ -328,7 +338,7 @@ function MiddlewaresTab() {
                   >
                     Delete
                   </button>
-                </div>
+                </div>}
               </div>
             </div>
           ))}
@@ -357,6 +367,7 @@ function MiddlewaresTab() {
 // ─── Dashboard tab ─────────────────────────────────────────────────────────
 
 function DashboardTab() {
+  const isAdmin = useCan('admin');
   const { data, isLoading } = useDashboardConfig();
   const update = useUpdateDashboard();
   const [host, setHost] = useState('');
@@ -393,21 +404,21 @@ function DashboardTab() {
   return (
     <div className="max-w-2xl space-y-3 text-sm">
       <Field label="Enabled">
-        <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />
+        <input type="checkbox" disabled={!isAdmin} checked={enabled} onChange={e => setEnabled(e.target.checked)} />
       </Field>
       <Field label="Host">
-        <input value={host} onChange={e => setHost(e.target.value)} className={inputCls} placeholder="traefik.example.com" />
+        <input value={host} onChange={e => setHost(e.target.value)} className={inputCls} disabled={!isAdmin} placeholder="traefik.example.com" />
       </Field>
       <Field label="Cert resolver">
-        <input value={certResolver} onChange={e => setCertResolver(e.target.value)} className={inputCls} placeholder="cf-prod" />
+        <input value={certResolver} onChange={e => setCertResolver(e.target.value)} className={inputCls} disabled={!isAdmin} placeholder="cf-prod" />
       </Field>
       <Field label="Middlewares">
-        <input value={middlewares} onChange={e => setMiddlewares(e.target.value)} className={inputCls} placeholder="admin-auth, hsts" />
+        <input value={middlewares} onChange={e => setMiddlewares(e.target.value)} className={inputCls} disabled={!isAdmin} placeholder="admin-auth, hsts" />
         <p className="mt-1 text-xs text-content-faint">Comma-separated names from the global middleware library.</p>
       </Field>
-      <div className="pt-2">
+      {isAdmin && <div className="pt-2">
         <button onClick={submit} className="rounded-lg bg-brand-600 px-3 py-2 text-white hover:bg-brand-500">Save</button>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -415,6 +426,7 @@ function DashboardTab() {
 // ─── Overwatch self-routing tab ────────────────────────────────────────────
 
 function OverwatchTab() {
+  const isAdmin = useCan('admin');
   const { data, isLoading } = useOverwatchRouting();
   const update = useUpdateOverwatchRouting();
   const [host, setHost] = useState('');
@@ -452,18 +464,18 @@ function OverwatchTab() {
         Routing for the Overwatch admin server itself. Replaces the hardcoded labels in the legacy template. Changes apply on the next <code>overwatch infra deploy</code>.
       </p>
       <Field label="Host">
-        <input value={host} onChange={e => setHost(e.target.value)} className={inputCls} placeholder="overwatch.example.com" />
+        <input value={host} onChange={e => setHost(e.target.value)} className={inputCls} disabled={!isAdmin} placeholder="overwatch.example.com" />
       </Field>
       <Field label="Cert resolver">
-        <input value={certResolver} onChange={e => setCertResolver(e.target.value)} className={inputCls} placeholder="cf-prod" />
+        <input value={certResolver} onChange={e => setCertResolver(e.target.value)} className={inputCls} disabled={!isAdmin} placeholder="cf-prod" />
       </Field>
       <Field label="Middlewares">
-        <input value={middlewares} onChange={e => setMiddlewares(e.target.value)} className={inputCls} placeholder="admin-auth" />
+        <input value={middlewares} onChange={e => setMiddlewares(e.target.value)} className={inputCls} disabled={!isAdmin} placeholder="admin-auth" />
         <p className="mt-1 text-xs text-content-faint">Comma-separated names from the global middleware library.</p>
       </Field>
-      <div className="pt-2">
+      {isAdmin && <div className="pt-2">
         <button onClick={submit} className="rounded-lg bg-brand-600 px-3 py-2 text-white hover:bg-brand-500">Save</button>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -471,6 +483,7 @@ function OverwatchTab() {
 // ─── TLS termination banner (global setting) ──────────────────────────────
 
 function TlsTerminationBanner() {
+  const isAdmin = useCan('admin');
   const { data, isLoading } = useTraefik();
   const update = useUpdateTraefik();
   const [editing, setEditing] = useState(false);
@@ -498,7 +511,7 @@ function TlsTerminationBanner() {
           </div>
           <p className="mt-1 text-content-muted">{summary}</p>
         </div>
-        <button onClick={() => setEditing(true)} className="text-xs text-content-muted hover:text-content-primary">Change</button>
+        {isAdmin && <button onClick={() => setEditing(true)} className="text-xs text-content-muted hover:text-content-primary">Change</button>}
       </div>
       {editing && (
         <TlsTerminationModal
@@ -581,6 +594,7 @@ function TlsTerminationModal({
 // ─── Entrypoints tab ───────────────────────────────────────────────────────
 
 function EntrypointsTab() {
+  const isAdmin = useCan('admin');
   const { data, isLoading } = useTraefik();
   const update = useUpdateTraefik();
   const [editing, setEditing] = useState<Entrypoint | null>(null);
@@ -605,11 +619,13 @@ function EntrypointsTab() {
       <p className="mb-3 text-xs text-content-faint">
         Entrypoints define the ports Traefik listens on. Configure <code>forwarded_headers</code> when sitting behind Cloudflare / ALB / nginx etc., or <code>proxy_protocol</code> for HAProxy / NLB.
       </p>
+      {isAdmin && (
       <div className="mb-4 flex justify-end">
         <button onClick={() => setAdding(true)} className="rounded-lg bg-brand-600 px-3 py-2 text-sm text-white hover:bg-brand-500">
           Add entrypoint
         </button>
       </div>
+      )}
 
       <div className="space-y-2">
         {entrypoints.map(ep => (
@@ -628,7 +644,7 @@ function EntrypointsTab() {
                   <div className="mt-1 text-xs text-content-muted">PROXY protocol from: {ep.proxy_protocol.trusted_ips.join(', ')}</div>
                 )}
               </div>
-              <div className="flex gap-2">
+              {isAdmin && <div className="flex gap-2">
                 <button onClick={() => setEditing(ep)} className="text-xs text-content-muted hover:text-content-primary">Edit</button>
                 <button
                   onClick={() => {
@@ -640,7 +656,7 @@ function EntrypointsTab() {
                 >
                   Delete
                 </button>
-              </div>
+              </div>}
             </div>
           </div>
         ))}
