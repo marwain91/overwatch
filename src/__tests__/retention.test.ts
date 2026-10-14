@@ -4,12 +4,16 @@ import * as path from 'path';
 import * as os from 'os';
 
 let dataDir: string;
+// Mutable so a test can change the loaded config without re-mocking '../config'
+// (re-mocking a path registered in beforeEach races inside vitest's mock queue).
+let configValue: unknown;
 
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-retention-'));
+  configValue = { retention: { max_alert_entries: 3, max_audit_entries: 3 } };
   vi.doMock('../config', () => ({
     getDataDir: () => dataDir,
-    loadConfig: () => ({ retention: { max_alert_entries: 3, max_audit_entries: 3 } }),
+    loadConfig: () => configValue,
   }));
   vi.spyOn(console, 'log').mockImplementation(() => {});
 });
@@ -61,14 +65,10 @@ describe('retention', () => {
 describe('alert history appends', () => {
   it('go through the shared serialized writer, so a concurrent prune cannot drop them', async () => {
     vi.doMock('../notifications/webhook', () => ({ sendWebhook: vi.fn(async () => undefined) }));
-    vi.doUnmock('../config');
-    vi.doMock('../config', () => ({
-      getDataDir: () => dataDir,
-      loadConfig: () => ({
-        alert_rules: [{ id: 'r', name: 'cpu', condition: { type: 'cpu_threshold', threshold: 1, duration: '1s' }, cooldown: '1s', severity: 'warning' }],
-        retention: { max_alert_entries: 2 },
-      }),
-    }));
+    configValue = {
+      alert_rules: [{ id: 'r', name: 'cpu', condition: { type: 'cpu_threshold', threshold: 1, duration: '1s' }, cooldown: '1s', severity: 'warning' }],
+      retention: { max_alert_entries: 2 },
+    };
     const file = path.join(dataDir, 'alert-history.jsonl');
     await fs.writeFile(file, '{"id":"old1"}\n{"id":"old2"}\n', { mode: 0o644 });
     const { jsonlLogFor } = await import('../utils/jsonlLog');
