@@ -59,9 +59,15 @@ async function readRuntimeStore(): Promise<AppRuntimeStore> {
   }
 }
 
+// The cache is invalidated after each write, in a finally: a reader that
+// started while the write was in flight may have cached the old contents, and
+// invalidating first would let exactly that entry survive.
 async function writeRuntimeStore(store: AppRuntimeStore): Promise<void> {
-  invalidateAppsCache();
-  await writeJsonAtomic(getRuntimeFile(), store, { mode: 0o644 });
+  try {
+    await writeJsonAtomic(getRuntimeFile(), store, { mode: 0o644 });
+  } finally {
+    invalidateAppsCache();
+  }
 }
 
 async function listStaticFiles(): Promise<string[]> {
@@ -210,16 +216,20 @@ function notifyAppsChanged(): void {
 
 async function writeStatic(appDef: AppDefinition): Promise<void> {
   const { createdAt, updatedAt, ...staticOnly } = appDef;
-  invalidateAppsCache();
-  await writeJsonAtomic(getStaticFile(appDef.id), staticOnly, { mode: 0o644 });
+  try {
+    await writeJsonAtomic(getStaticFile(appDef.id), staticOnly, { mode: 0o644 });
+  } finally {
+    invalidateAppsCache();
+  }
 }
 
 async function removeStatic(id: string): Promise<void> {
-  invalidateAppsCache();
   try {
     await fs.unlink(getStaticFile(id));
   } catch (err: any) {
     if (err.code !== 'ENOENT') throw err;
+  } finally {
+    invalidateAppsCache();
   }
   // Drop any cached registry adapter for this app — registry config is gone.
   clearAdapterCache(id);

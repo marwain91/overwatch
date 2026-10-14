@@ -11,7 +11,7 @@ import { getCurrentUserEmail } from '../utils/jwt';
 import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
 import { assertAppRawLabelsOwned } from '../services/traefikLabels';
 import { redactAppDefinition, redactAppTraefik, assertNoMaskedCredentials } from '../services/traefikRedaction';
-import { assertServiceNamesValid } from '../utils/validators';
+import { assertServiceNamesValid, assertHealthcheckDurationsValid } from '../utils/validators';
 
 const router = Router();
 
@@ -60,6 +60,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   }
 
   assertServiceNamesValid(parseResult.data.services);
+  assertHealthcheckDurationsValid(parseResult.data.services);
   assertAppRawLabelsOwned(parseResult.data.id, parseResult.data.services);
   assertNoMaskedCredentials(parseResult.data);
   const app = await createApp(parseResult.data);
@@ -87,6 +88,7 @@ router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (r
     throw new ValidationError(`Invalid app definition: ${errors}`);
   }
   assertServiceNamesValid(parseResult.data.services);
+  assertHealthcheckDurationsValid(parseResult.data.services);
   assertAppRawLabelsOwned(appId, parseResult.data.services);
   assertNoMaskedCredentials(parseResult.data);
   const app = await updateApp(parseResult.data);

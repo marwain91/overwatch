@@ -2,13 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import type { ContainerEvent, MetricsSnapshot } from '../services/eventBus';
+import { containerEvent, metricsSnapshot } from './eventFixtures';
 
 let dataDir: string;
-
-// The engine only reads a few fields; tests emit those and leave the rest of the payload out on purpose.
-const partialSnapshot = (s: { containers: unknown[] }) => s as unknown as MetricsSnapshot;
-const partialEvent = (e: { action: string; containerName: string }) => e as ContainerEvent;
 
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-alert-engine-'));
@@ -52,7 +48,7 @@ describe('alert engine threshold timers', () => {
 
     startAlertEngine();
     try {
-      const snapshot = partialSnapshot({ containers: [{ name: 'app-t1-web', tenantId: 't1', cpuPercent: 85, memPercent: 10 }] });
+      const snapshot = metricsSnapshot([{ name: 'app-t1-web', tenantId: 't1', cpuPercent: 85, memPercent: 10 }]);
       vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
       eventBus.emit('metrics:snapshot', snapshot);
       vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
@@ -84,9 +80,9 @@ describe('alert engine container_down timers', () => {
     eventBus.on('alert:fired', (a) => fired.push(a));
     startAlertEngine();
     try {
-      eventBus.emit('container:event', partialEvent({ action: 'die', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'die', containerName: 'app-t1-web' }));
       await vi.advanceTimersByTimeAsync(30_000);
-      eventBus.emit('container:event', partialEvent({ action: 'start', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'start', containerName: 'app-t1-web' }));
       await vi.advanceTimersByTimeAsync(120_000);
       expect(fired).toHaveLength(0);
     } finally {
@@ -101,10 +97,10 @@ describe('alert engine container_down timers', () => {
     eventBus.on('alert:fired', (a) => fired.push(a));
     startAlertEngine();
     try {
-      eventBus.emit('container:event', partialEvent({ action: 'die', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'die', containerName: 'app-t1-web' }));
       await vi.advanceTimersByTimeAsync(30_000);
-      eventBus.emit('container:event', partialEvent({ action: 'start', containerName: 'app-t1-web' }));
-      eventBus.emit('container:event', partialEvent({ action: 'die', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'start', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'die', containerName: 'app-t1-web' }));
       await vi.advanceTimersByTimeAsync(40_000); // old timer would fire at 60s from the first die
       expect(fired).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(25_000);
@@ -120,7 +116,7 @@ describe('alert engine container_down timers', () => {
     const fired: any[] = [];
     eventBus.on('alert:fired', (a) => fired.push(a));
     startAlertEngine();
-    eventBus.emit('container:event', partialEvent({ action: 'die', containerName: 'app-t1-web' }));
+    eventBus.emit('container:event', containerEvent({ action: 'die', containerName: 'app-t1-web' }));
     stopAlertEngine();
     await vi.advanceTimersByTimeAsync(120_000);
     expect(fired).toHaveLength(0);
@@ -141,7 +137,7 @@ describe('alert engine lifecycle', () => {
     startAlertEngine();
     startAlertEngine(); // idempotent
     try {
-      eventBus.emit('container:event', partialEvent({ action: 'die', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'die', containerName: 'app-t1-web' }));
       await vi.advanceTimersByTimeAsync(61_000);
       expect(fired).toHaveLength(1);
     } finally {
@@ -198,7 +194,7 @@ describe('alert engine stale container eviction', () => {
   it('keeps the container_down alert of a stopped-but-existing container past 10 minutes', async () => {
     const { eventBus, stopAlertEngine, fired, resolved } = await fireHot(['app-t1-web']);
     try {
-      eventBus.emit('container:event', partialEvent({ action: 'die', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'die', containerName: 'app-t1-web' }));
       await vi.advanceTimersByTimeAsync(61_000);
       expect(fired.filter(a => a.ruleId === 'down')).toHaveLength(1);
 
@@ -208,7 +204,7 @@ describe('alert engine stale container eviction', () => {
       }
       expect(resolved.filter(r => r.ruleId === 'down')).toHaveLength(0);
 
-      eventBus.emit('container:event', partialEvent({ action: 'start', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'start', containerName: 'app-t1-web' }));
       expect(resolved.filter(r => r.ruleId === 'down')).toHaveLength(1);
     } finally {
       stopAlertEngine();
@@ -218,7 +214,7 @@ describe('alert engine stale container eviction', () => {
   it('resolves the down alert of a removed container after 10 minutes and evicts its state', async () => {
     const { eventBus, stopAlertEngine, fired, resolved } = await fireHot(['app-t1-web']);
     try {
-      eventBus.emit('container:event', partialEvent({ action: 'die', containerName: 'app-t1-web' }));
+      eventBus.emit('container:event', containerEvent({ action: 'die', containerName: 'app-t1-web' }));
       await vi.advanceTimersByTimeAsync(61_000);
       expect(fired.filter(a => a.ruleId === 'down')).toHaveLength(1);
       vi.setSystemTime(new Date('2026-01-01T00:12:00Z'));
@@ -233,7 +229,7 @@ describe('alert engine stale container eviction', () => {
     const { eventBus, stopAlertEngine, resolved } = await fireHot(['app-t1-web']);
     try {
       vi.setSystemTime(new Date('2026-01-01T01:00:00Z'));
-      eventBus.emit('metrics:snapshot', partialSnapshot({ containers: [] }));
+      eventBus.emit('metrics:snapshot', metricsSnapshot());
       expect(resolved).toHaveLength(0);
     } finally {
       stopAlertEngine();
@@ -273,7 +269,7 @@ describe('alert notification channels', () => {
     startAlertEngine();
     try {
       vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
-      const hot = partialSnapshot({ containers: [{ name: 'app-t1-web', tenantId: 't1', cpuPercent: 99, memPercent: 1 }] });
+      const hot = metricsSnapshot([{ name: 'app-t1-web', tenantId: 't1', cpuPercent: 99, memPercent: 1 }]);
       eventBus.emit('metrics:snapshot', hot);
       vi.setSystemTime(new Date('2026-01-01T00:00:02Z'));
       eventBus.emit('metrics:snapshot', hot);

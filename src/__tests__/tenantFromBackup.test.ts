@@ -1,83 +1,95 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 
+let dataDir = '';
 const calls: string[] = [];
-const createTenant = vi.fn();
-const deleteTenant = vi.fn();
-const restartTenant = vi.fn();
-const restoreBackup = vi.fn();
-const testConnection = vi.fn();
-vi.mock('../services/app', () => ({ getApp: async () => ({ id: 'demo', db_prefix: 'x' }) }));
+const createTenantLocked = vi.fn();
+const startCreatedTenantLocked = vi.fn();
+const deleteTenantLocked = vi.fn();
+const restoreBackupLocked = vi.fn();
+vi.mock('../config', () => ({ getDataDir: () => dataDir }));
 vi.mock('../services/tenant', () => ({
-  createTenant: (...a: unknown[]) => createTenant(...a),
-  deleteTenant: (...a: unknown[]) => deleteTenant(...a),
+  createTenantLocked: (...a: unknown[]) => createTenantLocked(...a),
+  startCreatedTenantLocked: (...a: unknown[]) => startCreatedTenantLocked(...a),
+  deleteTenantLocked: (...a: unknown[]) => deleteTenantLocked(...a),
 }));
-vi.mock('../services/docker', () => ({ restartTenant: (...a: unknown[]) => restartTenant(...a) }));
-vi.mock('../services/backup', () => ({ restoreBackup: (...a: unknown[]) => restoreBackup(...a) }));
-vi.mock('../adapters/database', () => ({ getDatabaseAdapter: () => ({ testConnection }) }));
+vi.mock('../services/backup', () => ({ restoreBackupLocked: (...a: unknown[]) => restoreBackupLocked(...a) }));
 
 import { createTenantFromBackup } from '../services/tenantFromBackup';
+import { withTenantLock } from '../services/fileLock';
 
-const opts = { tenantId: 't1', domain: 't1.example.com', imageTag: 'v1', dbReadyTimeoutMs: 50, dbPollIntervalMs: 1 };
+const opts = { tenantId: 't1', domain: 't1.example.com', imageTag: 'v1' };
 
-beforeEach(() => {
+beforeEach(async () => {
+  dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tfb-'));
   calls.length = 0;
-  for (const m of [createTenant, deleteTenant, restartTenant, restoreBackup, testConnection]) m.mockReset();
-  createTenant.mockImplementation(async () => { calls.push('create'); });
-  deleteTenant.mockImplementation(async () => { calls.push('delete'); });
-  restartTenant.mockImplementation(async () => { calls.push('restart'); });
-  testConnection.mockResolvedValue(true);
+  for (const m of [createTenantLocked, startCreatedTenantLocked, deleteTenantLocked, restoreBackupLocked]) m.mockReset();
+  createTenantLocked.mockImplementation(async () => { calls.push('create'); });
+  startCreatedTenantLocked.mockImplementation(async () => { calls.push('start'); });
+  deleteTenantLocked.mockImplementation(async () => { calls.push('delete'); });
+  restoreBackupLocked.mockResolvedValue({ success: true });
+  vi.spyOn(console, 'error').mockImplementation(() => {});
 });
+afterEach(async () => { await fs.rm(dataDir, { recursive: true, force: true }); vi.restoreAllMocks(); });
 
 describe('createTenantFromBackup', () => {
-  it('creates, waits for the DB, restores, then restarts', async () => {
-    restoreBackup.mockImplementation(async () => { calls.push('restore'); return { success: true, warnings: ['w'] }; });
+  it('creates stopped, restores, and only then starts (no start before the restore)', async () => {
+    restoreBackupLocked.mockImplementation(async () => { calls.push('restore'); return { success: true, warnings: ['w'] }; });
     const r = await createTenantFromBackup('demo', 'abc12345', opts);
     expect(r).toEqual({ success: true, warnings: ['w'] });
-    expect(calls).toEqual(['create', 'restore', 'restart']);
-    expect(restoreBackup).toHaveBeenCalledWith('demo', 'abc12345', 't1', { createNew: true, newDomain: 't1.example.com' });
-    expect(createTenant).toHaveBeenCalledWith({ appId: 'demo', tenantId: 't1', domain: 't1.example.com', imageTag: 'v1' });
+    expect(calls).toEqual(['create', 'restore', 'start']);
+    expect(createTenantLocked).toHaveBeenCalledWith({ appId: 'demo', tenantId: 't1', domain: 't1.example.com', imageTag: 'v1', start: false });
+    expect(restoreBackupLocked).toHaveBeenCalledWith('demo', 'abc12345', 't1', { createNew: true, newDomain: 't1.example.com', containersStopped: true });
+    expect(deleteTenantLocked).not.toHaveBeenCalled();
   });
 
-  it('polls until the DB answers instead of sleeping a fixed time', async () => {
-    testConnection.mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue(true);
-    restoreBackup.mockResolvedValue({ success: true });
-    await createTenantFromBackup('demo', 'abc12345', opts);
-    expect(testConnection).toHaveBeenCalledTimes(3);
-  });
-
-  it('rolls the tenant back when the restore fails and returns the failure', async () => {
-    restoreBackup.mockResolvedValue({ success: false, error: 'boom', isLocked: true });
+  it('rolls the tenant back when the restore fails, never starting it', async () => {
+    restoreBackupLocked.mockResolvedValue({ success: false, error: 'boom', isLocked: true });
     const r = await createTenantFromBackup('demo', 'abc12345', opts);
     expect(r).toMatchObject({ success: false, error: 'boom', isLocked: true });
-    expect(deleteTenant).toHaveBeenCalledWith('demo', 't1', false);
+    expect(deleteTenantLocked).toHaveBeenCalledWith('demo', 't1', false);
+    expect(startCreatedTenantLocked).not.toHaveBeenCalled();
   });
 
   it('rolls back when restore throws, and rethrows', async () => {
-    restoreBackup.mockRejectedValue(new Error('crash'));
+    restoreBackupLocked.mockRejectedValue(new Error('crash'));
     await expect(createTenantFromBackup('demo', 'abc12345', opts)).rejects.toThrow('crash');
-    expect(deleteTenant).toHaveBeenCalledWith('demo', 't1', false);
+    expect(deleteTenantLocked).toHaveBeenCalledWith('demo', 't1', false);
+    expect(startCreatedTenantLocked).not.toHaveBeenCalled();
   });
 
-  it('rolls back when the DB never becomes ready, without restoring', async () => {
-    testConnection.mockResolvedValue(false);
+  it('rolls back and reports failure when the start fails after a successful restore', async () => {
+    startCreatedTenantLocked.mockRejectedValue(new Error('migrator exited 1'));
     const r = await createTenantFromBackup('demo', 'abc12345', opts);
     expect(r.success).toBe(false);
-    expect(restoreBackup).not.toHaveBeenCalled();
-    expect(deleteTenant).toHaveBeenCalledWith('demo', 't1', false);
+    expect(r.error).toContain('migrator exited 1');
+    expect(deleteTenantLocked).toHaveBeenCalledWith('demo', 't1', false);
   });
 
   it('does not roll back (nothing was created) when createTenant throws', async () => {
-    createTenant.mockRejectedValue(Object.assign(new Error('exists'), { status: 409 }));
+    createTenantLocked.mockRejectedValue(Object.assign(new Error('exists'), { status: 409 }));
     await expect(createTenantFromBackup('demo', 'abc12345', opts)).rejects.toThrow('exists');
-    expect(deleteTenant).not.toHaveBeenCalled();
+    expect(deleteTenantLocked).not.toHaveBeenCalled();
+    expect(restoreBackupLocked).not.toHaveBeenCalled();
   });
 
-  it('keeps success when the final restart fails', async () => {
-    restoreBackup.mockResolvedValue({ success: true });
-    restartTenant.mockRejectedValue(new Error('x'));
+  it('holds the tenant lock for the whole sequence and does not deadlock on it', async () => {
+    let waiterRanAt = -1;
+    const waiter = new Promise<void>(resolve => {
+      // Queued while create-from-backup holds the lock: must run after 'start'.
+      setTimeout(() => { void withTenantLock('demo', 't1', async () => { waiterRanAt = calls.length; calls.push('waiter'); resolve(); }); }, 0);
+    });
+    restoreBackupLocked.mockImplementation(async () => {
+      await new Promise(r => setTimeout(r, 20));
+      calls.push('restore');
+      return { success: true };
+    });
     const r = await createTenantFromBackup('demo', 'abc12345', opts);
+    await waiter;
     expect(r.success).toBe(true);
-    expect(deleteTenant).not.toHaveBeenCalled();
-    expect(r.warnings?.length).toBe(1);
-  });
+    expect(calls).toEqual(['create', 'restore', 'start', 'waiter']);
+    expect(waiterRanAt).toBe(3);
+  }, 10_000);
 });

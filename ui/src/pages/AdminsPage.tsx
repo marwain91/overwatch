@@ -47,7 +47,7 @@ export function AdminsPage() {
     if (!showDelete) return;
     deleteAdmin.mutate(showDelete, {
       onSuccess: () => {
-        toast.success(`Admin ${showDelete} removed`);
+        toast.success(`User ${showDelete} removed`);
         setShowDelete(null);
       },
       onError: (err) => toast.error(err.message),
@@ -90,7 +90,7 @@ export function AdminsPage() {
                   className="input w-auto py-1 text-xs"
                   aria-label={`Role for ${admin.email}`}
                   value={admin.role}
-                  disabled={setRole.isPending}
+                  disabled={setRole.isPending && setRole.variables?.email === admin.email}
                   onChange={(e) => handleRoleChange(admin.email, e.target.value as AdminRole)}
                 >
                   {ROLES.map((r) => <option key={r.value} value={r.value}>{r.value}</option>)}
@@ -146,9 +146,9 @@ export function AdminsPage() {
 
       {/* Delete Confirmation */}
       {showDelete && (
-        <Modal title="Remove Admin" size="sm" onClose={() => setShowDelete(null)}>
+        <Modal title="Remove user" size="sm" onClose={() => setShowDelete(null)}>
           <p className="mb-4 text-sm text-content-muted">
-            Remove admin access for <strong className="text-content-secondary">{showDelete}</strong>?
+            Remove access for <strong className="text-content-secondary">{showDelete}</strong>?
           </p>
           <div className="flex justify-end gap-2">
             <button className="btn btn-secondary" onClick={() => setShowDelete(null)}>Cancel</button>

@@ -12,11 +12,20 @@ export function dumpOverwatchYaml(raw: Record<string, any>): string {
   return yaml.dump(raw, { lineWidth: 120, noRefs: true });
 }
 
+/** A validation failure that keeps the per-field issues so the CLI can render them individually. */
+export class ConfigValidationError extends ValidationError {
+  readonly issues: Array<{ path: string; message: string }>;
+
+  constructor(issues: Array<{ path: string; message: string }>) {
+    super(`Resulting overwatch.yaml would be invalid: ${issues.map(i => `${i.path}: ${i.message}`).join('; ')}`);
+    this.issues = issues;
+  }
+}
+
 function assertValid(raw: Record<string, any>): void {
   const parse = OverwatchConfigSchema.safeParse(raw);
   if (!parse.success) {
-    const errors = parse.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join('; ');
-    throw new ValidationError(`Resulting overwatch.yaml would be invalid: ${errors}`);
+    throw new ConfigValidationError(parse.error.errors.map(e => ({ path: e.path.join('.'), message: e.message })));
   }
 }
 
@@ -56,8 +65,8 @@ async function writeUnlocked(raw: Record<string, any>): Promise<void> {
     try {
       const tfh = await fs.open(configPath, 'r+');
       try { await tfh.sync(); } finally { await tfh.close(); }
-    } catch {
-      /* non-fatal */
+    } catch (err: any) {
+      console.debug(`[config-writer] fsync of overwatch.yaml failed (non-fatal): ${err?.code || err?.message}`);
     }
   } finally {
     await fs.unlink(scratch).catch(() => {});
@@ -82,8 +91,11 @@ export async function updateOverwatchConfig<T = void>(
   return withFileLock(LOCK_KEY, async () => {
     const content = await fs.readFile(findConfigPath(), 'utf-8');
     const raw = (yaml.load(content) as Record<string, any>) ?? {};
+    const before = dumpOverwatchYaml(raw);
     const result = await mutate(raw);
-    await writeUnlocked(raw);
+    // A no-op mutation (e.g. deleting an absent key) must not rewrite the file. It also
+    // skips validation, so an already-invalid file is left as is (nothing is written).
+    if (dumpOverwatchYaml(raw) !== before) await writeUnlocked(raw);
     return result;
   });
 }

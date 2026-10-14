@@ -9,6 +9,9 @@ interface ScheduledEntry {
   task: ScheduledTask;
   schedule: string;
 }
+// Set by stopBackupScheduler() (shutdown) so a reconcile that was already
+// queued cannot start fresh cron tasks after the stop. Cleared by startAll.
+let shutDown = false;
 const scheduledTasks = new Map<string, ScheduledEntry>();
 const warnedInvalid = new Set<string>();
 
@@ -77,6 +80,7 @@ export async function reportAbandonedRuns(): Promise<void> {
  * Start backup schedulers for all apps that have backup schedules configured.
  */
 export async function startAllBackupSchedulers(): Promise<void> {
+  shutDown = false;
   const apps = await listApps();
 
   for (const app of apps) {
@@ -132,6 +136,7 @@ export function stopBackupScheduler(appId?: string): void {
     }
     return;
   }
+  shutDown = true;
   for (const entry of scheduledTasks.values()) {
     entry.task.stop();
   }
@@ -153,7 +158,10 @@ export function reconcileBackupSchedulers(): Promise<void> {
 }
 
 async function doReconcile(): Promise<void> {
+  if (shutDown) return;
   const apps = await listApps();
+  // The stop may have happened while the app list was being read.
+  if (shutDown) return;
   const desired = new Map<string, string>();
   for (const app of apps) {
     if (app.backup?.enabled && app.backup?.schedule) desired.set(app.id, app.backup.schedule);

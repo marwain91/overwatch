@@ -13,6 +13,8 @@ vi.mock('child_process', async (orig) => {
 
 import type { InitConfig } from '../cli/init';
 
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 let tmpRoot: string;
 let deployDir: string;
 
@@ -42,6 +44,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fs.rm(tmpRoot, { recursive: true, force: true });
   vi.resetModules();
   delete process.env.OVERWATCH_CONFIG;
@@ -52,27 +55,50 @@ async function deployFromInitYaml(c: InitConfig): Promise<void> {
   const { generateOverwatchYaml } = await import('../cli/init');
   const configPath = path.join(deployDir, 'overwatch', 'overwatch.yaml');
   await fs.writeFile(configPath, generateOverwatchYaml(c));
+  // Scope the env var to this call so cases never observe each other's config.
+  const previous = process.env.OVERWATCH_CONFIG;
   process.env.OVERWATCH_CONFIG = configPath;
-  (await import('../config/loader')).clearConfigCache();
-  const { deployInfra } = await import('../services/infraTemplates');
-  await deployInfra({ deployDir });
+  try {
+    (await import('../config/loader')).clearConfigCache();
+    const { deployInfra } = await import('../services/infraTemplates');
+    await deployInfra({ deployDir });
+  } finally {
+    if (previous === undefined) delete process.env.OVERWATCH_CONFIG;
+    else process.env.OVERWATCH_CONFIG = previous;
+    (await import('../config/loader')).clearConfigCache();
+  }
 }
 
 describe.each(['mariadb', 'postgres'] as const)('init vs infra deploy (%s)', (dbType) => {
-  it('init renders byte-identical files to `infra deploy` for the same answers', async () => {
-    // Capture this case's dir: a slow case must never see the next case's.
-    const dir = deployDir;
-    const c = answers(dir, { dbType });
-    const { renderInitInfraFiles } = await import('../cli/init');
-    const fromInit = renderInitInfraFiles(c);
-    expect(fromInit.length).toBeGreaterThan(0);
+  it('files written by init (generateFiles) are byte-identical to what `infra deploy` writes', async () => {
+    // Each case gets its own deploy dirs: a slow case must never see the next case's.
+    const initDir = path.join(tmpRoot, 'via-init');
+    const deployDirForInfra = path.join(tmpRoot, 'via-infra-deploy');
+    await fs.mkdir(path.join(deployDirForInfra, 'overwatch'), { recursive: true });
+    const { renderInitInfraFiles, generateFiles } = await import('../cli/init');
+    const rendered = renderInitInfraFiles(answers(initDir, { dbType }));
+    expect(rendered.length).toBeGreaterThan(0);
 
-    await deployFromInitYaml(c);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await generateFiles(answers(initDir, { dbType }));
+    await deployFromInitYaml(answers(deployDirForInfra, { dbType }));
 
-    for (const f of fromInit) {
-      const onDisk = await fs.readFile(path.join(dir, f.dest), 'utf-8');
-      expect(onDisk, f.dest).toBe(f.content);
+    for (const f of rendered) {
+      const written = await fs.readFile(path.join(initDir, f.dest), 'utf-8');
+      expect(written, `init wrote ${f.dest}`).toBe(f.content);
+      // `infra deploy` renders the same bytes (paths differ only in APPS_PATH_ON_HOST).
+      const deployed = await fs.readFile(path.join(deployDirForInfra, f.dest), 'utf-8');
+      expect(deployed.split(deployDirForInfra).join(initDir), `infra deploy ${f.dest}`).toBe(f.content);
     }
+  });
+
+  it(`${dbType === 'postgres' ? 'does not create' : 'creates'} the mariadb init placeholder`, async () => {
+    const dir = path.join(tmpRoot, 'gitkeep');
+    const { generateFiles } = await import('../cli/init');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await generateFiles(answers(dir, { dbType }));
+    const exists = await fs.access(path.join(dir, 'infrastructure/mariadb/init/.gitkeep')).then(() => true, () => false);
+    expect(exists).toBe(dbType === 'mariadb');
   });
 });
 

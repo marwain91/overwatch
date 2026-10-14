@@ -80,4 +80,31 @@ describe('tightenSecretFilePermissions', () => {
     err.mockRestore();
     vi.doUnmock('fs/promises');
   });
+
+  it('logs and continues when one global data file cannot be tightened', async () => {
+    const { secretDataFiles } = await import('../config/dataFiles');
+    const names = secretDataFiles();
+    expect(names.length).toBeGreaterThan(1);
+    const dataDir = path.join(root, 'data');
+    await fs.mkdir(dataDir, { recursive: true });
+    for (const n of names) await fs.writeFile(path.join(dataDir, n), '{}', { mode: 0o644 });
+    const broken = path.join(dataDir, names[0]);
+    const real = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    vi.doMock('fs/promises', () => {
+      const stat = (async (p: any, ...rest: any[]) => {
+        if (String(p) === broken) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return (real.stat as any)(p, ...rest);
+      }) as typeof real.stat;
+      return { ...real, stat, default: { ...real, stat } };
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { tightenSecretFilePermissions } = await import('../services/startupMaintenance');
+    const count = await tightenSecretFilePermissions();
+    expect(count).toBe(names.length - 1);
+    for (const n of names.slice(1)) expect((await fs.stat(path.join(dataDir, n))).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(broken)).mode & 0o777).toBe(0o644);
+    expect(err).toHaveBeenCalledWith(expect.stringContaining(broken));
+    err.mockRestore();
+    vi.doUnmock('fs/promises');
+  });
 });

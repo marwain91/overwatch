@@ -50,6 +50,15 @@ describe('overwatch apps restore', () => {
     expect(restoreApp).not.toHaveBeenCalled();
   });
 
+  it('treats an audit-write failure after a successful restore as a warning, not a failure', async () => {
+    writeAuditEntry.mockImplementation(() => { throw new Error('disk full'); });
+    await expect(runApps(['restore', 'shop'])).resolves.toBeUndefined();
+    expect(restoreApp).toHaveBeenCalledWith('shop');
+    expect(errors.join('\n')).toContain('disk full');
+    expect(errors.join('\n')).not.toContain('apps.restore failed');
+    expect(logs.join('\n')).toContain('restored');
+  });
+
   it('exits 2 and reports the service error', async () => {
     restoreApp.mockRejectedValue(new Error("No trashed app with id 'shop' to restore"));
     await expect(runApps(['restore', 'shop'])).rejects.toMatchObject({ code: 2 });
@@ -75,6 +84,15 @@ describe('overwatch apps purge', () => {
     await runApps(['purge', 'shop', '--yes']);
     expect(purgeApp).toHaveBeenCalledWith('shop');
     expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({ action: 'apps.purge shop', method: 'CLI' }));
+  });
+
+  it('treats an audit-write failure after a successful purge as a warning, not a failure', async () => {
+    writeAuditEntry.mockImplementation(() => { throw new Error('disk full'); });
+    await expect(runApps(['purge', 'shop', '--yes'])).resolves.toBeUndefined();
+    expect(purgeApp).toHaveBeenCalledWith('shop');
+    expect(errors.join('\n')).toContain('disk full');
+    expect(errors.join('\n')).not.toContain('apps.purge failed');
+    expect(logs.join('\n')).toContain('purged');
   });
 
   it('exits 2 with usage when the id is missing', async () => {

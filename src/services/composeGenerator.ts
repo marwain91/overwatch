@@ -4,6 +4,7 @@ import { OverwatchConfig } from '../config/schema';
 import type { TraefikTenant } from '../models/traefik';
 import { resolveCertResolver } from '../config/loader';
 import { buildTraefikLabels } from './traefikLabels';
+import { isValidComposeDuration } from '../utils/validators';
 
 interface GenerateOptions {
   app: AppDefinition;
@@ -275,12 +276,21 @@ function buildHealthcheck(service: AppService): ComposeHealthcheck | undefined {
   } else {
     test = ['CMD-SHELL', `nc -z 127.0.0.1 ${hcPort}`];
   }
+  // Stored definitions may predate write-path validation. An invalid duration
+  // would make `docker compose up` reject the whole file, so warn and fall back.
+  const duration = (field: 'interval' | 'start_period', fallback: string | undefined) => {
+    const value = hc[field];
+    if (!value) return fallback;
+    if (isValidComposeDuration(value)) return value;
+    console.warn(`[compose] ignoring invalid health_check.${field} ${JSON.stringify(value)} on service '${service.name}'${fallback ? ` (using ${fallback})` : ''}`);
+    return fallback;
+  };
   return {
     test,
-    interval: hc.interval || '30s',
+    interval: duration('interval', '30s')!,
     timeout: '10s',
     retries: 3,
-    start_period: hc.start_period || undefined,
+    start_period: duration('start_period', undefined),
   };
 }
 

@@ -148,6 +148,38 @@ describe('docker event stream limits', () => {
     mod.stopDockerEventListener();
   });
 
+  it('caps the buffer in bytes, so multi-byte text cannot slip past 1 MB', async () => {
+    const { mod, streams, seen, off } = await setup();
+    // 600k two-byte characters: under 1M UTF-16 units but ~1.2 MB on the wire.
+    streams[0].write('\u00e9'.repeat(600_000));
+    await vi.advanceTimersByTimeAsync(0);
+    expect((console.error as any).mock.calls.filter((c: any[]) => /exceeded 1 MB/.test(String(c[0])))).toHaveLength(1);
+    streams[0].write('rest\n' + ev('finalio-t1-web') + '\n');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen.map(e => e.containerName)).toEqual(['finalio-t1-web']);
+    off();
+    mod.stopDockerEventListener();
+  });
+
+  it('logs overflow once per stream, and again on a new stream', async () => {
+    const { mod, streams, off } = await setup();
+    const overflowLogs = () => (console.error as any).mock.calls.filter((c: any[]) => /exceeded 1 MB/.test(String(c[0]))).length;
+    for (let i = 0; i < 3; i++) {
+      streams[0].write('x'.repeat(1024 * 1024 + 10));
+      streams[0].write('\n');
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(overflowLogs()).toBe(1);
+
+    streams[0].end();
+    await vi.advanceTimersByTimeAsync(5000); // reconnect -> second stream
+    streams[1].write('x'.repeat(1024 * 1024 + 10));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(overflowLogs()).toBe(2);
+    off();
+    mod.stopDockerEventListener();
+  });
+
   it('does not re-list apps for every unlabeled event after a failed refresh', async () => {
     const { mod, streams, listApps, off } = await setup();
     await vi.advanceTimersByTimeAsync(61_000);

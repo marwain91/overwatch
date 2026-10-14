@@ -38,6 +38,36 @@ export function assertServiceNamesValid(services: unknown): void {
   }
 }
 
+/** Compose healthcheck duration: one or more `<number><unit>` parts, e.g. `30s`, `1m30s`, `500ms`. */
+export const COMPOSE_DURATION_RE = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
+
+export function isValidComposeDuration(value: unknown): boolean {
+  return typeof value === 'string' && COMPOSE_DURATION_RE.test(value);
+}
+
+/**
+ * Write-path check for app definitions: a bad healthcheck duration makes
+ * `docker compose up` reject the whole tenant file, so new input must use
+ * Compose duration syntax. Stored definitions are not re-checked here (the
+ * generator warns and falls back instead), so existing apps keep loading.
+ */
+export function assertHealthcheckDurationsValid(services: unknown): void {
+  if (!Array.isArray(services)) return;
+  for (const svc of services) {
+    const hc = svc?.health_check;
+    if (!hc || typeof hc !== 'object') continue;
+    for (const field of ['interval', 'timeout', 'start_period'] as const) {
+      const value = hc[field];
+      if (value === undefined || value === '') continue;
+      if (!isValidComposeDuration(value)) {
+        throw new ValidationError(
+          `Invalid health_check.${field} ${JSON.stringify(value)} for service ${JSON.stringify(svc?.name)}: use a duration such as 30s, 1m30s or 500ms`,
+        );
+      }
+    }
+  }
+}
+
 export function isValidContainerId(id: string): boolean {
   return CONTAINER_ID_RE.test(id);
 }

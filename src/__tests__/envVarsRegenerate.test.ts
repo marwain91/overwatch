@@ -78,4 +78,72 @@ describe('regenerateAllSharedEnvFiles', () => {
     expect(err.failures.map((f: any) => f.appId)).toEqual(['broken']);
     await expect(fs.access(path.join(appsDir, 'good', 'tenants', 'a', 'shared.env'))).resolves.toBeUndefined();
   });
+
+  it('treats a non-ENOENT failure reading a tenant .env as a failure, not "not a tenant", and still sweeps the rest', async () => {
+    await tenant('demo', 'ok');
+    const locked = await tenant('demo', 'locked');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    vi.doMock('fs/promises', () => ({
+      ...actual,
+      access: (p: any, ...rest: any[]) =>
+        String(p) === path.join(locked, '.env')
+          ? Promise.reject(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }))
+          : (actual.access as any)(p, ...rest),
+    }));
+    const { regenerateAllSharedEnvFiles, SharedEnvRegenerationError } = await import('../services/envVars');
+
+    const err: any = await regenerateAllSharedEnvFiles('demo').catch(e => e);
+
+    expect(err).toBeInstanceOf(SharedEnvRegenerationError);
+    expect(err.failures.map((f: any) => `${f.appId}/${f.tenantId}`)).toEqual(['demo/locked']);
+    await expect(actual.access(path.join(appsDir, 'demo', 'tenants', 'ok', 'shared.env'))).resolves.toBeUndefined();
+    await expect(actual.access(path.join(locked, 'shared.env'))).rejects.toThrow();
+  });
+});
+
+describe('shared.env regeneration vs the tenant lock', () => {
+  async function holdLock() {
+    const { withTenantLock } = await import('../services/fileLock');
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    let acquired!: () => void;
+    const held = new Promise<void>(r => { acquired = r; });
+    const holder = withTenantLock('demo', 'a', async () => { acquired(); await gate; });
+    await held;
+    return { release, holder };
+  }
+  const sharedEnv = () => path.join(appsDir, 'demo', 'tenants', 'a', 'shared.env');
+  const exists = (p: string) => fs.access(p).then(() => true, () => false);
+
+  it('regenerateAllSharedEnvFiles waits for a lifecycle operation holding the tenant lock', async () => {
+    await tenant('demo', 'a');
+    const { regenerateAllSharedEnvFiles } = await import('../services/envVars');
+    const { release, holder } = await holdLock();
+    const sweep = regenerateAllSharedEnvFiles('demo');
+    await new Promise(r => setTimeout(r, 80));
+    expect(await exists(sharedEnv())).toBe(false);
+    release();
+    await holder;
+    expect(await sweep).toBe(1);
+    expect(await exists(sharedEnv())).toBe(true);
+  });
+
+  it('generateSharedEnvFile waits for the tenant lock, but not when the caller already holds it', async () => {
+    await tenant('demo', 'a');
+    const { generateSharedEnvFile } = await import('../services/envVars');
+    const { withTenantLock } = await import('../services/fileLock');
+    const { release, holder } = await holdLock();
+    const waiting = generateSharedEnvFile('demo', 'a');
+    await new Promise(r => setTimeout(r, 80));
+    expect(await exists(sharedEnv())).toBe(false);
+    release();
+    await holder;
+    await waiting;
+    expect(await exists(sharedEnv())).toBe(true);
+
+    await fs.rm(sharedEnv());
+    await withTenantLock('demo', 'a', () => generateSharedEnvFile('demo', 'a', { alreadyLocked: true }));
+    expect(await exists(sharedEnv())).toBe(true);
+  });
 });

@@ -50,6 +50,21 @@ data_dir: string      # Optional. Default: /app/data
 
 Where Overwatch keeps its stores (`apps.d/`, trash, admin users, audit log, snapshots, and so on). The default `/app/data` is the path inside the container (`./data` is mounted there by the shipped `docker-compose.yml`). When the CLI runs on the host and the configured path does not exist, it falls back to `data/` next to `overwatch.yaml` (`<deploy dir>/overwatch/data`). Set it only for a non-standard layout.
 
+#### CLI commands that write configuration
+
+`overwatch config edit`, `overwatch config traefik ...` and `overwatch migrate up` change `overwatch.yaml` (or the data stores) under a file lock. They need the user running the CLI to be able to write two directories inside the data directory:
+
+- `<data>/.locks/` holds the lockfiles that serialise writers (the server, the CLI, and a second CLI).
+- `<data>/.config-tmp/` holds the scratch file `overwatch.yaml` is staged in before being copied over the real file (the file itself is bind-mounted individually, so it cannot be replaced by rename).
+
+Both are created on first use. If they cannot be created or written, the command fails with a permission error (it no longer says "fix the values", since the values are fine). The data directory is normally owned by the container user, so when running the CLI from the host as a different user, hand the directory over once:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" <deploy dir>/overwatch/data     # or run the CLI as the owning user
+```
+
+A lock that cannot be acquired within 30 seconds fails with "busy" (HTTP 409 for API calls on a tenant). `OVERWATCH_LOCK_TIMEOUT_MS` overrides that wait, in milliseconds.
+
 ### Traefik Configuration
 
 The `traefik:` section gives you full control of the reverse proxy: cert resolvers
@@ -329,6 +344,7 @@ Each service in an app defines a container that gets deployed per tenant:
 | `ports.external` | No | Host-mapped port |
 | `health_check` | No | HTTP or TCP health check config |
 | `health_check.tool` | No | Binary to use for HTTP healthchecks: `"wget"` (default) or `"curl"` |
+| `health_check.interval` | No | Docker healthcheck interval (default `"30s"`) |
 | `health_check.start_period` | No | Grace period before health checks count (e.g. `"30s"`) |
 | `command` | No | Override container command |
 | `env_mapping` | No | Map environment variables to container vars |
@@ -342,6 +358,8 @@ Each service in an app defines a container that gets deployed per tenant:
 | `volumes[].external` | No | Declare volume as external (default: false) |
 | `depends_on` | No | Other service names this service depends on. Must name services of the same app — an unknown name fails compose generation. See [Init containers and `depends_on`](#init-containers-and-depends_on) |
 | `networks` | No | Network list: `["external"]` (default), `["external", "internal"]`, or `["internal"]` |
+
+Health check durations (`interval`, `start_period`) must use Compose duration syntax such as `30s`, `1m30s` or `500ms`; the API and `overwatch apps apply` reject anything else. A stored definition that already holds an invalid value keeps loading: the generator logs a warning and falls back to the default (interval) or omits the field (start_period).
 
 ### Init containers and `depends_on`
 
@@ -505,5 +523,6 @@ Who may sign in, and what they may do, is stored in `data/admin-users.json` and 
 | `PORT` | `3002` | Overwatch HTTP port |
 | `ALLOWED_ADMIN_EMAILS` | (none) | Comma-separated initial admin emails |
 | `OVERWATCH_TRUST_PROXY` | `1` | Express `trust proxy` setting for the client IP behind Traefik (hop count, `true`/`false` or a subnet list). Set it to your proxy's subnet/IP if Overwatch is not directly behind one Traefik hop. The generated Overwatch compose passes it through. |
+| `OVERWATCH_LOCK_TIMEOUT_MS` | `30000` | How long a request or CLI command waits for a file lock (for example the per-tenant lock) before failing as "busy" (HTTP 409). Raise it only if legitimate operations on one tenant routinely queue for longer. |
 | `OVERWATCH_DEPLOY_DIR` | (none) | Deploy root used by `overwatch infra deploy` only; a legacy alias of `DEPLOY_DIR`, which takes precedence when both are set. Without either, the root is the parent of the directory holding `overwatch.yaml`. Other CLI commands read `DEPLOY_DIR` only (see [updating.md](updating.md)). |
 | `OVERWATCH_SKIP_CHECKSUM` | (none) | `1` lets `overwatch self-update` install a CLI binary when the release has no `<asset>.sha256` companion file. **Security risk, leave unset.** The checksum is the only proof the downloaded binary is the one the maintainers published (TLS only shows the bytes came from GitHub), so skipping it means a tampered or corrupted release asset is installed and run as-is. It does not bypass a hash mismatch: a present checksum that does not match always aborts the update. |

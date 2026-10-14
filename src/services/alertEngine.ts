@@ -9,6 +9,7 @@ import { NotificationChannel, AlertHistoryEntry } from '../notifications/types';
 import { writeSecretFile } from '../utils/security';
 import { jsonlLogFor } from '../utils/jsonlLog';
 import { readJsonStrict } from '../utils/atomicJson';
+import { withFileLock } from './fileLock';
 
 type AlertRule = NonNullable<OverwatchConfig['alert_rules']>[number];
 
@@ -344,10 +345,14 @@ export async function getNotificationChannelsData(): Promise<NotificationChannel
 export async function saveNotificationChannels(channels: NotificationChannel[]): Promise<void> {
   const dir = getDataDir();
   await fs.mkdir(dir, { recursive: true });
-  // Throws if the existing file is corrupt: overwriting would destroy the only
-  // copy of the admin's channels (and their secrets) for an admin to repair.
-  await readChannelsStrict();
-  await writeSecretFile(getNotificationChannelsFile(), JSON.stringify(channels, null, 2));
+  // The corruption check and the write are one step under the lock, so a
+  // concurrent writer (or the CLI) cannot slip a change in between.
+  await withFileLock('notification-channels', async () => {
+    // Throws if the existing file is corrupt: overwriting would destroy the only
+    // copy of the admin's channels (and their secrets) for an admin to repair.
+    await readChannelsStrict();
+    await writeSecretFile(getNotificationChannelsFile(), JSON.stringify(channels, null, 2));
+  });
 }
 
 export async function sendTestNotification(channel: NotificationChannel): Promise<void> {
