@@ -435,12 +435,13 @@ const SHARED_ENV_BUSY_WAIT_MS = 2_000;
 // Tenants with a deferred regeneration queued for the lock. An entry is removed
 // the moment the lock is acquired (before the store is read), so a request made
 // after that point schedules a fresh run instead of being swallowed.
-const pendingBackground = new Set<string>();
+const pendingBackground = new Map<string, symbol>();
 
 function scheduleBackgroundSharedEnv(appId: string, tenantId: string): void {
   const id = `${appId}/${tenantId}`;
   if (pendingBackground.has(id)) return;
-  pendingBackground.add(id);
+  const token = Symbol(id);
+  pendingBackground.set(id, token);
   withTenantLock(appId, tenantId, async () => {
     pendingBackground.delete(id);
     // Reads the env-var store now, so it can never write a value older than the save that scheduled it.
@@ -448,7 +449,8 @@ function scheduleBackgroundSharedEnv(appId: string, tenantId: string): void {
   }, { waitMs: COMPOSE_LONG_TIMEOUT_MS, unref: true }).then(
     () => console.log(`[env-vars] background shared.env regeneration for ${id} done`),
     (err: any) => {
-      pendingBackground.delete(id);
+      // Only clear our own entry: a newer run may have been scheduled after we got the lock.
+      if (pendingBackground.get(id) === token) pendingBackground.delete(id);
       console.error(`[env-vars] background shared.env regeneration for ${id} failed: ${err?.message || err}`);
     },
   );

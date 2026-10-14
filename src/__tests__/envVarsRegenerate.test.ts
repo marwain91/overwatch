@@ -216,4 +216,19 @@ describe('busy tenants during shared.env regeneration', () => {
     await holder;
     await until(() => exists(sharedEnv('a')));
   });
+
+  it('uses the short default wait (not the 30 s lock default) when no waitMs is given', async () => {
+    await tenant('demo', 'a');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { regenerateAllSharedEnvFiles } = await import('../services/envVars');
+    const { release, holder } = await hold('a');
+    const busy: string[] = [];
+    const started = Date.now();
+    await regenerateAllSharedEnvFiles('demo', { busy });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(busy).toEqual(['demo/a']);
+    release();
+    await holder;
+    await until(() => exists(sharedEnv('a')));
+  }, 10_000);
 });
