@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.2] — 2026-10-14
+
 ### Changed
 
 - **Node.js 24 LTS everywhere.** The Docker image stages, CI and the CLI binaries move from Node 22 to Node 24 (LTS until April 2028; Node 22 reaches end of life in April 2027). Running from source or building the CLI now needs Node 24.
