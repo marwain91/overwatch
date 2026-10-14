@@ -22,7 +22,6 @@ describe('G1 readApps — refuses to silently accept corrupt JSON', () => {
     await fs.writeFile(path.join(dataDir, 'apps.d', 'broken.json'), '{not valid json');
 
     vi.doMock('../config', () => ({ getDataDir: () => dataDir, getAppsDir: () => path.join(tmpRoot, 'apps') }));
-    vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
 
     const { listApps } = await import('../services/app');
     await expect(listApps()).rejects.toThrow(/broken\.json is not valid JSON/);
@@ -35,7 +34,6 @@ describe('G1 readApps — refuses to silently accept corrupt JSON', () => {
     await fs.writeFile(path.join(dataDir, 'apps.d', 'incomplete.json'), JSON.stringify({ id: 'incomplete' }));
 
     vi.doMock('../config', () => ({ getDataDir: () => dataDir, getAppsDir: () => path.join(tmpRoot, 'apps') }));
-    vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
 
     const { listApps } = await import('../services/app');
     await expect(listApps()).rejects.toThrow(/incomplete\.json failed validation/);
@@ -63,7 +61,6 @@ describe('R3 soft-delete — apps with tenants move to trash', () => {
     }));
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
     vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir }));
-    vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
     return { dataDir, appsDir };
   }
 
@@ -134,7 +131,6 @@ describe('updateApp registry cache invalidation', () => {
     const clearAdapterCache = vi.fn();
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
     vi.doMock('../adapters/registry', () => ({ clearAdapterCache }));
-    vi.doMock('./fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn() }));
 
     const { updateApp } = await import('../services/app');
     await updateApp({ id: 'acme', default_image_tag: 'stable' });

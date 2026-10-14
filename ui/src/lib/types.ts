@@ -207,4 +207,6 @@ export interface AuthUser {
   email: string;
   name: string;
   picture: string;
+  /** Current role as resolved by the server (/auth/verify, login). */
+  role?: AdminRole;
 }

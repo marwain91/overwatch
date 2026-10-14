@@ -4,11 +4,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { api } from '../lib/api';
 import { Modal } from '../components/Modal';
+import { useCan } from '../hooks/useRole';
 import type { EnvVar } from '../lib/types';
 
 export function EnvironmentPage() {
   const { appId } = useParams<{ appId: string }>();
   const qc = useQueryClient();
+  const canEdit = useCan('editor');
 
   const { data: vars, isLoading } = useQuery({
     queryKey: ['env-vars', appId],
@@ -43,9 +45,11 @@ export function EnvironmentPage() {
             Global variables inherited by all tenants. Per-tenant overrides available via tenant settings.
           </p>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowModal({})}>
-          + Add Variable
-        </button>
+        {canEdit && (
+          <button className="btn btn-primary" onClick={() => setShowModal({})}>
+            + Add Variable
+          </button>
+        )}
       </div>
 
       {isLoading ? (
@@ -61,7 +65,7 @@ export function EnvironmentPage() {
                 </p>
                 {v.description && <p className="mt-0.5 text-xs text-content-fainter">{v.description}</p>}
               </div>
-              <div className="flex gap-2">
+              {canEdit && <div className="flex gap-2">
                 <button
                   className="btn btn-secondary btn-xs"
                   onClick={() => setShowModal({ key: v.key, value: v.sensitive ? '' : v.value, sensitive: v.sensitive, description: v.description })}
@@ -71,7 +75,7 @@ export function EnvironmentPage() {
                 <button className="btn btn-danger btn-xs" onClick={() => setShowDeleteKey(v.key)}>
                   Delete
                 </button>
-              </div>
+              </div>}
             </div>
           ))}
         </div>

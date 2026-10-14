@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { useTenantEnvVars, useSetTenantOverride, useResetTenantOverride } from '../../hooks/useTenants';
+import { useCan } from '../../hooks/useRole';
 import { Modal } from '../../components/Modal';
 import { cn } from '../../lib/cn';
 
@@ -8,6 +9,7 @@ export function TenantEnvVarsModal({ appId, tenantId, onClose }: { appId: string
   const { data: vars, isLoading } = useTenantEnvVars(appId, tenantId);
   const setOverride = useSetTenantOverride(appId);
   const resetOverride = useResetTenantOverride(appId);
+  const canEdit = useCan('editor');
 
   const [overrideKey, setOverrideKey] = useState<string | null>(null);
   const [overrideValue, setOverrideValue] = useState('');
@@ -39,7 +41,7 @@ export function TenantEnvVarsModal({ appId, tenantId, onClose }: { appId: string
     <Modal title={`Env Vars: ${tenantId}`} size="xl" maxHeight onClose={onClose}>
       <div className="mb-3 flex items-center justify-between">
         <p className="text-xs text-content-muted">{vars?.length ?? 0} variable{vars?.length !== 1 ? 's' : ''}</p>
-        {!adding && (
+        {canEdit && !adding && (
           <button className="btn btn-primary btn-xs" onClick={() => setAdding(true)}>+ Add Variable</button>
         )}
       </div>
@@ -71,7 +73,7 @@ export function TenantEnvVarsModal({ appId, tenantId, onClose }: { appId: string
                 <span className={cn('ml-2 badge', badgeClass(v.source))}>{v.source}</span>
                 <p className="mt-0.5 text-xs text-content-faint font-mono">{v.sensitive ? '••••••' : v.value}</p>
               </div>
-              <div className="flex gap-1">
+              {canEdit && <div className="flex gap-1">
                 {v.source === 'global' && (
                   <button className="btn btn-secondary btn-xs" onClick={() => { setOverrideKey(v.key); setOverrideValue(v.sensitive ? '' : v.value); setOverrideSensitive(v.sensitive); }}>Override</button>
                 )}
@@ -93,7 +95,7 @@ export function TenantEnvVarsModal({ appId, tenantId, onClose }: { appId: string
                     })}>Remove</button>
                   </>
                 )}
-              </div>
+              </div>}
             </div>
           ))}
         </div>

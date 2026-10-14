@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { useAuthStore } from '../stores/authStore';
 import { useWsAwareInterval, useWindowActive } from './useWsPolling';
 import type { Tenant, BackupSnapshot, BackupStatus, TenantEnvVar } from '../lib/types';
 
@@ -128,17 +127,12 @@ export function useDeleteBackup(appId: string) {
 
 // Container Logs & Restart
 export function useContainerLogs(containerId: string | null, tail: number = 200) {
-  const token = useAuthStore((s) => s.token);
   const windowActive = useWindowActive();
   const query = useQuery({
     queryKey: ['container-logs', containerId, tail],
     queryFn: async () => {
-      const res = await fetch(`/api/status/containers/${containerId}/logs?tail=${tail}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error('Failed to fetch logs');
-      const data = await res.json();
-      return data.logs as string;
+      const data = await api.get<{ logs: string }>(`/status/containers/${containerId}/logs?tail=${tail}`);
+      return data.logs;
     },
     enabled: !!containerId,
     refetchInterval: windowActive ? 10_000 : false,

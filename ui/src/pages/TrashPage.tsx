@@ -2,19 +2,16 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { Modal } from '../components/Modal';
 import { useTrashedApps, useRestoreApp, usePurgeApp } from '../hooks/useApps';
-import { useAdminUsers } from '../hooks/useAdminUsers';
-import { useAuthStore } from '../stores/authStore';
+import { useCan } from '../hooks/useRole';
 import { formatRelativeTime } from '../lib/format';
 
 export function TrashPage() {
   const { data: trashed, isLoading, error } = useTrashedApps();
   const restore = useRestoreApp();
   const purge = usePurgeApp();
-  const email = useAuthStore((s) => s.user?.email);
-  const { data: admins } = useAdminUsers();
   // Restore and purge are admin-only on the API; hide them for everyone else
   // (and until the role is known) instead of offering buttons that return 403.
-  const isAdmin = admins?.find((a) => a.email === email)?.role === 'admin';
+  const isAdmin = useCan('admin');
 
   const [purgeId, setPurgeId] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState('');

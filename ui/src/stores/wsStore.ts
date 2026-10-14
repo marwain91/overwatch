@@ -66,10 +66,15 @@ export const useWSStore = create<WSState>((set, get) => ({
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         set({ connected: false, _ws: null });
-        // Schedule reconnect
-        const delay = get()._reconnectDelay;
+        // 4401 session expired / 4403 access revoked: reconnecting cannot succeed.
+        if (event.code === 4401 || event.code === 4403) {
+          useAuthStore.getState().logout();
+          return;
+        }
+        // 4029 too many connections: back off to the maximum delay.
+        const delay = event.code === 4029 ? 30000 : get()._reconnectDelay;
         const timer = setTimeout(() => {
           set({ _reconnectTimer: null });
           if (useAuthStore.getState().token) {

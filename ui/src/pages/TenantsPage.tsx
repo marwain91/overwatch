@@ -5,6 +5,7 @@ import { useApp } from '../hooks/useApps';
 import { useTenants, useTenantAction, useAccessToken } from '../hooks/useTenants';
 import { useWSStore } from '../stores/wsStore';
 import { formatBytes } from '../lib/format';
+import { useCan } from '../hooks/useRole';
 import { cn } from '../lib/cn';
 import type { Tenant } from '../lib/types';
 import { CreateTenantModal } from './tenants/CreateTenantModal';
@@ -19,6 +20,7 @@ export function TenantsPage() {
   const { data: app } = useApp(appId!);
   const { data: tenants, isLoading } = useTenants(appId!);
   const latestMetrics = useWSStore((s) => s.latestMetrics);
+  const canEdit = useCan('editor');
 
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<'name' | 'status' | 'version'>('name');
@@ -51,11 +53,13 @@ export function TenantsPage() {
           <h1 className="text-2xl font-bold text-content-primary">{app?.name || appId} — Tenants</h1>
           <p className="mt-1 text-sm text-content-muted">{filtered.length} tenants</p>
         </div>
-        <div className="flex gap-2">
-          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-            + Create Tenant
-          </button>
-        </div>
+        {canEdit && (
+          <div className="flex gap-2">
+            <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+              + Create Tenant
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Toolbar */}
@@ -142,6 +146,8 @@ function TenantCard({
 }) {
   const action = useTenantAction(appId);
   const accessToken = useAccessToken(appId);
+  const canEdit = useCan('editor');
+  const isAdmin = useCan('admin');
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -208,22 +214,28 @@ function TenantCard({
         </button>
         {menuOpen && (
           <div className="absolute right-0 z-50 mt-1 w-44 rounded-lg border border-border bg-surface-raised py-1 shadow-lg">
-            {tenant.healthy ? (
-              <>
-                <MenuItem onClick={handleAccess}>Open App</MenuItem>
-                <MenuItem onClick={() => handleAction('restart')}>Restart</MenuItem>
-                <MenuItem onClick={() => handleAction('stop')}>Stop</MenuItem>
-              </>
-            ) : (
-              <MenuItem onClick={() => handleAction('start')}>Start</MenuItem>
+            {tenant.healthy && isAdmin && <MenuItem onClick={handleAccess}>Open App</MenuItem>}
+            {canEdit && (
+              tenant.healthy ? (
+                <>
+                  <MenuItem onClick={() => handleAction('restart')}>Restart</MenuItem>
+                  <MenuItem onClick={() => handleAction('stop')}>Stop</MenuItem>
+                </>
+              ) : (
+                <MenuItem onClick={() => handleAction('start')}>Start</MenuItem>
+              )
             )}
-            <div className="my-1 border-t border-border" />
-            <MenuItem onClick={() => { setMenuOpen(false); onUpdate(); }}>Update Version</MenuItem>
+            {(canEdit || (tenant.healthy && isAdmin)) && <div className="my-1 border-t border-border" />}
+            {canEdit && <MenuItem onClick={() => { setMenuOpen(false); onUpdate(); }}>Update Version</MenuItem>}
             <MenuItem onClick={() => { setMenuOpen(false); onEnvVars(); }}>Environment</MenuItem>
-            <MenuItem onClick={() => { setMenuOpen(false); onRouting(); }}>Routing</MenuItem>
+            {canEdit && <MenuItem onClick={() => { setMenuOpen(false); onRouting(); }}>Routing</MenuItem>}
             <MenuItem onClick={() => { setMenuOpen(false); onBackups(); }}>Backups</MenuItem>
-            <div className="my-1 border-t border-border" />
-            <MenuItem onClick={() => { setMenuOpen(false); onDelete(); }} className="text-red-400 hover:text-red-300">Delete</MenuItem>
+            {isAdmin && (
+              <>
+                <div className="my-1 border-t border-border" />
+                <MenuItem onClick={() => { setMenuOpen(false); onDelete(); }} className="text-red-400 hover:text-red-300">Delete</MenuItem>
+              </>
+            )}
           </div>
         )}
       </div>

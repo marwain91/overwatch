@@ -45,9 +45,6 @@ describe('envVars secret-file generation is 0600', () => {
       getAppsDir: () => appsDir,
       getDataDir: () => dataDir,
     }));
-    vi.doMock('./fileLock', () => ({
-      withFileLock: <T>(_name: string, fn: () => Promise<T>) => fn(),
-    }));
 
     const { generateSharedEnvFile, setEnvVar } = await import('../services/envVars');
 
@@ -79,9 +76,6 @@ describe('tightenSecretFilePermissions migration', () => {
     vi.doMock('../config', () => ({
       getAppsDir: () => appsDir,
       getDataDir: () => dataDir,
-    }));
-    vi.doMock('./fileLock', () => ({
-      withFileLock: <T>(_name: string, fn: () => Promise<T>) => fn(),
     }));
 
     const { tightenSecretFilePermissions } = await import('../services/startupMaintenance');

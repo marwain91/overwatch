@@ -108,7 +108,8 @@ function showHelp(): void {
   console.log('');
   console.log('  Subcommands:');
   console.log(`    list                        List all users and roles (default)`);
-  console.log(`    add ${DIM}<email>${NC}                 Add a user`);
+  console.log(`    add ${DIM}<email>${NC} ${DIM}[--role <role>]${NC}  Add a user (default role: viewer)`);
+  console.log(`    role ${DIM}<email> <role>${NC}         Change a user's role (viewer, editor, admin)`);
   console.log(`    remove ${DIM}<email>${NC}              Remove an admin user`);
   console.log('');
   console.log('  Examples:');

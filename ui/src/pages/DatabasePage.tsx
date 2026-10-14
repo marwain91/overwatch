@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { useDatabaseInfo, useDatabaseStats, useDatabaseList, useDatabaseProcesses, useKillProcess } from '../hooks/useDatabase';
+import { useCan } from '../hooks/useRole';
 import { formatBytes, formatUptime, formatNumber } from '../lib/format';
 import { cn } from '../lib/cn';
 
@@ -207,6 +208,7 @@ function DatabasesTab() {
 function ProcessesTab() {
   const { data: processes, isLoading } = useDatabaseProcesses();
   const killProcess = useKillProcess();
+  const isAdmin = useCan('admin');
   const [confirmKill, setConfirmKill] = useState<number | null>(null);
 
   if (isLoading) {
@@ -262,7 +264,7 @@ function ProcessesTab() {
                   {p.query || '—'}
                 </td>
                 <td className="py-2">
-                  {confirmKill === p.id ? (
+                  {!isAdmin ? null : confirmKill === p.id ? (
                     <div className="flex gap-1">
                       <button
                         className="btn btn-danger btn-xs"

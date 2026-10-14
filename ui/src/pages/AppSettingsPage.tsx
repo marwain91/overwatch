@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useApp, useUpdateApp, useDeleteApp } from '../hooks/useApps';
+import { useCan } from '../hooks/useRole';
 import type { AppService, AppRegistry, AppBackup, AppAdminAccess } from '../lib/types';
 import { RegistryForm } from '../components/RegistryForm';
 import { ServiceEditor } from '../components/ServiceEditor';
@@ -13,6 +14,8 @@ export function AppSettingsPage() {
   const { data: app, isLoading } = useApp(appId!);
   const updateApp = useUpdateApp(appId!);
   const deleteApp = useDeleteApp();
+  // PUT/DELETE on the app definition are admin-only; others get a read-only form.
+  const isAdmin = useCan('admin');
 
   const [name, setName] = useState('');
   const [domainTemplate, setDomainTemplate] = useState('');
@@ -81,10 +84,14 @@ export function AppSettingsPage() {
     <div className="mx-auto max-w-3xl">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-content-primary">Settings — {app.name}</h1>
-        <button className="btn btn-primary" onClick={handleSave} disabled={updateApp.isPending}>
-          {updateApp.isPending ? <><span className="spinner spinner-sm" /> Saving...</> : 'Save Changes'}
-        </button>
+        {isAdmin && (
+          <button className="btn btn-primary" onClick={handleSave} disabled={updateApp.isPending}>
+            {updateApp.isPending ? <><span className="spinner spinner-sm" /> Saving...</> : 'Save Changes'}
+          </button>
+        )}
       </div>
+
+      <fieldset disabled={!isAdmin} className="contents">
 
       {/* Basic Info */}
       <div className="card mb-4">
@@ -135,10 +142,11 @@ export function AppSettingsPage() {
         </div>
       </div>
 
-      {/* Danger Zone */}
+      </fieldset>
+
       <AppTraefikSection appId={appId!} />
 
-      <div className="card border-red-900/50">
+      {isAdmin && <div className="card border-red-900/50">
         <h2 className="mb-4 text-lg font-semibold text-red-400">Danger Zone</h2>
         {!showDelete ? (
           <button className="btn btn-danger" onClick={() => setShowDelete(true)}>
@@ -171,7 +179,7 @@ export function AppSettingsPage() {
             </div>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }
