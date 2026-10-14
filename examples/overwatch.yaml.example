@@ -73,12 +73,6 @@ backup:
     secret_key_env: "S3_SECRET_KEY"
   restic_password_env: "RESTIC_PASSWORD"
 
-# Tenant template paths (optional, defaults shown)
-# tenant_template:
-#   dir: "./tenant-template"
-#   compose_file: "docker-compose.yml"
-#   env_template: ".env.template"
-
 # Credential generation settings
 credentials:
   db_password_length: 32     # Length of generated database passwords
