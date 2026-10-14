@@ -8,6 +8,8 @@ import { HttpError } from '../utils/httpErrors';
 
 const router = Router();
 
+const HIDDEN_QUERY = '[hidden]';
+
 // Driver messages carry hosts, user names and SQL, and these routes are open to
 // every role, so failures are classified into fixed messages; the raw error is
 // only logged.
@@ -85,9 +87,16 @@ router.get('/databases', asyncHandler(async (_req, res) => {
   res.json(databases);
 }));
 
-// GET /api/database/processes
+// GET /api/database/processes. Statement text can hold credentials (e.g.
+// `CREATE USER ... IDENTIFIED BY '<pw>'` while a tenant is being created), so only
+// admins see it. Explicit role check: a missing role must not read as admin.
 router.get('/processes', asyncHandler(async (_req, res) => {
-  res.json(await dbCall(() => getDatabaseAdapter().getProcessList()));
+  const processes = await dbCall(() => getDatabaseAdapter().getProcessList());
+  if (res.locals.user?.role === 'admin') {
+    res.json(processes);
+    return;
+  }
+  res.json(processes.map(p => ({ ...p, query: p.query === null ? null : HIDDEN_QUERY })));
 }));
 
 // POST /api/database/processes/:id/kill — admin only (can disrupt running workloads).

@@ -160,3 +160,67 @@ describe('exposed 5xx from a service reaches the client through the real handler
     expect(res.body.error).toContain('pull access denied');
   });
 });
+
+describe('docker CLI failures reach the client as 503/502 through the real handler', () => {
+  async function stopWithDockerFailure(stderr: string, exitCode: number | null) {
+    const tenantPath = path.join(appsDir, 'acme', 'tenants', 't1');
+    await fs.mkdir(tenantPath, { recursive: true });
+    await fs.writeFile(path.join(tenantPath, '.env'), 'X=1\n');
+    await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), 'services: {}\n');
+    vi.doMock('child_process', async (orig) => {
+      const actual: any = await orig();
+      const execFile: any = vi.fn((_c: string, _a: string[], _o: any, cb: any) => {
+        const err: any = new Error('Command failed');
+        err.code = exitCode;
+        cb(err, '', stderr);
+        return { on() {} };
+      });
+      return { ...actual, execFile };
+    });
+    const router = (await import('../routes/tenants')).default;
+    const app = await mountWith(router, '/apps/:appId/tenants');
+    return request(app).post('/apps/acme/tenants/t1/stop');
+  }
+
+  it('an unreachable daemon is a fixed 503 without the CLI stderr', async () => {
+    const res = await stopWithDockerFailure('Cannot connect to the Docker daemon at unix:///var/run/docker.sock', 1);
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: 'Cannot connect to the Docker daemon' });
+  });
+
+  it('any other docker failure is a fixed 502', async () => {
+    const res = await stopWithDockerFailure('boom at /srv/apps/acme/tenants/t1', 1);
+    expect(res.status).toBe(502);
+    expect(res.body).toEqual({ error: 'Docker command failed' });
+    expect(JSON.stringify(res.body)).not.toContain('/srv/apps');
+  });
+});
+
+describe('PUT tenant traefik validation', () => {
+  async function put(body: unknown) {
+    await fs.mkdir(path.join(appsDir, 'acme', 'tenants', 't1'), { recursive: true });
+    const router = (await import('../routes/tenants')).default;
+    const app = await mountWith(router, '/apps/:appId/tenants');
+    return request(app).put('/apps/acme/tenants/t1/traefik').send(body as object);
+  }
+
+  it('a schema violation is a 400', async () => {
+    const res = await put({ host_aliases: 'not-an-array' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/^Invalid input/);
+  });
+
+  it('a raw label for another tenant\'s router is a 400 naming the label', async () => {
+    const res = await put({ raw_labels: { web: { 'traefik.http.routers.acme-t2-web.priority': '1' } } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('acme-t2-web');
+  });
+
+  it('an unknown tenant is a 404', async () => {
+    const router = (await import('../routes/tenants')).default;
+    const app = await mountWith(router, '/apps/:appId/tenants');
+    const res = await request(app).put('/apps/acme/tenants/ghost/traefik').send({ host_aliases: [] });
+    expect(res.status).toBe(404);
+  });
+});
+

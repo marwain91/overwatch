@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { listApps, getApp, createApp, updateApp, deleteApp, listTrashedApps, restoreApp, purgeApp } from '../services/app';
 import { getImageTagsForApp } from '../adapters/registry';
 import { CreateAppSchema, UpdateAppSchema } from '../models/app';
@@ -10,6 +10,7 @@ import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
 import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
 import { assertAppRawLabelsOwned } from '../services/traefikLabels';
+import { redactAppDefinition, redactAppTraefik, assertNoMaskedCredentials } from '../services/traefikRedaction';
 import { assertServiceNamesValid, assertHealthcheckDurationsValid } from '../utils/validators';
 
 const router = Router();
@@ -30,17 +31,23 @@ function classifyTagError(error: any): string {
   return 'Failed to list tags from registry.';
 }
 
+// Reads are open to every role, but inline Traefik credentials (basicAuth hashes,
+// auth raw labels) are for admins, the only role that can edit app definitions.
+// Explicit check: a missing role must not read as admin.
+const isAdmin = (res: Response) => res.locals.user?.role === 'admin';
+
 // List all apps
 router.get('/', asyncHandler(async (_req, res) => {
   const apps = await listApps();
-  res.json(apps);
+  res.json(isAdmin(res) ? apps : apps.map(redactAppDefinition));
 }));
 
 // List trashed (soft-deleted) apps.
 // Must be placed before the :appId sub-routes so it doesn't get shadowed.
 router.get('/.trashed', asyncHandler(async (_req, res) => {
   const trashed = await listTrashedApps();
-  res.json(trashed);
+  // Each entry carries the full app definition.
+  res.json(isAdmin(res) ? trashed : trashed.map(t => ({ ...t, app: redactAppDefinition(t.app) })));
 }));
 
 // Create a new app. Admin-only because the payload includes registry credentials
@@ -55,6 +62,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   assertServiceNamesValid(parseResult.data.services);
   assertHealthcheckDurationsValid(parseResult.data.services);
   assertAppRawLabelsOwned(parseResult.data.id, parseResult.data.services);
+  assertNoMaskedCredentials(parseResult.data);
   const app = await createApp(parseResult.data);
   res.status(201).json(app);
 }));
@@ -65,7 +73,7 @@ router.get('/:appId', validateAppId, asyncHandler(async (req, res) => {
   if (!app) {
     return res.status(404).json({ error: 'App not found' });
   }
-  res.json(app);
+  res.json(isAdmin(res) ? app : redactAppDefinition(app));
 }));
 
 // Update app config. Admin-only — update payload can change registry creds,
@@ -82,6 +90,7 @@ router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (r
   assertServiceNamesValid(parseResult.data.services);
   assertHealthcheckDurationsValid(parseResult.data.services);
   assertAppRawLabelsOwned(appId, parseResult.data.services);
+  assertNoMaskedCredentials(parseResult.data);
   const app = await updateApp(parseResult.data);
   res.json(app);
 }));
@@ -145,12 +154,12 @@ router.post('/:appId/registry/test', validateAppId, requireRole('editor'), async
 // Editor+ matches the rest of the app/tenant editing surface.
 router.get('/:appId/traefik', validateAppId, asyncHandler(async (req, res) => {
   const t = await getAppTraefik((req.params as Record<string, string>).appId);
-  res.json(t ?? null);
+  res.json((isAdmin(res) ? t : redactAppTraefik(t)) ?? null);
 }));
 
 router.put('/:appId/traefik', validateAppId, requireRole('editor'), asyncHandler(async (req, res) => {
   const t = await updateAppTraefik((req.params as Record<string, string>).appId, req.body);
-  res.json(t);
+  res.json(isAdmin(res) ? t : redactAppTraefik(t));
 }));
 
 export default router;

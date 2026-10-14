@@ -10,6 +10,7 @@ vi.mock('../services/users', async (orig) => {
   return { ...actual, isAdminEmail: vi.fn(async (e: string) => members.has(e)) };
 });
 
+import { isAdminEmail } from '../services/users';
 import { createWebSocketServer, stopWebSocketServer } from '../websocket/server';
 import { signSession, SESSION_AUDIENCE, SESSION_ISSUER } from '../auth/session';
 
@@ -20,10 +21,11 @@ let wss: ReturnType<typeof createWebSocketServer>;
 beforeEach(async () => {
   process.env.JWT_SECRET = 'x'.repeat(40);
   members.clear();
+  vi.mocked(isAdminEmail).mockImplementation(async (e: string) => members.has(e));
   members.add('a@b.c');
   vi.spyOn(console, 'log').mockImplementation(() => {});
   server = http.createServer();
-  wss = createWebSocketServer(server, { membershipRecheckMs: 50 });
+  wss = createWebSocketServer(server, { membershipRecheckMs: 50, membershipReadTimeoutMs: 100 });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   port = (server.address() as AddressInfo).port;
 });
@@ -94,6 +96,55 @@ describe('websocket auth', () => {
     await drop.closed;
     expect(keep.ws.readyState).toBe(WebSocket.OPEN);
     keep.ws.close();
+  });
+});
+
+describe('websocket membership re-check scheduling', () => {
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+  it('never runs two re-checks at once when the store is slower than the interval', async () => {
+    const c = connect(signSession('a@b.c'));
+    await authed(c);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let calls = 0;
+    vi.mocked(isAdminEmail).mockImplementation(async (e: string) => {
+      calls++;
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await sleep(80); // longer than the 50 ms interval, shorter than the 100 ms read timeout
+      inFlight--;
+      return members.has(e);
+    });
+    await sleep(700);
+    expect(calls).toBeGreaterThan(1);
+    expect(maxInFlight).toBe(1);
+    c.ws.close();
+  });
+
+  it('a store read that never settles is cut off, the socket is kept and re-checks resume', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const c = connect(signSession('a@b.c'));
+    await authed(c);
+    vi.mocked(isAdminEmail).mockImplementation(() => new Promise<boolean>(() => {}));
+    await vi.waitFor(() => expect(warn.mock.calls.join()).toMatch(/timed out/));
+    expect(c.ws.readyState).toBe(WebSocket.OPEN);
+    members.delete('a@b.c');
+    vi.mocked(isAdminEmail).mockImplementation(async (e: string) => members.has(e));
+    expect((await c.closed).code).toBe(4403);
+  });
+
+  it('keeps the socket when the store read fails, and still revokes once it recovers', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const c = connect(signSession('a@b.c'));
+    await authed(c);
+    vi.mocked(isAdminEmail).mockRejectedValue(new Error('disk'));
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+    await sleep(150);
+    expect(c.ws.readyState).toBe(WebSocket.OPEN);
+    members.delete('a@b.c');
+    vi.mocked(isAdminEmail).mockImplementation(async (e: string) => members.has(e));
+    expect((await c.closed).code).toBe(4403);
   });
 });
 
