@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { loadConfig, getAppsDir } from '../config';
+import { loadConfig } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
@@ -17,8 +17,9 @@ import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
 import { describeFailedInitContainers } from './initContainerDiagnostics';
 import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
 import { eventBus } from './eventBus';
-import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from '../websocket/types';
+import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from './eventBus';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
+import { tenantDir, tenantsDir, assertTenantDir } from './tenantStore';
 import { SLUG_RE } from '../utils/validators';
 import { resolveTenantDbId } from './tenantDb';
 import { getDockerEnv } from '../utils/runDocker';
@@ -94,7 +95,7 @@ export function validateTenantDomain(domain: unknown): { valid: boolean; error?:
  * Get the path for a tenant directory: apps/{appId}/tenants/{tenantId}
  */
 export function getTenantPath(appId: string, tenantId: string): string {
-  return path.join(getAppsDir(), appId, 'tenants', tenantId);
+  return tenantDir(appId, tenantId);
 }
 
 /**
@@ -184,7 +185,7 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
   }
   const db = getDatabaseAdapter(app);
   const tenantPath = getTenantPath(appId, tenantId);
-  const tenantsDir = path.join(getAppsDir(), appId, 'tenants');
+  const appTenantsDir = tenantsDir(appId);
   const dbTenantId = `${appId}_${tenantId}`;
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   let tenantDirCreated = false;
@@ -194,7 +195,7 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
 
   try {
     // Atomically create tenant directory — fails if already exists (prevents TOCTOU race)
-    await fs.mkdir(tenantsDir, { recursive: true });
+    await fs.mkdir(appTenantsDir, { recursive: true });
     try {
       await fs.mkdir(tenantPath); // NOT recursive — fails if exists
       tenantDirCreated = true;
@@ -206,7 +207,7 @@ async function createTenantLocked(input: CreateTenantInput): Promise<TenantConfi
     }
 
     // Verify the path hasn't been manipulated via symlinks
-    await assertWithinDir(tenantPath, tenantsDir);
+    await assertWithinDir(tenantPath, appTenantsDir);
 
     // Get credential lengths from app or global config
     const dbPasswordLength = app.credentials?.db_password_length || config.credentials?.db_password_length || 32;
@@ -311,8 +312,7 @@ async function deleteTenantLocked(appId: string, tenantId: string, keepData: boo
   }
 
   // Verify path hasn't been manipulated via symlinks
-  const appsDir = getAppsDir();
-  await assertWithinDir(tenantPath, appsDir);
+  await assertTenantDir(appId, tenantId);
 
   // DB_NAME in the tenant .env may differ from the constructed name (migrated tenants)
   const dbTenantId = await resolveTenantDbId(appId, tenantId, app);
@@ -351,11 +351,21 @@ async function deleteTenantLocked(appId: string, tenantId: string, keepData: boo
   await fs.rm(tenantPath, { recursive: true, force: true });
 }
 
-export function updateTenant(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
-  return withTenantLock(String(rawAppId), String(rawTenantId), () => updateTenantLocked(rawAppId, rawTenantId, newTag));
+export function updateTenant(
+  rawAppId: string,
+  rawTenantId: string,
+  newTag: string,
+  onProgress?: (progress: TenantUpdateProgress) => void,
+): Promise<void> {
+  return withTenantLock(String(rawAppId), String(rawTenantId), () => updateTenantLocked(rawAppId, rawTenantId, newTag, onProgress));
 }
 
-async function updateTenantLocked(rawAppId: string, rawTenantId: string, newTag: string): Promise<void> {
+async function updateTenantLocked(
+  rawAppId: string,
+  rawTenantId: string,
+  newTag: string,
+  onProgress?: (progress: TenantUpdateProgress) => void,
+): Promise<void> {
   // Extract IDs via regex match so subsequent path.join calls operate on the
   // captured strings, not the raw inputs. Route middleware already enforces;
   // this breaks taint flow visibly for static analysis and protects CLI callers.
@@ -386,6 +396,7 @@ async function updateTenantLocked(rawAppId: string, rawTenantId: string, newTag:
   const emit = (step: TenantUpdateStep, status: TenantUpdateStatus, detail?: string) => {
     const payload: TenantUpdateProgress = { appId, tenantId, newTag, step, status, detail };
     try { eventBus.emit('tenant:update:progress', payload); } catch { /* swallow */ }
+    try { onProgress?.(payload); } catch { /* swallow */ }
   };
 
   // Check if tenant exists
@@ -396,7 +407,7 @@ async function updateTenantLocked(rawAppId: string, rawTenantId: string, newTag:
   }
 
   // Verify path hasn't been manipulated via symlinks
-  await assertWithinDir(tenantPath, getAppsDir());
+  await assertTenantDir(appId, tenantId);
 
   // Load this tenant's current app definition. Prefer the per-tenant
   // snapshot; fall back to apps.d/<id>.json for legacy tenants without

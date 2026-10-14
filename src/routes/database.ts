@@ -1,11 +1,8 @@
 import { Router } from 'express';
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { asyncHandler } from '../utils/asyncHandler';
 import { getDatabaseAdapter } from '../adapters/database';
 import { listApps } from '../services/app';
-import { getAppsDir } from '../config';
-import { parseEnv } from '../utils/env';
+import { listTenantDirs, readTenantEnv } from '../services/tenantStore';
 import { requireRole } from '../middleware/requireRole';
 import { HttpError } from '../utils/httpErrors';
 
@@ -41,23 +38,13 @@ async function dbCall<T>(fn: () => Promise<T>): Promise<T> {
  */
 async function collectTenantDbNames(): Promise<Set<string>> {
   const dbNames = new Set<string>();
-  const appsDir = getAppsDir();
 
   try {
     const apps = await listApps();
     for (const app of apps) {
-      const tenantsDir = path.join(appsDir, app.id, 'tenants');
-      let dirs: string[];
-      try {
-        dirs = await fs.readdir(tenantsDir);
-      } catch {
-        continue;
-      }
-      for (const dir of dirs) {
-        const envPath = path.join(tenantsDir, dir, '.env');
+      for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {}, followSymlinks: true })) {
         try {
-          const envContent = await fs.readFile(envPath, 'utf-8');
-          const env = parseEnv(envContent);
+          const env = await readTenantEnv(app.id, tenantId);
           if (env.DB_NAME) {
             dbNames.add(env.DB_NAME);
           }

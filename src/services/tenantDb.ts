@@ -1,7 +1,5 @@
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import { getAppsDir, resolveAppDbPrefix } from '../config';
-import { parseEnv } from '../utils/env';
+import { resolveAppDbPrefix } from '../config';
+import { readTenantEnv } from './tenantStore';
 import type { AppDefinition } from '../models/app';
 
 /**
@@ -19,8 +17,7 @@ export async function resolveTenantDbId(
 ): Promise<string> {
   const fallback = `${appId}_${tenantId}`;
   try {
-    const envPath = path.join(getAppsDir(), appId, 'tenants', tenantId, '.env');
-    const env = parseEnv(await fs.readFile(envPath, 'utf-8'));
+    const env = await readTenantEnv(appId, tenantId);
     if (!env.DB_NAME) return fallback;
     const effectivePrefix = resolveAppDbPrefix(app ?? undefined);
     if (!effectivePrefix) return env.DB_NAME;

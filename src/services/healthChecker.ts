@@ -2,7 +2,7 @@ import http from 'http';
 import net from 'net';
 import cron, { ScheduledTask } from 'node-cron';
 import { docker, extractContainerInfo, getManagedContainerNamePattern } from './docker';
-import { eventBus } from './eventBus';
+import { eventBus, type HealthState as HealthStateName } from './eventBus';
 import { listApps } from './app';
 import { AppService } from '../models/app';
 
@@ -11,7 +11,7 @@ interface HealthState {
   appId: string;
   tenantId: string;
   service: string;
-  state: 'healthy' | 'unhealthy' | 'unknown';
+  state: HealthStateName;
   consecutiveFailures: number;
   lastCheck: string | null;
 }

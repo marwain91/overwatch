@@ -33,9 +33,9 @@ describe('update_tenant tool', () => {
 
   it('forwards progress steps and returns success', async () => {
     const notes: any[] = [];
-    updateTenant.mockImplementation(async (appId: string, tenantId: string) => {
-      eventBus.emit('tenant:update:progress', { appId, tenantId, newTag: 'v2', step: 'pull', status: 'started' });
-      eventBus.emit('tenant:update:progress', { appId, tenantId, newTag: 'v2', step: 'done', status: 'completed' });
+    updateTenant.mockImplementation(async (appId: string, tenantId: string, _tag: string, onProgress?: (p: any) => void) => {
+      onProgress?.({ appId, tenantId, newTag: 'v2', step: 'pull', status: 'started' });
+      onProgress?.({ appId, tenantId, newTag: 'v2', step: 'done', status: 'completed' });
     });
     const r = await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async (n) => { notes.push(n); } });
     expect(r.isError).toBeFalsy();
@@ -44,11 +44,16 @@ describe('update_tenant tool', () => {
     expect(writeMcpAudit).toHaveBeenCalledWith(expect.objectContaining({ tool: 'update_tenant', status: 200, email: 'a@b.c' }));
   });
 
-  it('unsubscribes after completion (no listener leak)', async () => {
-    updateTenant.mockResolvedValue(undefined);
+  it('does not listen on the global bus (progress comes through the callback)', async () => {
+    const notes: any[] = [];
+    updateTenant.mockImplementation(async (appId: string, tenantId: string) => {
+      // Another tenant's progress on the global bus must not reach this call.
+      eventBus.emit('tenant:update:progress', { appId, tenantId, newTag: 'v2', step: 'pull', status: 'started' });
+    });
     const before = eventBus.listenerCount('tenant:update:progress');
-    await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async () => {} });
+    await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, editor, { notify: async (n) => { notes.push(n); } });
     expect(eventBus.listenerCount('tenant:update:progress')).toBe(before);
+    expect(notes).toEqual([]);
   });
 
   it('viewer is denied', async () => {

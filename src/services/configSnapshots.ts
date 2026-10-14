@@ -1,18 +1,11 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getDataDir } from '../config';
+import { snapshotDataFiles } from '../config/dataFiles';
 import { NotFoundError } from '../utils/httpErrors';
 
 const SNAPSHOT_DIR = '.snapshots';
-const FILES_TO_SNAPSHOT = [
-  'apps.runtime.json',
-  'apps.trashed.json',
-  'env-vars.json',
-  'tenant-env-overrides.json',
-  'admin-users.json',
-  'audit.log',
-  '.schema-versions.json',
-];
+const FILES_TO_SNAPSHOT = snapshotDataFiles();
 
 // Directories captured recursively — each becomes a subdir inside the snapshot.
 const DIRS_TO_SNAPSHOT = [

@@ -84,7 +84,7 @@ describe('tightenSecretFilePermissions migration', () => {
       withFileLock: <T>(_name: string, fn: () => Promise<T>) => fn(),
     }));
 
-    const { tightenSecretFilePermissions } = await import('../services/envVars');
+    const { tightenSecretFilePermissions } = await import('../services/startupMaintenance');
     const count = await tightenSecretFilePermissions();
 
     expect(count).toBe(4);
