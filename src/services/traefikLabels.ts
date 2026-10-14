@@ -156,7 +156,8 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
     service.routing?.raw_labels,
     tenantOverrides?.raw_labels?.[service.name],
   );
-  const owner = rawLabelOwnerForRouter(routerName);
+  const generated = new Set(routerMws.map(n => n.toLowerCase()));
+  const owner = { ...rawLabelOwnerForRouter(routerName), isGeneratedMiddleware: (n: string) => generated.has(n) };
   for (const [k, v] of Object.entries(merged)) {
     const problem = rawLabelProblem(k, v, owner);
     if (problem) {

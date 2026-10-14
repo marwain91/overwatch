@@ -198,3 +198,88 @@ describe('own service: only plain loadbalancer options', () => {
     for (const [k, v] of Object.entries(ok)) expect(labels).toContain(`${k}=${v}`);
   });
 });
+
+describe('own middleware types and router attachments', () => {
+  const M = 'traefik.http.middlewares.myapp-t1-web-x';
+  const R = 'traefik.http.routers.myapp-t1-web';
+
+  it('denies middleware types that can address another service, a URL or a file', () => {
+    const bad = {
+      [`${M}.errors.service`]: 'myapp-t2-web@docker',
+      [`${M}.errors.status`]: '200-599',
+      [`${M}.errors.query`]: '/',
+      [`${M}.forwardauth.address`]: 'http://internal',
+      [`${M}.chain.middlewares`]: 'victim@docker',
+      [`${M}.plugin.foo.bar`]: 'x',
+      [`${M}.basicauth.usersfile`]: '/etc/passwd',
+      [`${M}.digestauth.usersfile`]: '/etc/passwd',
+      [`${M}.ratelimit.redis.endpoints`]: 'internal:6379',
+      [`${M}.somethingnew.x`]: 'y',
+    };
+    const owner = rawLabelOwnerForRouter('myapp-t1-web');
+    for (const [k, v] of Object.entries(bad)) expect(rawLabelProblem(k, v, owner), k).toBeDefined();
+    const joined = labelsFor(bad).join('\n');
+    expect(joined).not.toMatch(/errors|forwardauth|chain|plugin|usersfile|redis|somethingnew/);
+    for (const [k, v] of Object.entries(bad)) {
+      expect(() => assertTenantRawLabelsOwned('myapp', 't1', { web: { [k]: v } })).toThrow(k);
+    }
+  });
+
+  it('keeps benign own middlewares', () => {
+    const ok = {
+      [`${M}.headers.customresponseheaders.X-Frame`]: 'DENY',
+      [`${M}.ratelimit.average`]: '100',
+      [`${M}.redirectscheme.scheme`]: 'https',
+      [`${M}.stripprefix.prefixes`]: '/api',
+      [`${M}.basicauth.users`]: 'u:$apr1$abc',
+      [`${M}.basicauth.realm`]: 'r',
+      [`${M}.ipallowlist.sourcerange`]: '10.0.0.0/8',
+      [`${M}.compress`]: 'true',
+    };
+    const labels = labelsFor(ok);
+    for (const [k, v] of Object.entries(ok)) {
+      expect(rawLabelProblem(k, v, rawLabelOwnerForRouter('myapp-t1-web')), k).toBeUndefined();
+      expect(labels).toContain(`${k}=${v}`);
+    }
+  });
+
+  it('only lets the own router attach own or generated middlewares', () => {
+    const owner = rawLabelOwnerForRouter('myapp-t1-web');
+    const p = (v: string) => rawLabelProblem(`${R}.middlewares`, v, owner);
+    expect(p('myapp-t2-web-x@docker')).toBeDefined();
+    expect(p('foo@file')).toBeDefined();
+    expect(p('api@internal')).toBeDefined();
+    expect(p('myapp-t1-web-x@docker,foo@file')).toBeDefined();
+    expect(p('myapp-t1-web-x')).toBeUndefined();
+    expect(p('myapp-t1-web-x@docker, myapp-t1-web-y_z')).toBeUndefined();
+    expect(labelsFor({ [`${R}.middlewares`]: 'foo@file' }).join('\n')).not.toContain('foo@file');
+    expect(() => assertTenantRawLabelsOwned('myapp', 't1', { web: { [`${R}.middlewares`]: 'foo@file' } })).toThrow(/middlewares/);
+    expect(() => assertAppRawLabelsOwned('myapp', [{ name: 'web', routing: { raw_labels: { [`${R}.middlewares`]: 'myapp-t1-web-x@docker' } } }])).not.toThrow();
+    expect(() => assertAppRawLabelsOwned('myapp', [{ name: 'web', routing: { raw_labels: { [`${R}.middlewares`]: 'foo@file' } } }])).toThrow(/middlewares/);
+  });
+
+  it('allows the generator\'s own typed middleware names in a router list', () => {
+    const owner = { ...rawLabelOwnerForRouter('myapp-t1-web'), isGeneratedMiddleware: (n: string) => n === 'myapp-t1-web-rate-limit' };
+    expect(rawLabelProblem(`${R}.middlewares`, 'myapp-t1-web-rate-limit@docker', owner)).toBeUndefined();
+    expect(rawLabelProblem(`${R}.middlewares`, 'myapp-t1-web-other-one', owner)).toBeDefined();
+  });
+
+  it('denies router tls options and other tls fields', () => {
+    const owner = rawLabelOwnerForRouter('myapp-t1-web');
+    expect(rawLabelProblem(`${R}.tls.options`, 'victim@file', owner)).toBeDefined();
+    expect(rawLabelProblem(`${R}.tls.options`, 'x', owner)).toBeDefined();
+    expect(labelsFor({ [`${R}.tls.options`]: 'x' }).join('\n')).not.toContain('tls.options');
+  });
+
+  it('keeps the admin router unrestricted (operator-owned)', () => {
+    const yml = buildOverwatchComposeYml({
+      database: { type: 'mariadb', host: 'x', port: 3306, root_user: 'root', root_password_env: 'X', container_name: 'x' },
+      networking: { external_network: 'n', apps_path: '/a' },
+      traefik: { log_level: 'INFO', tls_termination: 'upstream', overwatch: { host: 'ow.example.com', raw_labels: {
+        'traefik.http.middlewares.sso.forwardauth.address': 'http://auth',
+        'traefik.http.routers.admin.middlewares': 'sso@docker',
+      } } },
+    } as any);
+    expect(yml).toContain('forwardauth.address=http://auth');
+  });
+});

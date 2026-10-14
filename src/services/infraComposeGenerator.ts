@@ -218,7 +218,7 @@ function buildOverwatchLabels(ow: TraefikOverwatch, traefik: TraefikGlobal): str
 
   // The admin router and service are both called `admin`; its middlewares are
   // operator-named, so any middleware label passes.
-  const adminOwner = { ...rawLabelOwnerForRouter('admin'), isOwnMiddleware: () => true };
+  const adminOwner = { ...rawLabelOwnerForRouter('admin'), isOwnMiddleware: () => true, trusted: true };
   for (const [k, v] of Object.entries(ow.raw_labels ?? {})) {
     if (isBlockedRawLabelKey(k, adminOwner, v)) continue;
     out.push(`${k}=${v}`);
