@@ -1,8 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { getApp } from './app';
 import { getTenantInfo } from './docker';
-import { loadConfig } from '../config/loader';
-import { isReservedSecretEnv } from '../utils/reservedEnv';
+import { isReservedSecretEnv, loadConfigOrNull } from '../utils/reservedEnv';
 import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const DEFAULT_URL_TEMPLATE = 'https://${domain}/admin-login#token=${token}';
@@ -30,9 +29,7 @@ export async function mintAdminAccess(appId: string, tenantId: string): Promise<
 
   // Tokens signed with an Overwatch core secret (e.g. JWT_SECRET) would be valid
   // against Overwatch itself; refuse before reading the value.
-  let config = null;
-  try { config = loadConfig(); } catch { /* static reserved list still applies */ }
-  if (isReservedSecretEnv(secretEnv, config)) {
+  if (isReservedSecretEnv(secretEnv, loadConfigOrNull())) {
     console.error(`[AdminAccess] Refusing to mint for app ${appId}: secret_env '${secretEnv}' is a reserved Overwatch secret`);
     throw new ValidationError(
       `admin_access.secret_env '${secretEnv}' is a reserved Overwatch secret and cannot sign tenant admin tokens. Use a dedicated env such as AUTH_SERVICE_SECRET.`,
@@ -57,7 +54,7 @@ export async function mintAdminAccess(appId: string, tenantId: string): Promise<
       [adminFlag]: true,
       appId,
       tenantId,
-      email: emailTemplate.replace('${tenantId}', tenantId),
+      email: fillPlaceholder(emailTemplate, 'tenantId', tenantId),
       name: adminName,
       iat: Math.floor(Date.now() / 1000),
     },

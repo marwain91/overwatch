@@ -36,6 +36,15 @@ describe('mintAdminAccess', () => {
     expect(payload.tenantId).toBe('t1');
   });
 
+  it('fills every ${tenantId} in email_template', async () => {
+    getApp.mockResolvedValue(app({
+      enabled: true,
+      token_payload: { email_template: '${tenantId}+admin@${tenantId}.local' },
+    }));
+    const { token } = await mintAdminAccess('demo', 't1');
+    expect((jwt.verify(token, 'test-secret') as Record<string, unknown>).email).toBe('t1+admin@t1.local');
+  });
+
   it('refuses a template that is not pinned to https://${domain}', async () => {
     getApp.mockResolvedValue(app({ enabled: true, url_template: 'https://evil.example/x#${token}' }));
     await expect(mintAdminAccess('demo', 't1')).rejects.toMatchObject({ status: 500 });
