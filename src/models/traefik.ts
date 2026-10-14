@@ -157,6 +157,13 @@ export interface RawLabelOwner {
   /** The router (and, by convention, service) names the labels may address. */
   isOwnRouter: (name: string) => boolean;
   isOwnMiddleware: (name: string) => boolean;
+  /**
+   * Middleware names the generator itself emits for this router (typed
+   * `middlewares` fields); a raw router `middlewares` label may reference them.
+   */
+  isGeneratedMiddleware?: (name: string) => boolean;
+  /** Operator-owned object (the Overwatch admin router): the tenant-facing field restrictions do not apply. */
+  trusted?: boolean;
 }
 
 // Slugs may contain hyphens but never `_`, so a middleware named
@@ -201,6 +208,41 @@ export function rawLabelOwnerForAppService(appId: string, service: string): RawL
 // certificates for hosts the tenant does not own.
 const RESERVED_ROUTER_FIELDS = /^(rule|entrypoints|tls|tls\.certresolver|tls\.domains(\..*)?)$/;
 
+// Middleware types a tenant may configure on its own middlewares. Allowlist:
+// types that can name another service (errors, chain), fetch a URL
+// (forwardauth), read a file or load code (plugin, *file fields) or reach a
+// backend (ratelimit.redis) stay out, as does anything unknown or new.
+const SAFE_MIDDLEWARE_TYPES = new Set([
+  'headers', 'ratelimit', 'inflightreq', 'compress', 'retry', 'ipallowlist', 'ipwhitelist',
+  'redirectscheme', 'redirectregex', 'stripprefix', 'stripprefixregex', 'addprefix',
+  'replacepath', 'replacepathregex', 'buffering', 'contenttype', 'passtlsclientcert', 'grpcweb',
+]);
+const AUTH_MIDDLEWARE_FIELDS = /^(basicauth|digestauth)\.(users|realm|removeheader|headerfield)$/;
+
+function middlewareFieldProblem(field: string): string | undefined {
+  const type = field.split('.')[0];
+  if (SAFE_MIDDLEWARE_TYPES.has(type)) {
+    if (/^ratelimit\.redis(\.|$)/.test(field)) return 'ratelimit.redis would point Traefik at an arbitrary backend';
+    return undefined;
+  }
+  // basicauth/digestauth: inline users only, never `usersfile`.
+  if (AUTH_MIDDLEWARE_FIELDS.test(field)) return undefined;
+  return `middleware type "${type}" is not allowed (it can reach other services, URLs or files)`;
+}
+
+/** Every entry of a router `middlewares` value must be an own or generated middleware (no @file/@internal/foreign). */
+function routerMiddlewaresProblem(value: string, owner?: RawLabelOwner): string | undefined {
+  if (!value.trim()) return undefined;
+  for (const raw of value.split(',')) {
+    const entry = raw.trim().toLowerCase();
+    const m = /^([^@]+)(?:@docker)?$/.exec(entry);
+    const name = m?.[1] ?? '';
+    const ok = !!owner && !!name && (owner.isOwnMiddleware(name) || owner.isGeneratedMiddleware?.(name) === true);
+    if (!ok) return `a router may only use its own middlewares (got "${raw.trim()}")`;
+  }
+  return undefined;
+}
+
 /**
  * Why a raw label may not be emitted/stored, or undefined when it is fine.
  * Stricter than the schema check because the rules must see the key exactly as
@@ -237,6 +279,11 @@ export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwne
     if (!own) return `"${name}" is not one of this tenant's own ${kind}`;
   }
   const field = rest.join('.').replace(/\[\d+\]/g, '');
+  const trusted = owner?.trusted === true;
+  if (kind === 'middlewares' && !trusted) {
+    const p = middlewareFieldProblem(field);
+    if (p) return p;
+  }
   if (kind === 'services') {
     // weighted/mirroring/failover can name any service (another tenant's
     // `<router>@docker`), a backend url points the host at any address, and
@@ -252,6 +299,11 @@ export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwne
   }
   if (kind === 'routers') {
     if (RESERVED_ROUTER_FIELDS.test(field)) return 'reserved by Overwatch (use the typed fields instead)';
+    if (!trusted && /^tls(\.|$)/.test(field)) return 'tls options may reference a TLS option set owned by someone else';
+    if (!trusted && field === 'middlewares') {
+      const p = routerMiddlewaresProblem(value, owner);
+      if (p) return p;
+    }
     if (field === 'service') {
       const target = value.trim().toLowerCase().replace(/@docker$/, '');
       if (!owner || !owner.isOwnRouter(target)) return 'a router may only point at its own service';

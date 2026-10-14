@@ -116,4 +116,33 @@ describe('extractFileFromImage — docker interactions', () => {
     await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json'))
       .rejects.toThrow(/permission denied/);
   });
+
+  it('refuses a manifest above 1 MiB (warns, returns null, removes the temp file)', async () => {
+    const fsSync = await import('fs');
+    let tmp = '';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockExecFile((args) => {
+      if (args[0] === 'image' && args[1] === 'inspect') return { stdout: '[{}]' };
+      if (args[0] === 'create') return { stdout: 'cid-789\n' };
+      if (args[0] === 'cp') { tmp = args[2]; fsSync.writeFileSync(tmp, 'x'.repeat(1024 * 1024 + 1)); return { stdout: '' }; }
+      return { stdout: '' };
+    });
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).resolves.toBeNull();
+    expect(warn).toHaveBeenCalled();
+    expect(fsSync.existsSync(tmp)).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('reads a manifest at the limit', async () => {
+    const fsSync = await import('fs');
+    mockExecFile((args) => {
+      if (args[0] === 'image' && args[1] === 'inspect') return { stdout: '[{}]' };
+      if (args[0] === 'create') return { stdout: 'cid-790\n' };
+      if (args[0] === 'cp') { fsSync.writeFileSync(args[2], '{"id":"x"}'); return { stdout: '' }; }
+      return { stdout: '' };
+    });
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).resolves.toBe('{"id":"x"}');
+  });
 });

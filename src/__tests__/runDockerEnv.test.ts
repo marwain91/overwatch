@@ -34,7 +34,34 @@ describe('getDockerEnv', () => {
     expect(env.DOCKER_CONFIG).toBe('/home/ow/.docker');
     expect(env.DOCKER_CERT_PATH).toBe('/certs');
     expect(env.DOCKER_TLS_VERIFY).toBe('1');
-    expect(env.COMPOSE_PROFILES).toBe('prod');
+  });
+
+  it('forwards non-selection COMPOSE_* tuning and DOCKER_* by prefix', () => {
+    process.env.COMPOSE_HTTP_TIMEOUT = '300';
+    process.env.COMPOSE_PARALLEL_LIMIT = '2';
+    process.env.COMPOSE_ANSI = 'never';
+    process.env.DOCKER_API_VERSION = '1.43';
+    process.env.DOCKER_CLI_EXPERIMENTAL = 'enabled';
+    const env = getDockerEnv();
+    expect(env.COMPOSE_HTTP_TIMEOUT).toBe('300');
+    expect(env.COMPOSE_PARALLEL_LIMIT).toBe('2');
+    expect(env.COMPOSE_ANSI).toBe('never');
+    expect(env.DOCKER_API_VERSION).toBe('1.43');
+    expect(env.DOCKER_CLI_EXPERIMENTAL).toBe('enabled');
+  });
+
+  it('never forwards compose selection variables that would override per-tenant settings', () => {
+    for (const k of ['COMPOSE_PROJECT_NAME', 'COMPOSE_FILE', 'COMPOSE_PROFILES', 'COMPOSE_PATH_SEPARATOR',
+      'COMPOSE_ENV_FILES', 'COMPOSE_REMOVE_ORPHANS', 'COMPOSE_IGNORE_ORPHANS', 'COMPOSE_SOMETHING_NEW']) {
+      process.env[k] = 'x';
+    }
+    const env = getDockerEnv();
+    expect(Object.keys(env).filter(k => k.startsWith('COMPOSE_'))).toEqual([]);
+  });
+
+  it('builds exactly the expected env', () => {
+    const only = { PATH: '/p', HOME: '/h', COMPOSE_HTTP_TIMEOUT: '9', COMPOSE_PROJECT_NAME: 'x', DOCKER_HOST: 'h', JWT_SECRET: 's', COMPOSE_FILE: 'f' };
+    expect(getDockerEnv(only)).toEqual({ PATH: '/p', HOME: '/h', COMPOSE_HTTP_TIMEOUT: '9', DOCKER_HOST: 'h' });
   });
 
   it('drops Overwatch secrets', () => {

@@ -7,8 +7,16 @@ import { HttpError } from './httpErrors';
 // `${VAR}` in a tenant's compose file against the env it runs with.
 const DOCKER_ENV_KEYS = [
   'PATH', 'HOME', 'LANG', 'LC_ALL',
-  'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY', 'DOCKER_CONTEXT',
 ] as const;
+
+// Compose tuning only. Selection variables (COMPOSE_PROJECT_NAME, COMPOSE_FILE,
+// COMPOSE_PROFILES, COMPOSE_ENV_FILES, COMPOSE_PATH_SEPARATOR,
+// COMPOSE_REMOVE_ORPHANS, COMPOSE_IGNORE_ORPHANS) stay out: they would beat the
+// per-tenant `.env` values, and with `down`/--remove-orphans could hit other tenants.
+const COMPOSE_TUNING_KEYS = new Set([
+  'COMPOSE_HTTP_TIMEOUT', 'COMPOSE_COMPATIBILITY', 'COMPOSE_PARALLEL_LIMIT',
+  'COMPOSE_ANSI', 'COMPOSE_STATUS_STDOUT', 'COMPOSE_MENU',
+]);
 
 /** Allowlisted environment for docker / docker compose child processes. */
 export function getDockerEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -17,7 +25,9 @@ export function getDockerEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Pr
     if (source[key] !== undefined) env[key] = source[key];
   }
   for (const [key, value] of Object.entries(source)) {
-    if (key.startsWith('COMPOSE_') && value !== undefined) env[key] = value;
+    if (value === undefined) continue;
+    // DOCKER_* configures the CLI (host, TLS, API version, context); none of it is an Overwatch secret.
+    if (key.startsWith('DOCKER_') || COMPOSE_TUNING_KEYS.has(key)) env[key] = value;
   }
   return env;
 }

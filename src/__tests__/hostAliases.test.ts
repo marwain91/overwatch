@@ -196,3 +196,46 @@ describe('readTenantTraefik generation-time re-check', () => {
     expect((await getTenantTraefik('shop', 't1'))?.host_aliases).toEqual(['ow.example.com']);
   });
 });
+
+describe('assertTenantDomainAllowed (primary domain at create time)', () => {
+  it.each([
+    ['ow.example.com', /Overwatch/i],
+    ['mcp.example.com', /Overwatch/i],
+    ['dash.example.com', /Overwatch/i],
+  ])('rejects the reserved host %s', async (host, re) => {
+    const { assertTenantDomainAllowed } = await import('../services/tenantTraefik');
+    const { ValidationError } = await import('../utils/httpErrors');
+    const p = assertTenantDomainAllowed('shop', 't9', host);
+    await expect(p).rejects.toBeInstanceOf(ValidationError);
+    await expect(p).rejects.toThrow(re);
+  });
+
+  it('rejects another tenant\'s domain and alias (case-insensitive) with an exposed conflict', async () => {
+    await addTenant('shop', 't1', 't1.shop.example.com', ['alias.shop.example.com']);
+    const { assertTenantDomainAllowed } = await import('../services/tenantTraefik');
+    const { ConflictError } = await import('../utils/httpErrors');
+    await expect(assertTenantDomainAllowed('shop', 't9', 'T1.shop.example.com')).rejects.toBeInstanceOf(ConflictError);
+    await expect(assertTenantDomainAllowed('shop', 't9', 'alias.shop.example.com')).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it('accepts a fresh domain, even outside the app domain template', async () => {
+    await addTenant('shop', 't1', 't1.shop.example.com');
+    const { assertTenantDomainAllowed } = await import('../services/tenantTraefik');
+    await expect(assertTenantDomainAllowed('shop', 't9', 'brand-new.other.org')).resolves.toBeUndefined();
+  });
+
+  it('fails closed when the config cannot be loaded', async () => {
+    loadConfigImpl = () => { throw new Error('boom'); };
+    const { assertTenantDomainAllowed } = await import('../services/tenantTraefik');
+    await expect(assertTenantDomainAllowed('shop', 't9', 'x.example.org')).rejects.toMatchObject({ expose: true });
+  });
+});
+
+describe('updateTenantTraefik requires an existing tenant', () => {
+  it('throws NotFoundError and creates no directory for an unknown tenant', async () => {
+    const { updateTenantTraefik } = await import('../services/traefikConfig');
+    const { NotFoundError } = await import('../utils/httpErrors');
+    await expect(updateTenantTraefik('shop', 'ghost', { host_aliases: ['x.shop.example.com'] })).rejects.toBeInstanceOf(NotFoundError);
+    await expect(fs.access(path.join(appsDir, 'shop', 'tenants', 'ghost'))).rejects.toThrow();
+  });
+});

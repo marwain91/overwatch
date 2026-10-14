@@ -33,7 +33,7 @@ beforeEach(async () => {
     loadConfig: () => ({ project: { name: 'T', prefix: 'test', db_prefix: 'test' } }),
     resolveAppDbPrefix: () => 'test',
   }));
-  vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir, resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
+  vi.doMock('../config/loader', () => ({ getAppsDir: () => appsDir, loadConfig: () => ({ project: { name: 'T', prefix: 'test', db_prefix: 'test' } }), resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
   vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
 });
 

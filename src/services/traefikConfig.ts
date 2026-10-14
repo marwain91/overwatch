@@ -15,6 +15,8 @@ import { TraefikAppSchema, TraefikTenantSchema, type TraefikApp } from '../model
 import { readTenantTraefik, writeTenantTraefik, loadAliasContext, assertHostAliasesAllowed } from './tenantTraefik';
 import type { TraefikTenant } from '../models/traefik';
 import { NotFoundError } from '../utils/httpErrors';
+import { tenantDir } from './tenantStore';
+import * as fs from 'fs/promises';
 import { assertTenantRawLabelsOwned } from './traefikLabels';
 
 const SECRET_HINTS = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
@@ -168,6 +170,13 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
   if (body === null || body === undefined) {
     await writeTenantTraefik(appId, tenantId, undefined);
     return undefined;
+  }
+  // Writing would otherwise create the tenant directory, and its aliases would then count as foreign hosts.
+  try {
+    await fs.access(tenantDir(appId, tenantId));
+  } catch (err: any) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') throw new NotFoundError(`Tenant '${tenantId}' not found in app '${appId}'`);
+    throw err;
   }
   const parsed = TraefikTenantSchema.parse(body);
   assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);

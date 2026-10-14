@@ -352,6 +352,11 @@ describe('generateComposeFile treats every value as data', () => {
     );
   });
 
+  it('escapes $ in the com.overwatch.service label like every other label value', () => {
+    const doc = load(render([{ name: 'we$b${X}', required: true }]));
+    expect(doc.services['we$b${X}'].labels).toContain('com.overwatch.service=we$$b$${X}');
+  });
+
   it('keeps a service name with quotes or line breaks inside its own key', () => {
     const newline = 'web\n    privileged: true\n  evil:\n    image: attacker/evil';
     const quotes = 'api": {"privileged": true}, "x';
