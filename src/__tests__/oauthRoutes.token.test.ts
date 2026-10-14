@@ -143,6 +143,23 @@ describe('oauth /token', () => {
     expect(res.body.error).toBe('invalid_grant');
   });
 
+  it('answers a refresh_token grant without a refresh_token with invalid_request, not a 500', async () => {
+    const res = await request(appWith()).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_request');
+  });
+
+  it('answers a repeated refresh_token parameter with invalid_request, not a 500', async () => {
+    const res = await request(appWith()).post('/oauth/token').type('form').send('grant_type=refresh_token&client_id=c1&refresh_token=a&refresh_token=b');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_request');
+  });
+
+  it('answers /oauth/revoke with 200 for a repeated token parameter', async () => {
+    const res = await request(appWith()).post('/oauth/revoke').type('form').send('token=a&token=b');
+    expect(res.status).toBe(200);
+  });
+
   it('revokes a refresh token via /oauth/revoke (subsequent use rejected)', async () => {
     const verifier = randomBytes(32).toString('base64url');
     const challenge = createHash('sha256').update(verifier).digest('base64url');

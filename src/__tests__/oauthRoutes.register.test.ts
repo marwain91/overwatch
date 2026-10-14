@@ -40,6 +40,14 @@ describe('oauth /register + metadata', () => {
     expect(res.body.token_endpoint_auth_method).toBe('none');
   });
 
+  it('rejects an oversized redirect_uri', async () => {
+    const res = await request(appWith())
+      .post('/oauth/register')
+      .send({ client_name: 'x', redirect_uris: [`https://client/cb?${'a'.repeat(4096)}`] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_redirect_uri');
+  });
+
   it('rejects registration without redirect_uris', async () => {
     const res = await request(appWith()).post('/oauth/register').send({ client_name: 'x' });
     expect(res.status).toBe(400);

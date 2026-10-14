@@ -46,6 +46,22 @@ describe('mountMcp', () => {
     expect(res.headers['www-authenticate']).toMatch(/Bearer/);
   });
 
+  it.each([
+    ['an expired token', () => issueAccessToken({ email: 'a@b.c', role: 'editor', issuer: ISSUER, ttl: '-1s' })],
+    ['a malformed token', () => 'not-a-jwt'],
+    ['a token for a removed admin', () => issueAccessToken({ email: 'gone@b.c', role: 'editor', issuer: ISSUER, ttl: '1h' })],
+  ])('answers %s with 401 + WWW-Authenticate so the client refreshes', async (_label, make) => {
+    const app = express();
+    app.use(express.json());
+    mountMcp(app, { issuer: ISSUER, accessTokenTtl: '1h', refreshTokenTtl: '30d' });
+    const res = await request(app)
+      .post('/mcp')
+      .set('Authorization', `Bearer ${make()}`)
+      .send({ jsonrpc: '2.0', method: 'tools/list', id: 1 });
+    expect(res.status).toBe(401);
+    expect(res.headers['www-authenticate']).toMatch(/invalid_token/);
+  });
+
   it('accepts a valid bearer token through requireBearerAuth (regression: expiresAt)', async () => {
     const app = express();
     app.use(express.json());

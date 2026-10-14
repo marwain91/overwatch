@@ -26,6 +26,9 @@ const CONSENT_TTL_MS = 5 * 60_000;
 const GRANTED_SCOPE = 'tenants';
 const MAX_CLIENT_NAME_LENGTH = 100;
 const MAX_REDIRECT_URIS = 10;
+// Registration is unauthenticated and every client is persisted (and re-read on
+// each token call), so its metadata must stay small.
+const MAX_REDIRECT_URI_LENGTH = 2048;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 interface AuthorizeParams {
@@ -145,6 +148,9 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     const { client_name, redirect_uris } = req.body || {};
     if (!Array.isArray(redirect_uris) || redirect_uris.length === 0 || redirect_uris.length > MAX_REDIRECT_URIS) {
       return res.status(400).json({ error: 'invalid_client_metadata', error_description: `redirect_uris must contain 1-${MAX_REDIRECT_URIS} entries` });
+    }
+    if (redirect_uris.some(u => typeof u === 'string' && u.length > MAX_REDIRECT_URI_LENGTH)) {
+      return res.status(400).json({ error: 'invalid_redirect_uri', error_description: `redirect_uris entries must be at most ${MAX_REDIRECT_URI_LENGTH} characters` });
     }
     if (client_name !== undefined && (typeof client_name !== 'string' || client_name.length > MAX_CLIENT_NAME_LENGTH)) {
       return res.status(400).json({ error: 'invalid_client_metadata', error_description: `client_name must be a string of at most ${MAX_CLIENT_NAME_LENGTH} characters` });
@@ -303,7 +309,9 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     if (grant === 'refresh_token') {
       // Validate client_id before consuming: a wrong caller must not be able to burn the token.
       if (!clientId) return res.status(400).json({ error: 'invalid_grant', error_description: 'client_id required' });
-      const rec = await consumeRefreshToken(req.body?.refresh_token, clientId);
+      const presented = req.body?.refresh_token;
+      if (typeof presented !== 'string' || !presented) return res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token required' });
+      const rec = await consumeRefreshToken(presented, clientId);
       if (!rec) return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown, expired or mismatched refresh token' });
       if (!(await isAdminEmail(rec.email))) return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
       const role = normaliseRole(await getUserRole(rec.email));
@@ -318,7 +326,7 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
   }));
 
   router.post('/oauth/revoke', express.urlencoded({ extended: false }), asyncHandler(async (req: Request, res: Response) => {
-    if (req.body?.token) await revokeRefreshToken(req.body.token);
+    if (typeof req.body?.token === 'string' && req.body.token) await revokeRefreshToken(req.body.token);
     res.status(200).json({}); // RFC 7009: always 200
   }));
 

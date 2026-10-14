@@ -1,4 +1,5 @@
-import { verifyAccessToken } from '../oauth/tokens';
+import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { verifyAccessToken, VerifiedToken } from '../oauth/tokens';
 import { listAdminUsers, normaliseRole, AdminRole } from '../services/users';
 
 export interface McpAuthExtra {
@@ -22,13 +23,21 @@ export interface McpAuthInfo {
 export function createTokenVerifier(opts: { issuer: string }) {
   return {
     async verifyAccessToken(token: string): Promise<McpAuthInfo> {
-      const decoded = verifyAccessToken(token, { issuer: opts.issuer });
+      // requireBearerAuth answers 401 + WWW-Authenticate only for an
+      // InvalidTokenError; anything else becomes a 500, which clients don't
+      // treat as a cue to refresh. A store read failure still fails closed (500).
+      let decoded: VerifiedToken;
+      try {
+        decoded = verifyAccessToken(token, { issuer: opts.issuer });
+      } catch (err) {
+        throw new InvalidTokenError(err instanceof Error && err.name === 'TokenExpiredError' ? 'Token has expired' : 'Invalid token');
+      }
       // Single consistent snapshot: derive both membership and role from one read,
       // closing the TOCTOU window where a removal between two reads could resolve
       // a removed user to the back-compat 'admin' default.
       const users = await listAdminUsers();
       const match = users.find(u => u.email.toLowerCase() === decoded.email.toLowerCase());
-      if (!match) throw new Error('Access revoked'); // not (or no longer) an admin
+      if (!match) throw new InvalidTokenError('Access revoked'); // not (or no longer) an admin
       // Legacy records without an explicit role resolve to 'admin' per the
       // documented back-compat contract in services/users.ts.
       const role = normaliseRole(match.role);
