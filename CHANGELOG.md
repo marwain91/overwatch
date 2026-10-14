@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Viewers and editors no longer receive credentials from Overwatch's read APIs.** Database process-list statement text is `[hidden]` (it can show `CREATE USER … IDENTIFIED BY` during tenant creation). Traefik credentials are masked on every read surface — the global Traefik config, app definitions (`/api/apps`, `/api/apps/:id`, `/api/apps/:id/traefik`, `/api/apps/.trashed`) and tenant Traefik overrides: basicAuth/digestAuth users, forwardAuth URL userinfo and credential query parameters, secret-looking header values, and every raw-label value whose key is not a known non-secret field. Admins still see full values. Saving a masked value back keeps the stored credential (resolved under the write lock, so a concurrent rotation is not reverted); a masked value with nothing stored is refused. Container logs and update progress stay readable by viewers.
+- **Viewers and editors no longer receive credentials from Overwatch's read APIs.** Database process-list statement text is `[hidden]` (it can show `CREATE USER … IDENTIFIED BY` during tenant creation). Traefik credentials are masked on every read surface — the global Traefik config, app definitions (`/api/apps`, `/api/apps/:id`, `/api/apps/:id/traefik`, `/api/apps/.trashed`) and tenant Traefik overrides: basicAuth/digestAuth users, forwardAuth URL userinfo and credential query parameters, custom header values, URL credentials embedded in other shown values, and every raw-label value whose key is not a known non-secret field. Admins still see full values. Saving a masked value back keeps the stored credential (resolved under the write lock, so a concurrent rotation is not reverted); a masked value with nothing stored is refused. Container logs and update progress stay readable by viewers.
 - **Docker child processes receive only an allowlist of `DOCKER_*` variables** (`DOCKER_HOST`, `DOCKER_CONFIG`, `DOCKER_CONTEXT`, `DOCKER_CERT_PATH`, `DOCKER_TLS_VERIFY`, `DOCKER_API_VERSION`, `DOCKER_BUILDKIT`, `DOCKER_DEFAULT_PLATFORM`, `DOCKER_CONTENT_TRUST`, `DOCKER_CONTENT_TRUST_SERVER`) instead of every `DOCKER_*` variable.
 - **Concurrent creates can no longer claim the same domain**; the domain check and the tenant `.env` write are serialised under one lock.
 - **The SSRF guard strips every trailing dot from a hostname** (`localhost..` is refused), and a registry `Link: next` header matches the registry origin even with an explicit `:443`; a dropped foreign-origin link is logged.
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Creating a tenant from a backup restores before the app first starts.** The tenant is created stopped (`docker compose create`), the database and volume paths are restored, then it starts; a failed start rolls the new tenant back. Backed-up paths must be volume mount points or exist in the image.
-- **Restore uses the tenant's own app-definition snapshot** for its services and paths, takes the per-tenant lock, and reports an invalid snapshot as a failed restore instead of a 500. Shared env regeneration also takes the per-tenant lock.
+- **Restore uses the tenant's own app-definition snapshot** for its services and paths, takes the per-tenant lock, and reports an invalid snapshot with its real error instead of a generic server error. Shared env regeneration also takes the per-tenant lock.
 - **Rolling back a failed update no longer overwrites a newer global app definition**; it is restored only if it is still the one this update applied.
 - **Env values with leading or trailing whitespace are quoted in generated env files**, so containers receive the exact value (verified against real `docker compose`).
 - **Lock waits have a deadline.** A caller waiting more than 30 seconds (`OVERWATCH_LOCK_TIMEOUT_MS`) gets a 409 "busy" error instead of hanging; lock files carry a per-process id, so two PID-1 containers sharing a data directory no longer reclaim each other's live lock.
@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Raw router `middlewares` labels may name any of the app's own (hyphenated) typed middlewares** at save time; a name the generator doesn't produce is dropped with a warning at generation.
 - **Docs:** viewer read scope (`docs/api.md`), the `DOCKER_*` allowlist, `OVERWATCH_LOCK_TIMEOUT_MS`, the writable `<data>/.locks` / `.config-tmp` the CLI needs, and new troubleshooting entries.
 - **Tests:** CLI end-to-end tests warm `tsx` once instead of timing out on a cold compile; new coverage for broadcast backpressure, lock reclaim and deadlines, the apps cache, JSONL outages, the config writer CLI paths, the scheduler and the create-from-backup order.
+
+### Upgrade notes
+
+- **Integrations that read app or Traefik configuration with a viewer or editor token now receive `••••••••` placeholders** for credentials and for raw-label values outside the known non-secret options (`/api/apps`, `/api/apps/:id`, `/api/apps/:id/traefik`, `/api/apps/.trashed`, `/api/traefik*`, tenant Traefik overrides), and process-list statements as `[hidden]`. Use an admin token where the real values are needed.
+- **Editors see their own raw-label values masked** when the option is not a known non-secret field; re-saving the form keeps the stored values, and a placeholder can only stand for a value already stored under the same key.
+- **Operations on a tenant that is busy for more than 30 seconds now fail with 409 "busy"** instead of waiting indefinitely (`OVERWATCH_LOCK_TIMEOUT_MS` changes the wait). Retry when the running update, create or restore finishes.
 
 ## [1.8.0] — 2026-10-14
 
