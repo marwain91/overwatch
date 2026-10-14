@@ -43,7 +43,7 @@ describe('global Traefik config credentials for non-admins', () => {
     const mw = res.body.middlewares;
     expect(mw.gate.users).toEqual(['alice:••••••••', 'bob:••••••••']);
     expect(mw.gate.realm).toBe('Private');
-    expect(mw.sso.address).toBe('https://••••••••@auth.example.com/verify');
+    expect(mw.sso.address).toBe('https://auth.example.com/••••••••');
     expect(mw.hdr.custom_request_headers).toEqual({ Authorization: '••••••••', 'X-Env': '••••••••' });
     expect(mw.limit).toEqual({ type: 'rateLimit', average: 10 });
     expect(res.body.overwatch.raw_labels['traefik.http.middlewares.ow-auth.basicauth.users']).toBe('carol:••••••••');
@@ -108,19 +108,13 @@ describe('credential-bearing raw labels and broader typed rules', () => {
     for (const p of ['/overwatch', '/dashboard', '/middlewares']) {
       expect(JSON.stringify((await get('viewer', p)).body), p).not.toMatch(LEAKS);
     }
-    const sso = new URL(full.middlewares.sso.address);
-    expect(sso.searchParams.get('token')).toBe('••••••••');
-    expect(sso.searchParams.get('apiKey')).toBe('••••••••');
-    expect(sso.searchParams.get('mode')).toBe('strict');
+    expect(full.middlewares.sso.address).toBe('https://auth.example.com/••••••••');
     expect(full.middlewares.hdr.custom_request_headers).toEqual({
       'Proxy-Authorization': '••••••••', 'X-Signature': '••••••••', 'X-Credential': '••••••••',
       'X-Bearer': '••••••••', 'X-Env': '••••••••',
     });
     const labels = full.overwatch.raw_labels;
-    const ow = new URL(labels['traefik.http.middlewares.ow-sso.forwardauth.address']);
-    expect(labels['traefik.http.middlewares.ow-sso.forwardauth.address']).toMatch(/^https:\/\/••••••••@auth\.example\.com\//);
-    expect(ow.searchParams.get('signature')).toBe('••••••••');
-    expect(ow.searchParams.get('a')).toBe('1');
+    expect(labels['traefik.http.middlewares.ow-sso.forwardauth.address']).toBe('https://auth.example.com/••••••••');
     expect(labels['traefik.http.middlewares.ow-h.headers.customrequestheaders.X-Api-Key']).toBe('••••••••');
     // Fail-closed: a custom header name is not an allowlisted leaf, so its value is hidden too.
     expect(labels['traefik.http.middlewares.ow-h.headers.customresponseheaders.X-Frame']).toBe('••••••••');
@@ -308,16 +302,15 @@ describe('whole-value masking of free text (round 5)', () => {
     expect(redactRawLabels({ 'traefik.http.routers.x.priority': '5' })['traefik.http.routers.x.priority']).toBe('5');
   });
 
-  it('forwardAuth: non-http scheme masked, userinfo shown as placeholder, secret params and fragment masked', async () => {
+  it('forwardAuth: non-http scheme masked, anything beyond the origin replaced by one placeholder segment', async () => {
     const { redactMiddlewareCredentials, redactRawLabels } = await r();
     const addr = (a: string) => (redactMiddlewareCredentials({ x: { type: 'forwardAuth', address: a } } as any) as any).x.address;
     expect(addr('ftp://auth.example.com/v')).toBe(M);
     expect(addr('javascript:alert(1)')).toBe(M);
-    expect(addr('https://u:pw@auth.example.com/v')).toBe(`https://${M}@auth.example.com/v`);
-    expect(addr('https://auth.example.com/v?sessionid=abc&x=1')).toContain('x=1');
-    expect(addr('https://auth.example.com/v?sessionid=abc&x=1')).not.toContain('abc');
-    expect(addr('https://auth.example.com/v#frag-secret')).toBe(`https://auth.example.com/v#${M}`);
-    expect(addr('https://auth.example.com/v')).toBe('https://auth.example.com/v');
+    expect(addr('https://u:pw@auth.example.com/v')).toBe(`https://auth.example.com/${M}`);
+    expect(addr('https://auth.example.com/v?sessionid=abc&x=1')).toBe(`https://auth.example.com/${M}`);
+    expect(addr('https://auth.example.com/v#frag-secret')).toBe(`https://auth.example.com/${M}`);
+    expect(addr('https://auth.example.com/')).toBe('https://auth.example.com/');
     expect(redactRawLabels({ 'traefik.http.middlewares.x.forwardauth.address': 'ftp://h/' })['traefik.http.middlewares.x.forwardauth.address']).toBe(M);
   });
 

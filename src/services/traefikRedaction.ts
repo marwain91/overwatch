@@ -9,11 +9,13 @@ export const MASK = '••••••••';
 // Raw-label keys whose value is an inline credential list.
 const CREDENTIAL_LABEL_KEY = /\.(basicauth|digestauth)\.users$/i;
 // Names of query/fragment/`;` parameters that carry credentials.
-const SECRET_PARAM_NAME = /(auth|credential|signature|sig|token|secret|key|pass|pwd|password|jwt|bearer|session|sid|otp|hmac|code)/i;
 const SECRET_PARAM_IN_TEXT = /[?&#;]\s*[^=&#;\s]*(auth|credential|signature|sig|token|secret|key|pass|pwd|password|jwt|bearer|session|sid|otp|hmac|code)[^=&#;\s]*\s*=/i;
-const ROUTER_REQUEST_MATCHER = /\b(Header|HeaderRegexp|Query|QueryRegexp)\s*\(/;
+const ROUTER_REQUEST_MATCHER = /\b(Header|HeaderRegexp|Query|QueryRegexp)\s*\(/i;
+// Only router references are shown in clear (names such as `auth@docker`); other `.middlewares`/`.service` keys (chain, errors) follow the normal rules.
+const ROUTER_REFERENCE_KEY = /^traefik\.http\.routers\.[^.]+\.(middlewares|service)$/i;
 const FORWARD_AUTH_LABEL = /\.forwardauth\.address$/i;
 
+// Accepted limit: a secret embedded in plain path/regex text with no parameter name or `@` is undetectable, so such fields must not store secrets.
 // Raw labels are masked fail-closed: a value is shown only when the label's last
 // key segment is a known non-secret option. An unknown leaf (plugin settings,
 // `forwardauth.tls.key`, anything a future Traefik adds) stays hidden.
@@ -63,23 +65,18 @@ function visibleText(text: string): string {
   return d.includes('@') || text.includes('@') || SECRET_PARAM_IN_TEXT.test(d) || SECRET_PARAM_IN_TEXT.test(text) ? MASK : text;
 }
 
-/** An auth URL with userinfo and credential-looking query values masked; a non-http(s) or unparsable address is hidden. */
+/**
+ * An auth URL reduced to its origin; anything else it carried (userinfo, path,
+ * `;` segment, query, fragment) can hold a credential in a form no pattern
+ * reliably spots, so it is replaced by one placeholder segment. A non-http(s) or
+ * unparsable address is hidden.
+ */
 function redactAddress(address: string): string {
   try {
     const u = new URL(address);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return MASK;
-    const hadUserinfo = !!(u.username || u.password);
-    const hadFragment = u.hash.length > 1;
-    u.username = '';
-    u.password = '';
-    u.hash = '';
-    for (const name of [...new Set([...u.searchParams.keys()])]) {
-      if (SECRET_PARAM_NAME.test(name)) u.searchParams.set(name, MASK);
-    }
-    let out = u.toString();
-    if (hadUserinfo) out = out.replace(/^(https?:\/\/)/i, `$1${MASK}@`);
-    if (hadFragment) out += `#${MASK}`;
-    return out;
+    const extra = !!(u.username || u.password) || (u.pathname !== '' && u.pathname !== '/') || u.search !== '' || u.hash !== '';
+    return extra ? `${u.origin}/${MASK}` : `${u.origin}/`;
   } catch {
     return MASK; // fail closed: an address that does not parse may still hold credentials
   }
@@ -95,7 +92,7 @@ function redactLabelValue(key: string, value: string): string {
   // A request-matching rule (header/query value) can embed a secret.
   if (leaf === 'rule' && ROUTER_REQUEST_MATCHER.test(value)) return MASK;
   // References such as `auth@docker,rate@file` are names, not URLs.
-  if (leaf === 'middlewares' || leaf === 'service') return value;
+  if (ROUTER_REFERENCE_KEY.test(key)) return value;
   return visibleText(value);
 }
 const carriesMask = (v: string) => v.includes(MASK) || v.includes(encodeURIComponent(MASK));
@@ -227,7 +224,10 @@ export function restoreMiddlewareCredentials<T extends Record<string, Middleware
     if (mw.type === 'headers') {
       for (const field of ['custom_request_headers', 'custom_response_headers'] as const) {
         for (const [k, v] of Object.entries<string>(mw[field] ?? {})) {
-          if (v !== MASK) continue;
+          if (v !== MASK) {
+            if (carriesMask(v)) throw refuse(`${at}.${field}.${k}`);
+            continue;
+          }
           const kept = old?.type === 'headers' ? old[field]?.[k] : undefined;
           if (kept === undefined || kept === MASK) throw refuse(`${at}.${field}.${k}`);
           mw[field][k] = kept;
