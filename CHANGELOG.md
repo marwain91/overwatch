@@ -77,7 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP OAuth.** Clients registered with a non-loopback `http://` redirect keep working (the consent page warns) but cannot be registered again; clients that omit `client_id` on refresh now get `invalid_grant`; users see one extra Approve click per authorization.
 - **Tenant creation returns 409** when a database for the tenant already exists on the server; drop or rename it first.
 - **Ambiguous short container-id prefixes on logs and restart now return 404**; use a longer prefix (the UI sends full ids).
-- **`scripts/update.sh` and `tenant-template/` are gone.** Use `overwatch self-update` / `overwatch update`; the `tenant_template` config key is ignored.
+- **`scripts/update.sh` and `tenant-template/` are gone.** `overwatch update` replaces the script (it pulls the latest Overwatch image and recreates the `overwatch` compose service); `overwatch self-update` only updates the CLI binary. The `tenant_template` config key is ignored.
 
 ## [1.7.2] — 2026-10-13
 
