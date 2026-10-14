@@ -2,13 +2,13 @@
 // GOOGLE_CLIENT_ID, ...) at import time, so .env has to be loaded before them.
 import 'dotenv/config';
 import express from 'express';
-import * as fs from 'fs';
 import path from 'path';
 import { errorHandler } from './middleware/errorHandler';
 import { loadConfig, OverwatchConfig, validateEnvironment, formatValidationErrors, clearConfigCache } from './config';
 import { loginToAllRegistries } from './adapters/registry';
 import { listApps, setAppsChangedHook } from './services/app';
 import { authMiddleware } from './middleware/auth';
+import { spaFallback } from './middleware/spaFallback';
 import { rateLimit, destructiveRateLimit } from './middleware/rateLimit';
 import { auditLog } from './middleware/audit';
 import { validateAppId } from './middleware/validators';
@@ -160,14 +160,7 @@ async function start() {
 
   // Serve frontend for all other routes (SPA fallback).
   // Express 5 / path-to-regexp 8 require a named wildcard.
-  app.get('/*splat', (_req, res) => {
-    const indexPath = path.join(staticPath, 'index.html');
-    if (fs.existsSync(indexPath)) {
-      res.sendFile(indexPath);
-    } else {
-      res.status(404).json({ error: 'Frontend not found' });
-    }
-  });
+  app.get('/*splat', spaFallback(staticPath));
 
   app.use(errorHandler);
 
