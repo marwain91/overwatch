@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-10-14
+
 ### Security
 
 - **Viewers and editors no longer receive credentials from Overwatch's read APIs.** Database process-list statement text is `[hidden]` (it can show `CREATE USER … IDENTIFIED BY` during tenant creation). Traefik credentials are masked on every read surface — the global Traefik config, app definitions (`/api/apps`, `/api/apps/:id`, `/api/apps/:id/traefik`, `/api/apps/.trashed`) and tenant Traefik overrides: basicAuth/digestAuth users, forwardAuth addresses (shown as origin only, e.g. `https://auth.example/••••••••`), custom and health-check header values, plugin settings, router rules with header or query matchers, any other value containing `@` or a credential-named parameter, and every raw-label value whose key is not a known non-secret field. Admins still see full values. Saving a masked value back keeps the stored credential (resolved under the write lock, so a concurrent rotation is not reverted); a masked value with nothing stored is refused. Container logs and update progress stay readable by viewers.
+- **Credential masking cannot be used to stall the server.** Values longer than 2 KB are hidden from non-admins without being parsed, and credential-parameter detection is linear (a 100 000-character value previously took over a minute per read).
 - **Docker child processes receive only an allowlist of `DOCKER_*` variables** (`DOCKER_HOST`, `DOCKER_CONFIG`, `DOCKER_CONTEXT`, `DOCKER_CERT_PATH`, `DOCKER_TLS_VERIFY`, `DOCKER_API_VERSION`, `DOCKER_BUILDKIT`, `DOCKER_DEFAULT_PLATFORM`, `DOCKER_CONTENT_TRUST`, `DOCKER_CONTENT_TRUST_SERVER`) instead of every `DOCKER_*` variable.
 - **Concurrent creates can no longer claim the same domain**; the domain check and the tenant `.env` write are serialised under one lock.
 - **The SSRF guard strips every trailing dot from a hostname** (`localhost..` is refused), and a registry `Link: next` header matches the registry origin even with an explicit `:443`; a dropped foreign-origin link is logged.
