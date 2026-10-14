@@ -83,7 +83,7 @@ This guide walks through deploying Overwatch on a production server to manage a 
 
 ### Prerequisites
 
-- A server (VPS, cloud instance, etc.) with Docker and Docker Compose installed
+- A server (VPS, cloud instance, etc.) with Docker and Docker Compose 2.24 or newer installed (the generated Overwatch compose file uses `env_file` with `required: false`; check with `docker compose version`)
 - Your application images published to a container registry (GHCR, Docker Hub, ECR, etc.)
 - A domain with DNS configured (e.g., `*.example.com` pointing to your server)
 - DNS provider API credentials for wildcard SSL (e.g., Cloudflare API token)

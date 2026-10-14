@@ -39,7 +39,7 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 
 ## Quick Start
 
-Deploy Overwatch on a production server in under 5 minutes. Only Docker is required.
+Deploy Overwatch on a production server in under 5 minutes. Only Docker is required, with Docker Compose 2.24 or newer (the generated Overwatch compose file uses `env_file` with `required: false`); check with `docker compose version`.
 
 ### 1. Install the CLI
 
