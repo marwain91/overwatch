@@ -43,6 +43,7 @@ describe('getDockerEnv', () => {
     const docker = {
       DOCKER_HOST: 'tcp://d:2376', DOCKER_CONFIG: '/c', DOCKER_CONTEXT: 'remote', DOCKER_CERT_PATH: '/certs',
       DOCKER_TLS_VERIFY: '1', DOCKER_API_VERSION: '1.43', DOCKER_BUILDKIT: '1', DOCKER_DEFAULT_PLATFORM: 'linux/amd64',
+      DOCKER_CONTENT_TRUST: '1', DOCKER_CONTENT_TRUST_SERVER: 'https://notary.example.com',
     };
     Object.assign(process.env, docker);
     const env = getDockerEnv();

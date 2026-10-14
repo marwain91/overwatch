@@ -11,6 +11,7 @@ const AUTH_TIMEOUT = 5_000; // 5 seconds to authenticate after connecting
 const MAX_PAYLOAD = 4 * 1024; // 4 KB — auth messages only, no large payloads needed
 const MAX_CONNECTIONS_PER_USER = 5;
 const MEMBERSHIP_RECHECK_INTERVAL = 60_000; // removed admins lose the socket within this window
+const MEMBERSHIP_READ_TIMEOUT = 10_000; // a store read that never settles must not wedge the re-check loop
 // setTimeout overflows (and fires immediately) above 2^31-1 ms.
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -127,17 +128,25 @@ function releaseConnection(ws: WebSocket): void {
 // still going is skipped.
 let rechecking = false;
 
-async function recheckMembership(): Promise<void> {
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function recheckMembership(readTimeoutMs: number): Promise<void> {
   if (rechecking) return;
   rechecking = true;
   try {
-    await recheckAll();
+    await recheckAll(readTimeoutMs);
   } finally {
     rechecking = false;
   }
 }
 
-async function recheckAll(): Promise<void> {
+async function recheckAll(readTimeoutMs: number): Promise<void> {
   const verdicts = new Map<string, boolean>();
   for (const ws of [...clients]) {
     const email = stateOf(ws).userEmail;
@@ -145,9 +154,9 @@ async function recheckAll(): Promise<void> {
     let member = verdicts.get(email);
     if (member === undefined) {
       try {
-        member = await isAdminEmail(email);
+        member = await withTimeout(isAdminEmail(email), readTimeoutMs);
       } catch (err: any) {
-        // Store read failed: keep the socket, retry on the next tick.
+        // Store read failed or timed out: keep the socket, retry on the next tick.
         console.warn(`[WebSocket] Membership re-check failed: ${err?.message || err}`);
         continue;
       }
@@ -157,7 +166,7 @@ async function recheckAll(): Promise<void> {
   }
 }
 
-export function createWebSocketServer(server: HTTPServer, opts: { membershipRecheckMs?: number } = {}): WebSocketServer {
+export function createWebSocketServer(server: HTTPServer, opts: { membershipRecheckMs?: number; membershipReadTimeoutMs?: number } = {}): WebSocketServer {
   wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
 
   server.on('upgrade', (request, socket, head) => {
@@ -253,7 +262,7 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
   }, HEARTBEAT_INTERVAL);
 
   membershipTimer = setInterval(() => {
-    recheckMembership().catch(() => {});
+    recheckMembership(opts.membershipReadTimeoutMs ?? MEMBERSHIP_READ_TIMEOUT).catch(() => {});
   }, opts.membershipRecheckMs ?? MEMBERSHIP_RECHECK_INTERVAL);
 
   // Subscribe to eventBus events and broadcast. Handlers are kept so stop can

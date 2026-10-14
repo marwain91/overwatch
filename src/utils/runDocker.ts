@@ -15,6 +15,8 @@ const DOCKER_ENV_KEYS = [
 const DOCKER_CLI_KEYS = new Set([
   'DOCKER_HOST', 'DOCKER_CONFIG', 'DOCKER_CONTEXT', 'DOCKER_CERT_PATH', 'DOCKER_TLS_VERIFY',
   'DOCKER_API_VERSION', 'DOCKER_BUILDKIT', 'DOCKER_DEFAULT_PLATFORM',
+  // Not credentials; dropping them would silently turn signature verification off.
+  'DOCKER_CONTENT_TRUST', 'DOCKER_CONTENT_TRUST_SERVER',
 ]);
 
 // Compose tuning only. Selection variables (COMPOSE_PROJECT_NAME, COMPOSE_FILE,
