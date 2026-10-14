@@ -64,6 +64,28 @@ describe('auditLog service', () => {
   });
 });
 
+describe('flushAuditLog on an unwritable file', () => {
+  it('gives up after its timeout so shutdown never waits for the forced exit', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // The lock never frees: models a drain stuck on an unwritable file.
+    vi.doMock('../services/fileLock', () => ({ withFileLock: () => new Promise(() => {}) }));
+    const svc = await import('../services/auditLog');
+    svc.writeAuditEntry({ ...base, action: 'stuck' });
+    const flushed = svc.flushAuditLog(2000);
+    let settled = false;
+    flushed.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(1900);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(flushed).resolves.toBeUndefined();
+    expect((console.error as any).mock.calls.some((c: any[]) => /flush timed out/.test(String(c[0])))).toBe(true);
+    vi.useRealTimers();
+    vi.doUnmock('../services/fileLock');
+    vi.restoreAllMocks();
+  });
+});
+
 describe('audit middleware', () => {
   async function describeRequest(method: string, baseUrl: string, p: string, body: any = {}) {
     const mod = await import('../middleware/audit');

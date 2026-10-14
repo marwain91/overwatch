@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 
@@ -43,11 +46,19 @@ function fakeProc() {
   return proc;
 }
 
-beforeEach(() => {
+let tmpDir: string;
+
+beforeEach(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-hardening-'));
   spawnMock.mockReset();
   spawnMock.mockImplementation(() => fakeProc());
   poolCtor.mockClear();
   mysqlCreatePool.mockClear();
+});
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
 describe('root password never appears in docker exec argv', () => {
@@ -61,7 +72,7 @@ describe('root password never appears in docker exec argv', () => {
       : new MySQLAdapter(makeConfig(type)));
 
     it(`${name} dump passes ${envVar} by name and supplies the value via env`, async () => {
-      await make().dumpDatabase('t1', '/tmp/overwatch-hardening-dump.sql');
+      await make().dumpDatabase('t1', path.join(tmpDir, 'dump.sql'));
       const [cmd, args, opts] = spawnMock.mock.calls[0];
       expect(cmd).toBe('docker');
       expect(args.join(' ')).not.toContain(SECRET);
@@ -70,8 +81,8 @@ describe('root password never appears in docker exec argv', () => {
     });
 
     it(`${name} restore passes ${envVar} by name and supplies the value via env`, async () => {
-      const f = '/tmp/overwatch-hardening-restore.sql';
-      await (await import('fs/promises')).writeFile(f, 'select 1;');
+      const f = path.join(tmpDir, 'restore.sql');
+      await fs.writeFile(f, 'select 1;');
       await make().restoreDatabase('t1', f);
       const [, args, opts] = spawnMock.mock.calls[0];
       expect(args.join(' ')).not.toContain(SECRET);
@@ -137,6 +148,5 @@ describe('closeAllDatabaseAdapters', () => {
     expect(closeA).toHaveBeenCalledTimes(1);
     expect(closeB).toHaveBeenCalledTimes(1);
     expect(getDatabaseAdapter({ db_prefix: 'one' } as any)).not.toBe(a);
-    vi.restoreAllMocks();
   });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
@@ -6,6 +6,15 @@ import * as os from 'os';
 import * as yaml from 'js-yaml';
 import { writeOverwatchConfig, updateOverwatchConfig } from '../config/writer';
 import { loadConfig, clearConfigCache } from '../config/loader';
+import { ConfigValidationError } from '../config/writer';
+
+// fs/promises exports cannot be spied on; route `open` through a switchable override.
+const fsOverride = vi.hoisted(() => ({ open: null as null | ((...a: any[]) => Promise<any>) }));
+vi.mock('fs/promises', async (orig) => {
+  const actual = await orig<typeof import('fs/promises')>();
+  const open = (...a: any[]) => (fsOverride.open ? fsOverride.open(...a) : (actual.open as any)(...a));
+  return { ...actual, open, default: { ...actual, open } };
+});
 
 let tmpRoot: string;
 let configPath: string;
@@ -69,5 +78,43 @@ describe('writeOverwatchConfig', () => {
     const name = (yaml.load(fsSync.readFileSync(configPath, 'utf-8')) as any).project.name as string;
     // Every update applied on top of the previous one: no lost writes.
     expect(name.split('-').length).toBe(n + 1);
+  });
+});
+
+describe('writer edge cases', () => {
+  it('does not rewrite the file when the mutation changes nothing', async () => {
+    const withComment = `# keep me\n${yaml.dump({ ...BASE, data_dir: dataDir })}`;
+    await fs.writeFile(configPath, withComment);
+    await updateOverwatchConfig(() => {});
+    expect(fsSync.readFileSync(configPath, 'utf-8')).toBe(withComment);
+  });
+
+  it('still rewrites when the mutation changes something', async () => {
+    await updateOverwatchConfig(raw => { raw.project.name = 'Changed'; });
+    expect((yaml.load(fsSync.readFileSync(configPath, 'utf-8')) as any).project.name).toBe('Changed');
+  });
+
+  it('exposes per-field issues on a validation failure', async () => {
+    const err = await writeOverwatchConfig({ project: { name: 'x' } }).catch(e => e);
+    expect(err).toBeInstanceOf(ConfigValidationError);
+    expect((err as ConfigValidationError).issues.length).toBeGreaterThan(0);
+    expect((err as ConfigValidationError).issues[0]).toEqual({ path: expect.any(String), message: expect.any(String) });
+  });
+
+  it('logs a failed post-copy fsync at debug level instead of swallowing it silently', async () => {
+    const realOpen = (await vi.importActual<typeof import('fs/promises')>('fs/promises')).open;
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    fsOverride.open = async (p: any, flags: any, mode: any) => {
+      if (String(p) === configPath && flags === 'r+') throw Object.assign(new Error('EPERM nope'), { code: 'EPERM' });
+      return realOpen(p, flags, mode);
+    };
+    try {
+      await writeOverwatchConfig({ ...BASE, data_dir: dataDir, project: { ...BASE.project, name: 'Fsync' } });
+    } finally {
+      fsOverride.open = null;
+    }
+    expect(debug).toHaveBeenCalledWith(expect.stringContaining('[config-writer]'));
+    debug.mockRestore();
+    expect((yaml.load(fsSync.readFileSync(configPath, 'utf-8')) as any).project.name).toBe('Fsync');
   });
 });
