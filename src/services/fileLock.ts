@@ -104,8 +104,16 @@ async function releaseLockfile(key: string): Promise<void> {
  * are reclaimed. A caller that cannot get the lock within the wait (30 s by
  * default) fails: queued in-process callers with a ConflictError (409).
  */
-export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const waitMs = lockWaitMs();
+export interface LockOptions {
+  /** Wait for this long instead of the default (30 s / OVERWATCH_LOCK_TIMEOUT_MS). */
+  waitMs?: number;
+  /** Do not let this caller's waiting timers keep the process alive (background work). */
+  unref?: boolean;
+}
+
+export async function withFileLock<T>(key: string, fn: () => Promise<T>, opts: LockOptions = {}): Promise<T> {
+  const waitMs = opts.waitMs ?? lockWaitMs();
+  const unref = (t: ReturnType<typeof setTimeout>) => { if (opts.unref) t.unref(); return t; };
   const deadline = Date.now() + waitMs;
 
   // In-process wait: if another async task in this process holds the lock, queue
@@ -114,7 +122,7 @@ export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promis
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw busyError(key, waitMs);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<'expired'>(r => { timer = setTimeout(() => r('expired'), remaining); });
+    const expired = new Promise<'expired'>(r => { timer = unref(setTimeout(() => r('expired'), remaining)); });
     try {
       const outcome = await Promise.race([inProcess.get(key)!.then(() => 'released' as const), expired]);
       if (outcome === 'expired' && inProcess.has(key)) throw busyError(key, waitMs);
@@ -135,7 +143,7 @@ export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promis
       if (Date.now() > deadline) {
         throw busyError(key, waitMs);
       }
-      await new Promise(r => setTimeout(r, delay));
+      await new Promise(r => unref(setTimeout(r, delay)));
       delay = Math.min(delay * 2, maxDelay);
     }
     try {
@@ -153,6 +161,6 @@ export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promis
  * Serialise lifecycle operations (create/update/delete/start/stop/restart) on
  * one tenant. Per-tenant key so unrelated tenants never wait on each other.
  */
-export function withTenantLock<T>(appId: string, tenantId: string, fn: () => Promise<T>): Promise<T> {
-  return withFileLock(`tenant:${appId}/${tenantId}`, fn);
+export function withTenantLock<T>(appId: string, tenantId: string, fn: () => Promise<T>, opts?: LockOptions): Promise<T> {
+  return withFileLock(`tenant:${appId}/${tenantId}`, fn, opts);
 }

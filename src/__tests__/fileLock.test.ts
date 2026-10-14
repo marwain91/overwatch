@@ -192,3 +192,50 @@ describe('in-process lock wait deadline', () => {
     expect(err.message).toMatch(/busy/);
   });
 });
+
+describe('withFileLock per-call wait', () => {
+  async function loadLock() {
+    const dataDir = path.join(tmpRoot, 'data');
+    await fs.mkdir(dataDir, { recursive: true });
+    vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
+    return import('../services/fileLock');
+  }
+
+  it('waitMs overrides the default wait and times out with the 409 busy error', async () => {
+    delete process.env.OVERWATCH_LOCK_TIMEOUT_MS;
+    const { withFileLock } = await loadLock();
+    const { ConflictError } = await import('../utils/httpErrors');
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const holder = withFileLock('k', () => gate);
+    const started = Date.now();
+    const err = await withFileLock('k', async () => 'never', { waitMs: 60 }).catch(e => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    release();
+    await holder;
+  });
+
+  it('unref keeps the waiting timers from holding the process open', async () => {
+    const { withFileLock } = await loadLock();
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const holder = withFileLock('k', () => gate);
+    const real = global.setTimeout;
+    const timers: Array<{ ms: number; t: any }> = [];
+    const spy = vi.spyOn(global, 'setTimeout').mockImplementation(((fn: any, ms?: number, ...rest: any[]) => {
+      const t = real(fn, ms, ...rest);
+      timers.push({ ms: ms ?? 0, t });
+      return t;
+    }) as any);
+    const waiter = withFileLock('k', async () => 'ok', { waitMs: 5_000, unref: true });
+    await new Promise(r => real(r, 30));
+    const waiting = timers.filter(x => x.ms >= 1_000);
+    spy.mockRestore();
+    expect(waiting.length).toBeGreaterThan(0);
+    for (const x of waiting) expect(x.t.hasRef()).toBe(false);
+    release();
+    await holder;
+    expect(await waiter).toBe('ok');
+  });
+});
