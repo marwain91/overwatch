@@ -159,7 +159,7 @@ export async function loadAliasContext(appId: string, tenantId: string): Promise
 
   const foreign = new Set<string>();
   let tenants;
-  try { tenants = await listTenantDirs(); } catch (err) { throw failClosed('the apps directory', err); }
+  try { tenants = await listTenantDirs(undefined, { followSymlinks: true }); } catch (err) { throw failClosed('the apps directory', err); }
   for (const { appId: a, tenantId: t, dir } of tenants) {
     if (a === appId && t === tenantId) continue;
     let domain: string | undefined;

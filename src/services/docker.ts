@@ -234,7 +234,7 @@ export async function listTenants(): Promise<TenantStatus[]> {
     const found: Array<{ app: AppDefinition; dir: string; env: Record<string, string> }> = [];
     for (const app of apps) {
       // An unreadable tenants dir just means this app has no tenants to report.
-      for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {} })) {
+      for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {}, followSymlinks: true })) {
         try {
           found.push({ app, dir: tenantId, env: await readTenantEnv(app.id, tenantId) });
         } catch {

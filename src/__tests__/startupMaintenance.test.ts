@@ -42,6 +42,20 @@ describe('backfillComposeProjectNames', () => {
 });
 
 describe('tightenSecretFilePermissions', () => {
+  it('does not follow a symlinked tenant dir out of the apps dir', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-outside-'));
+    try {
+      await fs.writeFile(path.join(outside, '.env'), 'X=1', { mode: 0o644 });
+      await fs.mkdir(path.join(root, 'apps', 'acme', 'tenants'), { recursive: true });
+      await fs.symlink(outside, path.join(root, 'apps', 'acme', 'tenants', 'linked'));
+      const { tightenSecretFilePermissions } = await import('../services/startupMaintenance');
+      expect(await tightenSecretFilePermissions()).toBe(0);
+      expect((await fs.stat(path.join(outside, '.env'))).mode & 0o777).toBe(0o644);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
   it('logs and continues when one tenant file cannot be tightened', async () => {
     const a = path.join(root, 'apps', 'acme', 'tenants', 'bad');
     const b = path.join(root, 'apps', 'acme', 'tenants', 'good');

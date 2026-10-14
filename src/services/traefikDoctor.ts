@@ -267,7 +267,7 @@ export function collectPresentEnvVars(deployDir?: string): Set<string> {
  */
 export function collectTenantOverrides(appsDir: string): Map<string, Map<string, TraefikTenant>> {
   const result = new Map<string, Map<string, TraefikTenant>>();
-  for (const { appId, tenantId, dir } of listTenantDirsSync(appsDir)) {
+  for (const { appId, tenantId, dir } of listTenantDirsSync(appsDir, { followSymlinks: true })) {
     const yml = path.join(dir, 'traefik.yaml');
     if (!fs.existsSync(yml)) continue;
     try {

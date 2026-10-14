@@ -42,7 +42,7 @@ async function collectTenantDbNames(): Promise<Set<string>> {
   try {
     const apps = await listApps();
     for (const app of apps) {
-      for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {} })) {
+      for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {}, followSymlinks: true })) {
         try {
           const env = await readTenantEnv(app.id, tenantId);
           if (env.DB_NAME) {

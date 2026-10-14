@@ -40,7 +40,7 @@ describe('tenantDir', () => {
   ])('rejects %j / %j', async (appId, tenantId) => {
     const { tenantDir } = await load();
     expect(() => tenantDir(appId, tenantId)).toThrow(/Invalid (app|tenant) id/);
-    try { tenantDir(appId, tenantId); } catch (err: any) { expect(err.status).toBe(400); }
+    expect(() => tenantDir(appId, tenantId)).toThrow(expect.objectContaining({ status: 400 }));
   });
 
   it('assertTenantDir rejects a tenant dir that is a symlink out of the apps dir', async () => {
@@ -73,7 +73,7 @@ describe('listTenantDirs', () => {
     expect(all.find(t => t.tenantId === 't3')!.dir).toBe(path.join(appsDir, 'b', 'tenants', 't3'));
   });
 
-  it('lists a tenant dir that is a symlink to a directory, and skips a symlink to a file', async () => {
+  it('lists a tenant dir that is a symlink to a directory only with followSymlinks, and never a symlink to a file', async () => {
     const { listTenantDirs, listTenantDirsSync } = await load();
     const target = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-link-'));
     try {
@@ -82,8 +82,10 @@ describe('listTenantDirs', () => {
       await fs.writeFile(path.join(target, 'f'), 'x');
       await fs.symlink(path.join(target, 'f'), path.join(appsDir, 'a', 'tenants', 'filelink'));
       await fs.symlink(target, path.join(appsDir, 'a', 'tenants', '.dotlink'));
-      expect((await listTenantDirs('a')).map(t => t.tenantId).sort()).toEqual(['linked', 'real']);
-      expect(listTenantDirsSync(appsDir).map(t => t.tenantId).sort()).toEqual(['linked', 'real']);
+      expect((await listTenantDirs('a')).map(t => t.tenantId)).toEqual(['real']);
+      expect(listTenantDirsSync(appsDir).map(t => t.tenantId)).toEqual(['real']);
+      expect((await listTenantDirs('a', { followSymlinks: true })).map(t => t.tenantId).sort()).toEqual(['linked', 'real']);
+      expect(listTenantDirsSync(appsDir, { followSymlinks: true }).map(t => t.tenantId).sort()).toEqual(['linked', 'real']);
     } finally {
       await fs.rm(target, { recursive: true, force: true });
     }
