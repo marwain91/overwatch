@@ -69,7 +69,10 @@ beforeEach(async () => {
     readManifestFromAppImage: vi.fn(async () => null),
     resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/demo/web:2'),
   }));
-  vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
+  vi.doMock('../services/tenantTraefik', () => ({
+    readTenantTraefik: vi.fn(async () => undefined),
+    assertTenantDomainAllowed: vi.fn(async () => {}),
+  }));
   vi.doMock('../services/tenantAppDef', () => ({
     readTenantAppDef: vi.fn(async () => baseApp()),
     writeTenantAppDef: vi.fn(async () => undefined),
