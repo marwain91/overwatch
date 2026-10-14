@@ -167,6 +167,7 @@ describe('readApps cache', () => {
     // updateApp rewrites the static file, then the runtime store (new updatedAt). A reader
     // that lands inside that last write caches the old runtime data.
     midWrite = () => listApps();
+    await new Promise(resolve => setTimeout(resolve, 5)); // a distinct updatedAt millisecond
     const updated = await updateApp({ id: 'acme', name: 'Renamed' } as any);
     expect(updated.updatedAt).not.toBe(first[0].updatedAt);
     const after = (await listApps())[0];
