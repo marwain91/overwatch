@@ -15,10 +15,25 @@ import { writeFileAtomic } from './atomicJson';
 // Bound on queued lines while the file is unwritable, so a long outage cannot grow memory without limit.
 const MAX_QUEUED_LINES = 10_000;
 
+const RENAME_BLOCKED = new Set(['EBUSY', 'EXDEV', 'EPERM']);
+
+/** Truncate + write through the existing inode, keeping its mode. Not crash-atomic, but the lock is held. */
+async function rewriteInPlace(file: string, content: string): Promise<void> {
+  const handle = await fs.open(file, 'r+');
+  try {
+    await handle.truncate(0);
+    await handle.writeFile(content);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 export class JsonlLog {
   private queue: string[] = [];
   private chain: Promise<unknown> = Promise.resolve();
   private errorLogged = false;
+  private inPlaceLogged = false;
 
   constructor(private readonly getFile: () => string, private readonly tag: string) {}
 
@@ -92,7 +107,18 @@ export class JsonlLog {
       }
       const lines = content.split('\n').filter(Boolean);
       if (lines.length <= maxEntries) return 0;
-      await writeFileAtomic(file, lines.slice(-maxEntries).join('\n') + '\n', { mode: 0o600 });
+      const kept = lines.slice(-maxEntries).join('\n') + '\n';
+      try {
+        await writeFileAtomic(file, kept, { mode: 0o600 });
+      } catch (err: any) {
+        // A file bind-mounted on its own cannot be replaced by rename.
+        if (!RENAME_BLOCKED.has(err?.code)) throw err;
+        if (!this.inPlaceLogged) {
+          console.warn(`[${this.tag}] ${file} cannot be replaced by rename (${err.code}); pruning by rewriting it in place`);
+          this.inPlaceLogged = true;
+        }
+        await rewriteInPlace(file, kept);
+      }
       return lines.length - maxEntries;
     });
   }
