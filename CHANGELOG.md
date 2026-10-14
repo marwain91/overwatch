@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A container without a name no longer hides every tenant.** Docker reports `Names: []` for some leftover containers (for example a stale build container in the `created` state); one of those made the tenant and container listings come back empty in the API and UI.
 - **A request path containing `%s` or `%o` no longer mangles the server error log.** The path was part of the log format string, so such a path consumed the error and dropped it from the log line (CodeQL `js/tainted-format-string`).
 
 ## [1.8.1] — 2026-10-14

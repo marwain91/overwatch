@@ -76,6 +76,18 @@ describe('listTenants', () => {
     expect(by['beta:t3'].containers).toHaveLength(1);
   });
 
+  it('still lists tenants when the host has a container with no name', async () => {
+    await tenantDir('alpha', 't1');
+    // Docker reports Names: [] for some leftover build containers in "created" state.
+    const nameless = { Id: 'f'.repeat(64), Names: [], Status: 'Created', State: 'created', Image: 'sha256:abc', Created: 1760000000, Labels: {} };
+    setup([nameless, container('alpha', 't1', 'web')]);
+    const { listTenants } = await import('../services/docker');
+    const tenants = await listTenants();
+
+    expect(tenants.map(t => `${t.appId}:${t.tenantId}`)).toEqual(['alpha:t1']);
+    expect(tenants[0]).toMatchObject({ runningContainers: 1, healthy: true });
+  });
+
   it('skips tenants without a .env and does not call Docker when no tenant has one', async () => {
     await tenantDir('alpha', 'noenv', '');
     const { listContainers } = setup([container('alpha', 'noenv', 'web')]);

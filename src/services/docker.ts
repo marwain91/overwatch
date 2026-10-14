@@ -162,6 +162,9 @@ function toManagedContainers(raw: RawContainer[], apps: AppDefinition[]): Contai
   const appIds = new Set(apps.map(a => a.id));
 
   return raw
+    // Docker reports `Names: []` for some leftover containers; one of those
+    // must not make the whole listing throw.
+    .filter(c => c.Names?.length)
     .map(c => {
       const name = c.Names[0].replace(/^\//, '');
       const labels = normaliseLabels((c as any).Labels);
