@@ -2,11 +2,10 @@ import Docker from 'dockerode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { loadConfig, getAppsDir } from '../config';
+import { loadConfig } from '../config';
 import { listApps } from './app';
 import type { AppDefinition } from '../models/app';
-import { assertWithinDir } from '../utils/security';
-import { parseEnv } from '../utils/env';
+import { assertTenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { runDocker } from '../utils/runDocker';
 import { withTenantLock } from './fileLock';
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
@@ -228,28 +227,16 @@ export async function restartContainer(containerId: string): Promise<void> {
 }
 
 export async function listTenants(): Promise<TenantStatus[]> {
-  const appsDir = getAppsDir();
-
   try {
     const apps = await listApps();
 
     // Pass 1: tenants that have a readable .env (others are skipped).
     const found: Array<{ app: AppDefinition; dir: string; env: Record<string, string> }> = [];
     for (const app of apps) {
-      const tenantsDir = path.join(appsDir, app.id, 'tenants');
-      let dirs: string[];
-      try {
-        dirs = await fs.readdir(tenantsDir);
-      } catch {
-        continue;
-      }
-
-      for (const dir of dirs) {
-        const tenantPath = path.join(tenantsDir, dir);
+      // An unreadable tenants dir just means this app has no tenants to report.
+      for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {} })) {
         try {
-          if (!(await fs.stat(tenantPath)).isDirectory()) continue;
-          const envContent = await fs.readFile(path.join(tenantPath, '.env'), 'utf-8');
-          found.push({ app, dir, env: parseEnv(envContent) });
+          found.push({ app, dir: tenantId, env: await readTenantEnv(app.id, tenantId) });
         } catch {
           // Skip if no .env file
         }
@@ -294,14 +281,9 @@ export async function listTenants(): Promise<TenantStatus[]> {
 }
 
 export async function getTenantInfo(appId: string, tenantId: string): Promise<{ appId: string; tenantId: string; domain: string; version: string } | null> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
-  const envPath = path.join(tenantPath, '.env');
-
   try {
-    await assertWithinDir(tenantPath, appsDir);
-    const envContent = await fs.readFile(envPath, 'utf-8');
-    const env = parseEnv(envContent);
+    await assertTenantDir(appId, tenantId);
+    const env = await readTenantEnv(appId, tenantId);
 
     return {
       appId,
@@ -340,9 +322,7 @@ export function startTenant(appId: string, tenantId: string): Promise<void> {
 }
 
 async function startTenantLocked(appId: string, tenantId: string): Promise<void> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
-  await assertWithinDir(tenantPath, appsDir);
+  const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: 300_000 });
@@ -353,9 +333,7 @@ export function stopTenant(appId: string, tenantId: string): Promise<void> {
 }
 
 async function stopTenantLocked(appId: string, tenantId: string): Promise<void> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
-  await assertWithinDir(tenantPath, appsDir);
+  const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'down'], { timeoutMs: 120_000 });
 }
@@ -365,9 +343,7 @@ export function restartTenant(appId: string, tenantId: string): Promise<void> {
 }
 
 async function restartTenantLocked(appId: string, tenantId: string): Promise<void> {
-  const appsDir = getAppsDir();
-  const tenantPath = path.join(appsDir, appId, 'tenants', tenantId);
-  await assertWithinDir(tenantPath, appsDir);
+  const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await ensureExternalVolumes(composePath);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: 300_000 });

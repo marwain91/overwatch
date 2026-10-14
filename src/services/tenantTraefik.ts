@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { getAppsDir } from '../config';
+import { tenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { loadConfig } from '../config/loader';
 import { TraefikTenantSchema, type TraefikTenant } from '../models/traefik';
 import { withFileLock } from './fileLock';
@@ -18,7 +18,7 @@ import { HttpError, ValidationError } from '../utils/httpErrors';
 const TENANT_TRAEFIK_FILE = 'traefik.yaml';
 
 function getTenantTraefikPath(appId: string, tenantId: string): string {
-  return path.join(getAppsDir(), appId, 'tenants', tenantId, TENANT_TRAEFIK_FILE);
+  return path.join(tenantDir(appId, tenantId), TENANT_TRAEFIK_FILE);
 }
 
 /**
@@ -138,13 +138,6 @@ async function readIfExists(file: string): Promise<string | undefined> {
   }
 }
 
-async function readDirIfExists(dir: string): Promise<string[]> {
-  try { return await fs.readdir(dir); } catch (err: any) {
-    if (ABSENT.has(err?.code)) return [];
-    throw failClosed('the apps directory', err);
-  }
-}
-
 /**
  * Collect everything an alias of (appId, tenantId) must not collide with.
  * Foreign hosts come from the tenants' own files (`.env` TENANT_DOMAIN and
@@ -165,23 +158,23 @@ export async function loadAliasContext(appId: string, tenantId: string): Promise
   }
 
   const foreign = new Set<string>();
-  const appsDir = getAppsDir();
-  const appDirs = await readDirIfExists(appsDir);
-  for (const a of appDirs) {
-    const tenantDirs = await readDirIfExists(path.join(appsDir, a, 'tenants'));
-    for (const t of tenantDirs) {
-      if (a === appId && t === tenantId) continue;
-      const dir = path.join(appsDir, a, 'tenants', t);
-      const env = await readIfExists(path.join(dir, '.env'));
-      const domain = env?.match(/^TENANT_DOMAIN=(.+)$/m)?.[1];
-      if (domain) foreign.add(normalizeHost(domain.replace(/^["']|["']$/g, '')));
-      const raw = await readIfExists(path.join(dir, TENANT_TRAEFIK_FILE));
-      if (raw) {
-        try {
-          const aliases = (yaml.load(raw) as any)?.host_aliases;
-          if (Array.isArray(aliases)) for (const x of aliases) if (typeof x === 'string') foreign.add(normalizeHost(x));
-        } catch (err) { throw failClosed(`${a}/${t}/${TENANT_TRAEFIK_FILE}`, err); }
-      }
+  let tenants;
+  try { tenants = await listTenantDirs(); } catch (err) { throw failClosed('the apps directory', err); }
+  for (const { appId: a, tenantId: t, dir } of tenants) {
+    if (a === appId && t === tenantId) continue;
+    let domain: string | undefined;
+    try {
+      domain = (await readTenantEnv(a, t)).TENANT_DOMAIN;
+    } catch (err: any) {
+      if (!ABSENT.has(err?.code)) throw failClosed(`${t}/.env`, err);
+    }
+    if (domain) foreign.add(normalizeHost(domain));
+    const raw = await readIfExists(path.join(dir, TENANT_TRAEFIK_FILE));
+    if (raw) {
+      try {
+        const aliases = (yaml.load(raw) as any)?.host_aliases;
+        if (Array.isArray(aliases)) for (const x of aliases) if (typeof x === 'string') foreign.add(normalizeHost(x));
+      } catch (err) { throw failClosed(`${a}/${t}/${TENANT_TRAEFIK_FILE}`, err); }
     }
   }
 

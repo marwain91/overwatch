@@ -15,3 +15,16 @@ export function parseEnv(content: string): Record<string, string> {
 
   return env;
 }
+
+/**
+ * Value as compose reads it: single quotes are literal, double quotes honour
+ * backslash escapes (the inverse of what `formatEnvValue` writes). Anything
+ * else is returned as written.
+ */
+export function unquoteEnvValue(value: string): string {
+  if (value.length >= 2) {
+    if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
+    if (value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1).replace(/\\([\\"$])/g, '$1');
+  }
+  return value;
+}

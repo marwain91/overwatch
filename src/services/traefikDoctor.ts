@@ -4,6 +4,7 @@ import * as yaml from 'js-yaml';
 import type { OverwatchConfig } from '../config/schema';
 import type { AppDefinition } from '../models/app';
 import type { Entrypoint, TraefikGlobal, TraefikTenant } from '../models/traefik';
+import { listTenantDirsSync } from './tenantStore';
 
 export type IssueSeverity = 'error' | 'warning';
 
@@ -266,22 +267,19 @@ export function collectPresentEnvVars(deployDir?: string): Set<string> {
  */
 export function collectTenantOverrides(appsDir: string): Map<string, Map<string, TraefikTenant>> {
   const result = new Map<string, Map<string, TraefikTenant>>();
-  if (!fs.existsSync(appsDir)) return result;
-  for (const appId of fs.readdirSync(appsDir)) {
-    const tenantsDir = path.join(appsDir, appId, 'tenants');
-    if (!fs.existsSync(tenantsDir)) continue;
-    const inner = new Map<string, TraefikTenant>();
-    for (const tenantId of fs.readdirSync(tenantsDir)) {
-      const yml = path.join(tenantsDir, tenantId, 'traefik.yaml');
-      if (!fs.existsSync(yml)) continue;
-      try {
-        const parsed = yaml.load(fs.readFileSync(yml, 'utf-8')) as TraefikTenant;
-        if (parsed) inner.set(tenantId, parsed);
-      } catch {
-        // ignore
+  for (const { appId, tenantId, dir } of listTenantDirsSync(appsDir)) {
+    const yml = path.join(dir, 'traefik.yaml');
+    if (!fs.existsSync(yml)) continue;
+    try {
+      const parsed = yaml.load(fs.readFileSync(yml, 'utf-8')) as TraefikTenant;
+      if (parsed) {
+        const inner = result.get(appId) ?? new Map<string, TraefikTenant>();
+        inner.set(tenantId, parsed);
+        result.set(appId, inner);
       }
+    } catch {
+      // ignore
     }
-    if (inner.size > 0) result.set(appId, inner);
   }
   return result;
 }
