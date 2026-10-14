@@ -170,6 +170,7 @@ describe('busy tenants during shared.env regeneration', () => {
     await tenant('demo', 'a');
     await tenant('demo', 'b');
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    log.mockClear(); // spies from earlier tests in this file are not restored
     const { regenerateAllSharedEnvFiles, setEnvVar } = await import('../services/envVars');
     const { release, holder } = await hold('a');
     const busy: string[] = [];
@@ -191,6 +192,7 @@ describe('busy tenants during shared.env regeneration', () => {
   it('schedules at most one background regeneration per tenant', async () => {
     await tenant('demo', 'a');
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    log.mockClear(); // spies from earlier tests in this file are not restored
     const { regenerateAllSharedEnvFiles } = await import('../services/envVars');
     const { release, holder } = await hold('a');
     await regenerateAllSharedEnvFiles('demo', { busy: [], waitMs: 30 });
