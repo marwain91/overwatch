@@ -44,7 +44,7 @@ describe('global Traefik config credentials for non-admins', () => {
     expect(mw.gate.users).toEqual(['alice:••••••••', 'bob:••••••••']);
     expect(mw.gate.realm).toBe('Private');
     expect(mw.sso.address).toBe('https://auth.example.com/verify');
-    expect(mw.hdr.custom_request_headers).toEqual({ Authorization: '••••••••', 'X-Env': 'prod' });
+    expect(mw.hdr.custom_request_headers).toEqual({ Authorization: '••••••••', 'X-Env': '••••••••' });
     expect(mw.limit).toEqual({ type: 'rateLimit', average: 10 });
     expect(res.body.overwatch.raw_labels['traefik.http.middlewares.ow-auth.basicauth.users']).toBe('carol:••••••••');
     expect(res.body.overwatch.raw_labels['traefik.http.routers.ow.priority']).toBe('5');
@@ -114,7 +114,7 @@ describe('credential-bearing raw labels and broader typed rules', () => {
     expect(sso.searchParams.get('mode')).toBe('strict');
     expect(full.middlewares.hdr.custom_request_headers).toEqual({
       'Proxy-Authorization': '••••••••', 'X-Signature': '••••••••', 'X-Credential': '••••••••',
-      'X-Bearer': '••••••••', 'X-Env': 'prod',
+      'X-Bearer': '••••••••', 'X-Env': '••••••••',
     });
     const labels = full.overwatch.raw_labels;
     const ow = new URL(labels['traefik.http.middlewares.ow-sso.forwardauth.address']);
@@ -206,3 +206,66 @@ describe('raw label values are masked fail-closed', () => {
     expect(() => restoreRawLabels({ 'foo.bar.other': '••••••••' }, { 'foo.bar.anything': 'x' })).toThrow(/masked placeholder/);
   });
 });
+
+describe('fail-closed address, header and URL-in-text masking', () => {
+  const M = '••••••••';
+  const STORED: any = {
+    sso: { type: 'forwardAuth', address: 'not a url but token=addr-secret' },
+    hdr: { type: 'headers', custom_request_headers: { 'X-Session-Id': 'sess-secret' }, custom_response_headers: { 'X-Plain': 'plain-secret' } },
+    redir: { type: 'redirectRegex', regex: '^https://svc:rx-secret@host/(.*)', replacement: 'https://host/$1?api_key=rep-secret&mode=1' },
+    rp: { type: 'replacePath', path: '/go?token=path-secret' },
+    rpr: { type: 'replacePathRegex', regex: '^/a', replacement: 'https://u:p4ss@h/x' },
+  };
+  const LEAKS = /addr-secret|sess-secret|plain-secret|rx-secret|rep-secret|path-secret|p4ss/;
+  const LABELS = {
+    'traefik.http.middlewares.r.redirectregex.regex': '^https://svc:lbl-secret@host/(.*)',
+    'traefik.http.middlewares.r.redirectregex.replacement': 'https://host/$1?sig=lbl2-secret&x=1',
+    'traefik.http.routers.ow.rule': 'Host(`a.example.com`) && PathPrefix(`/x`)',
+  };
+
+  async function as(role: 'viewer' | 'admin') {
+    vi.doMock('../config/loader', () => ({ loadConfig: () => ({ traefik: { middlewares: STORED, overwatch: { host: 'ow', raw_labels: LABELS } } }) }));
+    vi.doMock('../services/app', () => ({ getApp: async () => null, applyApp: async () => ({}) }));
+    const { default: router } = await import('../routes/traefik');
+    const app = express();
+    app.use((_req, res, next) => { res.locals.user = { email: 'u@example.test', role }; next(); });
+    app.use('/api/traefik', router);
+    return (await request(app).get('/api/traefik').expect(200)).body;
+  }
+
+  it('viewers: unparsable address masked, every typed header value masked, URL credentials stripped in shown text', async () => {
+    const t = await as('viewer');
+    expect(JSON.stringify(t)).not.toMatch(LEAKS);
+    expect(JSON.stringify(t)).not.toMatch(/lbl-secret|lbl2-secret/);
+    const mw = t.middlewares;
+    expect(mw.sso.address).toBe(M);
+    expect(mw.hdr.custom_request_headers).toEqual({ 'X-Session-Id': M });
+    expect(mw.hdr.custom_response_headers).toEqual({ 'X-Plain': M });
+    expect(mw.redir.regex).toBe(`^https://${M}@host/(.*)`);
+    expect(mw.redir.replacement).toBe(`https://host/$1?api_key=${M}&mode=1`);
+    expect(mw.rp.path).toBe(`/go?token=${M}`);
+    expect(mw.rpr.replacement).toBe(`https://${M}@h/x`);
+    expect(t.overwatch.raw_labels['traefik.http.middlewares.r.redirectregex.regex']).toBe(`^https://${M}@host/(.*)`);
+    expect(t.overwatch.raw_labels['traefik.http.middlewares.r.redirectregex.replacement']).toBe(`https://host/$1?sig=${M}&x=1`);
+    expect(t.overwatch.raw_labels['traefik.http.routers.ow.rule']).toBe(LABELS['traefik.http.routers.ow.rule']);
+  });
+
+  it('admins see the stored values', async () => {
+    const t = await as('admin');
+    expect(t.middlewares).toEqual(STORED);
+    expect(t.overwatch.raw_labels).toEqual(LABELS);
+  });
+
+  it('an editor re-saving the masked values keeps the stored ones; a placeholder with nothing stored is refused', async () => {
+    const { redactMiddlewareCredentials, restoreMiddlewareCredentials, redactRawLabels, restoreRawLabels } =
+      await import('../services/traefikRedaction');
+    const masked = redactMiddlewareCredentials(STORED)!;
+    expect(restoreMiddlewareCredentials(masked, STORED)).toEqual(STORED);
+    expect(restoreRawLabels(redactRawLabels(LABELS), LABELS)).toEqual(LABELS);
+    expect(() => restoreMiddlewareCredentials(masked, undefined)).toThrow(/masked placeholder/);
+    expect(() => restoreMiddlewareCredentials({ x: { type: 'headers', custom_request_headers: { 'X-Session-Id': M } } } as any, undefined)).toThrow(/masked placeholder/);
+    expect(() => restoreMiddlewareCredentials({ x: { type: 'redirectRegex', regex: `^https://${M}@h/`, replacement: '/' } } as any, undefined)).toThrow(/masked placeholder/);
+    expect(() => restoreRawLabels({ 'traefik.http.middlewares.r.redirectregex.regex': `^https://${M}@h/` }, undefined)).toThrow(/masked placeholder/);
+  });
+});
+

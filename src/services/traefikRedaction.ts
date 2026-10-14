@@ -8,8 +8,6 @@ import { ValidationError } from '../utils/httpErrors';
 export const MASK = '••••••••';
 // Raw-label keys whose value is an inline credential list.
 const CREDENTIAL_LABEL_KEY = /\.(basicauth|digestauth)\.users$/i;
-// Header names that carry credentials when set as custom request/response headers.
-const SECRET_HEADER = /(auth|credential|signature|bearer|token|secret|key|password|cookie)/i;
 // Query parameters of an auth URL that carry credentials.
 const SECRET_QUERY_PARAM = /(auth|credential|signature|sig|token|secret|key|password)/i;
 const FORWARD_AUTH_LABEL = /\.forwardauth\.address$/i;
@@ -62,16 +60,32 @@ function redactAddress(address: string): string {
     }
     return changed ? u.toString() : address;
   } catch {
-    return address; // validated on write; leave an odd stored value as is
+    return MASK; // fail closed: an address that does not parse may still hold credentials
   }
 }
+
+const URL_IN_TEXT = /[a-z][a-z0-9+.\-]*:\/\/[^\s"'`<>]+/gi;
+/**
+ * Free text (regex, replacement, path, rule) that a non-admin may see: URL userinfo
+ * becomes `scheme://••••••••@` and credential-looking query values are masked,
+ * wherever a URL appears in the string.
+ */
+function redactUrlsInText(text: string): string {
+  return text
+    .replace(URL_IN_TEXT, url => url.replace(/^([a-z][a-z0-9+.\-]*:\/\/)[^/?#@\s]*@/i, `$1${MASK}@`))
+    // Query values are masked anywhere (a path such as `/go?token=x` is not a full URL).
+    .replace(/([?&;]([^=&#;\s]*)=)([^&#;\s]*)/g, (m, head: string, name: string) =>
+      SECRET_QUERY_PARAM.test(name) ? `${head}${MASK}` : m);
+}
+// Typed middleware fields holding free text.
+const TEXT_FIELDS = ['regex', 'replacement', 'path', 'expression'] as const;
 
 /** Value of one raw label as a non-admin may see it. */
 function redactLabelValue(key: string, value: string): string {
   if (CREDENTIAL_LABEL_KEY.test(key)) return maskUserList(value);
   if (FORWARD_AUTH_LABEL.test(key)) return redactAddress(value);
   if (USER_KEYED_MAP.test(key)) return MASK;
-  return SAFE_LABEL_LEAVES.has(labelLeaf(key)) ? value : MASK;
+  return SAFE_LABEL_LEAVES.has(labelLeaf(key)) ? redactUrlsInText(value) : MASK;
 }
 const carriesMask = (v: string) => v.includes(MASK) || v.includes(encodeURIComponent(MASK));
 
@@ -88,9 +102,11 @@ export function redactMiddlewareCredentials(
     if (mw.type === 'forwardAuth' && typeof mw.address === 'string') mw.address = redactAddress(mw.address);
     if (mw.type === 'headers') {
       for (const bag of [mw.custom_request_headers, mw.custom_response_headers]) {
-        for (const k of Object.keys(bag ?? {})) if (SECRET_HEADER.test(k)) bag[k] = MASK;
+        // Fail closed: a header name says little about its value (`X-Session-Id`).
+        for (const k of Object.keys(bag ?? {})) bag[k] = MASK;
       }
     }
+    for (const f of TEXT_FIELDS) if (typeof mw[f] === 'string') mw[f] = redactUrlsInText(mw[f]);
   }
   return copy;
 }
@@ -176,6 +192,12 @@ export function restoreMiddlewareCredentials<T extends Record<string, Middleware
     if (mw.type === 'forwardAuth' && typeof mw.address === 'string') {
       if (old?.type === 'forwardAuth' && mw.address === redactAddress(old.address)) mw.address = old.address;
       else if (carriesMask(mw.address)) throw refuse(`${at}.address`);
+    }
+    for (const f of TEXT_FIELDS) {
+      if (typeof mw[f] !== 'string') continue;
+      const kept = old?.type === mw.type ? old[f] : undefined;
+      if (typeof kept === 'string' && mw[f] === redactUrlsInText(kept)) mw[f] = kept;
+      else if (carriesMask(mw[f])) throw refuse(`${at}.${f}`);
     }
     if (mw.type === 'headers') {
       for (const field of ['custom_request_headers', 'custom_response_headers'] as const) {
