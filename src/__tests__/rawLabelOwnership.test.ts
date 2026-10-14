@@ -264,6 +264,37 @@ describe('own middleware types and router attachments', () => {
     expect(rawLabelProblem(`${R}.middlewares`, 'myapp-t1-web-other-one', owner)).toBeDefined();
   });
 
+  it('accepts hyphenated typed middleware names at app save, exactly as generation does', () => {
+    const save = (value: string) => () => assertAppRawLabelsOwned('myapp', [
+      { name: 'web', routing: { raw_labels: { [`${R}.middlewares`]: value } } },
+    ]);
+    expect(save('myapp-t1-web-rate-limit')).not.toThrow();
+    expect(save('myapp-t1-web-rate-limit@docker, myapp-t1-web-sec-headers-strict')).not.toThrow();
+    expect(save('myapp-t1-web-_stripprefix')).not.toThrow();
+    // Still refused: foreign tenant-agnostic names, other apps, other services, @file/@internal.
+    expect(save('otherapp-t1-web-rate-limit')).toThrow(/middlewares/);
+    expect(save('myapp-t1-api-rate-limit')).toThrow(/middlewares/);
+    expect(save('myapp-t1-web-rate-limit,foo@file')).toThrow(/middlewares/);
+    // Same rule for a tenant's own raw labels.
+    const tenant = (value: string) => () => assertTenantRawLabelsOwned('myapp', 't1', { web: { [`${R}.middlewares`]: value } });
+    expect(tenant('myapp-t1-web-rate-limit@docker')).not.toThrow();
+    expect(tenant('myapp-t2-web-rate-limit')).toThrow(/middlewares/);
+    expect(tenant('foo@file')).toThrow(/middlewares/);
+    expect(save('rate-limit@file')).toThrow(/middlewares/);
+    expect(save('api@internal')).toThrow(/middlewares/);
+  });
+
+  it('keeps generation-time exact: a hyphenated name the router did not generate is dropped', () => {
+    const typed = buildTraefikLabels({
+      app: { ...app, traefik: { middlewares: { 'rate-limit': { type: 'rateLimit', average: 5 } } } } as any,
+      tenantId: 't1', domain: 't1.app.example.com', certResolverName: 'cf',
+      service: { name: 'web', required: true, is_init_container: false, ports: { internal: 80 },
+        routing: { enabled: true, strip_prefix: false, middlewares: ['rate-limit'],
+          raw_labels: { [`${R}.middlewares`]: 'myapp-t1-web-rate-limit,myapp-t1-web-nope-nope' } } } as any,
+    });
+    expect(typed.join('\n')).not.toContain('myapp-t1-web-nope-nope');
+  });
+
   it('denies router tls options and other tls fields', () => {
     const owner = rawLabelOwnerForRouter('myapp-t1-web');
     expect(rawLabelProblem(`${R}.tls.options`, 'victim@file', owner)).toBeDefined();

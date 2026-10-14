@@ -20,14 +20,14 @@ export function EnvironmentPage() {
 
   const saveVar = useMutation({
     mutationFn: (data: { key: string; value: string; sensitive: boolean; description?: string }) =>
-      api.post<{ tenantsAffected: number }>(`/apps/${appId}/env-vars`, data),
+      api.post<{ tenantsAffected: number; warnings?: string[] }>(`/apps/${appId}/env-vars`, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['env-vars', appId] });
     },
   });
 
   const deleteVar = useMutation({
-    mutationFn: (key: string) => api.delete<{ tenantsAffected: number }>(`/apps/${appId}/env-vars/${encodeURIComponent(key)}`),
+    mutationFn: (key: string) => api.delete<{ tenantsAffected: number; warnings?: string[] }>(`/apps/${appId}/env-vars/${encodeURIComponent(key)}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['env-vars', appId] });
     },
@@ -98,6 +98,7 @@ export function EnvironmentPage() {
                 if (result.tenantsAffected > 0) {
                   toast.info(`${result.tenantsAffected} tenant(s) affected. Restart to apply.`);
                 }
+                result.warnings?.forEach(w => toast.warning(w));
               },
               onError: (err) => toast.error(err.message),
             });
@@ -124,6 +125,7 @@ export function EnvironmentPage() {
                   if (result.tenantsAffected > 0) {
                     toast.info(`${result.tenantsAffected} tenant(s) affected. Restart to apply.`);
                   }
+                  result.warnings?.forEach(w => toast.warning(w));
                 },
                 onError: (err) => toast.error(err.message),
               })}

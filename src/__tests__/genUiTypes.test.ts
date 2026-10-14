@@ -50,4 +50,12 @@ describe('gen-ui-types', () => {
   it('throws on a Zod node it cannot render instead of emitting wrong types', async () => {
     await expect(generate(new Map<string, unknown>([['Bad', z.object({ d: z.date() })]]), { srcRoot: SRC_ROOT, ts })).rejects.toThrow(/unsupported Zod node/);
   });
+
+  it('throws on object modes it cannot render faithfully', async () => {
+    const gen = (schema: unknown) => generate(new Map<string, unknown>([['X', schema]]), { srcRoot: SRC_ROOT, ts });
+    await expect(gen(z.object({ a: z.string() }).passthrough())).rejects.toThrow(/passthrough/);
+    await expect(gen(z.object({ a: z.string() }).catchall(z.number()))).rejects.toThrow(/catchall/);
+    await expect(gen(z.object({ a: z.string() }).strict())).rejects.toThrow(/strict/);
+    await expect(gen(z.object({ n: z.object({ a: z.string() }).passthrough() }))).rejects.toThrow(/passthrough/);
+  });
 });

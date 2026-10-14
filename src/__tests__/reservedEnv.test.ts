@@ -38,6 +38,22 @@ describe('isReservedSecretEnv', () => {
   });
 });
 
+describe('loadConfigOrNull', () => {
+  it('returns the loaded config', async () => {
+    vi.doMock('../config/loader', () => ({ loadConfig: () => config }));
+    const { loadConfigOrNull } = await import('../utils/reservedEnv');
+    expect(loadConfigOrNull()).toBe(config);
+  });
+
+  it('returns null instead of throwing when the config cannot be loaded', async () => {
+    vi.doMock('../config/loader', () => ({ loadConfig: () => { throw new Error('no overwatch.yaml'); } }));
+    const { loadConfigOrNull, isReservedSecretEnv } = await import('../utils/reservedEnv');
+    expect(loadConfigOrNull()).toBeNull();
+    // The static list still applies with a null config.
+    expect(isReservedSecretEnv('JWT_SECRET', loadConfigOrNull())).toBe(true);
+  });
+});
+
 describe('POST /:tenantId/access-token', () => {
   async function makeApp(secretEnv: string) {
     vi.doMock('../middleware/requireRole', () => ({ requireRole: () => (_q: any, _r: any, n: any) => n() }));

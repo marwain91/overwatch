@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { spawn } from 'child_process';
 import { createReadStream, createWriteStream } from 'fs';
 import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
-import { BaseDatabaseAdapter } from './base';
+import { BaseDatabaseAdapter, STDERR_TAIL_BYTES } from './base';
 
 /**
  * PostgreSQL database adapter
@@ -220,7 +220,7 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       input.pipe(proc.stdin);
 
       let stderr = '';
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      proc.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-STDERR_TAIL_BYTES); });
       proc.on('close', (code) => {
         if (code === 0) resolve();
         else reject(new Error(`psql restore exited with code ${code}: ${stderr}`));

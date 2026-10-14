@@ -11,6 +11,7 @@ const AUTH_TIMEOUT = 5_000; // 5 seconds to authenticate after connecting
 const MAX_PAYLOAD = 4 * 1024; // 4 KB — auth messages only, no large payloads needed
 const MAX_CONNECTIONS_PER_USER = 5;
 const MEMBERSHIP_RECHECK_INTERVAL = 60_000; // removed admins lose the socket within this window
+const MEMBERSHIP_READ_TIMEOUT = 10_000; // a store read that never settles must not wedge the re-check loop
 // setTimeout overflows (and fires immediately) above 2^31-1 ms.
 const MAX_TIMER_MS = 2_147_483_647;
 
@@ -30,6 +31,23 @@ let membershipTimer: ReturnType<typeof setInterval> | null = null;
 let eventUnsubscribers: Array<() => void> = [];
 const clients = new Set<WebSocket>();
 const connectionsByUser = new Map<string, number>();
+
+interface SocketState {
+  authenticated: boolean;
+  userEmail?: string;
+  expiryTimer?: ReturnType<typeof setTimeout>;
+  released?: boolean;
+  isAlive?: boolean;
+}
+const socketState = new WeakMap<WebSocket, SocketState>();
+const stateOf = (ws: WebSocket): SocketState => {
+  let state = socketState.get(ws);
+  if (!state) {
+    state = { authenticated: false };
+    socketState.set(ws, state);
+  }
+  return state;
+};
 
 type AuthResult = { valid: true; email: string; exp: number } | { valid: false };
 
@@ -95,7 +113,7 @@ function broadcast(msg: WSMessage): void {
 // Idempotent per socket: 'close' and 'error' can both fire, and the per-user
 // count must only drop once.
 function releaseConnection(ws: WebSocket): void {
-  const state = ws as any;
+  const state = stateOf(ws);
   clients.delete(ws);
   if (state.expiryTimer) {
     clearTimeout(state.expiryTimer);
@@ -106,17 +124,39 @@ function releaseConnection(ws: WebSocket): void {
   if (state.userEmail) untrackConnection(state.userEmail);
 }
 
-async function recheckMembership(): Promise<void> {
+// A slow store must not stack re-checks: a tick that finds the previous run
+// still going is skipped.
+let rechecking = false;
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function recheckMembership(readTimeoutMs: number): Promise<void> {
+  if (rechecking) return;
+  rechecking = true;
+  try {
+    await recheckAll(readTimeoutMs);
+  } finally {
+    rechecking = false;
+  }
+}
+
+async function recheckAll(readTimeoutMs: number): Promise<void> {
   const verdicts = new Map<string, boolean>();
   for (const ws of [...clients]) {
-    const email = (ws as any).userEmail as string | undefined;
+    const email = stateOf(ws).userEmail;
     if (!email) continue;
     let member = verdicts.get(email);
     if (member === undefined) {
       try {
-        member = await isAdminEmail(email);
+        member = await withTimeout(isAdminEmail(email), readTimeoutMs);
       } catch (err: any) {
-        // Store read failed: keep the socket, retry on the next tick.
+        // Store read failed or timed out: keep the socket, retry on the next tick.
         console.warn(`[WebSocket] Membership re-check failed: ${err?.message || err}`);
         continue;
       }
@@ -126,7 +166,7 @@ async function recheckMembership(): Promise<void> {
   }
 }
 
-export function createWebSocketServer(server: HTTPServer, opts: { membershipRecheckMs?: number } = {}): WebSocketServer {
+export function createWebSocketServer(server: HTTPServer, opts: { membershipRecheckMs?: number; membershipReadTimeoutMs?: number } = {}): WebSocketServer {
   wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
 
   server.on('upgrade', (request, socket, head) => {
@@ -156,17 +196,17 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
 
     wss!.handleUpgrade(request, socket, head, (ws) => {
       // First-message auth only — token must be sent as first WS message (not in URL)
-      (ws as any).authenticated = false;
+      const state = stateOf(ws);
 
       const authTimer = setTimeout(() => {
-        if (!(ws as any).authenticated) {
+        if (!state.authenticated) {
           ws.close(4001, 'Authentication timeout');
         }
       }, AUTH_TIMEOUT);
 
       ws.once('message', async (data) => {
         clearTimeout(authTimer);
-        if ((ws as any).authenticated) return; // Already handled or closed
+        if (state.authenticated) return; // Already handled or closed
         try {
           const msg = JSON.parse(data.toString());
           const result = msg.type === 'auth' ? await authenticate(msg.token) : { valid: false as const };
@@ -180,15 +220,15 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
             ws.close(4029, 'Too many connections');
             return;
           }
-          (ws as any).authenticated = true;
-          (ws as any).userEmail = result.email;
+          state.authenticated = true;
+          state.userEmail = result.email;
           // The session ends at token expiry; don't wait for the next re-check.
-          (ws as any).expiryTimer = setTimeout(
+          state.expiryTimer = setTimeout(
             () => ws.close(4401, 'Session expired'),
             Math.min(Math.max(result.exp * 1000 - Date.now(), 0), MAX_TIMER_MS),
           );
           clients.add(ws);
-          (ws as any).isAlive = true;
+          state.isAlive = true;
           ws.send(JSON.stringify({ type: 'auth:ok' }));
           wss!.emit('connection', ws, request);
         } catch {
@@ -200,7 +240,7 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
 
   wss.on('connection', (ws: WebSocket) => {
     ws.on('pong', () => {
-      (ws as any).isAlive = true;
+      stateOf(ws).isAlive = true;
     });
 
     ws.on('close', () => releaseConnection(ws));
@@ -210,18 +250,19 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
   // Heartbeat to detect dead connections
   heartbeatTimer = setInterval(() => {
     for (const ws of clients) {
-      if ((ws as any).isAlive === false) {
+      const state = stateOf(ws);
+      if (state.isAlive === false) {
         clients.delete(ws);
         ws.terminate();
         continue;
       }
-      (ws as any).isAlive = false;
+      state.isAlive = false;
       ws.ping();
     }
   }, HEARTBEAT_INTERVAL);
 
   membershipTimer = setInterval(() => {
-    recheckMembership().catch(() => {});
+    recheckMembership(opts.membershipReadTimeoutMs ?? MEMBERSHIP_READ_TIMEOUT).catch(() => {});
   }, opts.membershipRecheckMs ?? MEMBERSHIP_RECHECK_INTERVAL);
 
   // Subscribe to eventBus events and broadcast. Handlers are kept so stop can

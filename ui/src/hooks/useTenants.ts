@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import { api } from '../lib/api';
 import { useWsAwareInterval, useWindowActive } from './useWsPolling';
 import type { Tenant, BackupSnapshot, BackupStatus, TenantEnvVar } from '../lib/types';
 
 export function useTenants(appId: string) {
-  const refetchInterval = useWsAwareInterval(30_000);
+  const refetchInterval = useWsAwareInterval(30_000, 120_000);
   return useQuery({
     queryKey: ['tenants', appId],
     queryFn: () => api.get<Tenant[]>(`/apps/${appId}/tenants`),
@@ -169,12 +170,15 @@ export function useTenantEnvVars(appId: string, tenantId: string | null) {
   });
 }
 
+type OverrideResult = { success: boolean; warnings?: string[] };
+
 export function useSetTenantOverride(appId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ tenantId, key, value, sensitive }: { tenantId: string; key: string; value: string; sensitive: boolean }) =>
-      api.post(`/apps/${appId}/env-vars/tenants/${tenantId}/overrides`, { key, value, sensitive }),
-    onSuccess: (_, { tenantId }) => {
+      api.post<OverrideResult>(`/apps/${appId}/env-vars/tenants/${tenantId}/overrides`, { key, value, sensitive }),
+    onSuccess: (result, { tenantId }) => {
+      result?.warnings?.forEach(w => toast.warning(w));
       qc.invalidateQueries({ queryKey: ['tenant-env-vars', appId, tenantId] });
     },
   });
@@ -184,8 +188,9 @@ export function useResetTenantOverride(appId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ tenantId, key }: { tenantId: string; key: string }) =>
-      api.delete(`/apps/${appId}/env-vars/tenants/${tenantId}/overrides/${encodeURIComponent(key)}`),
-    onSuccess: (_, { tenantId }) => {
+      api.delete<OverrideResult>(`/apps/${appId}/env-vars/tenants/${tenantId}/overrides/${encodeURIComponent(key)}`),
+    onSuccess: (result, { tenantId }) => {
+      result?.warnings?.forEach(w => toast.warning(w));
       qc.invalidateQueries({ queryKey: ['tenant-env-vars', appId, tenantId] });
     },
   });

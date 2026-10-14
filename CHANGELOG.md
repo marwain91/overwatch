@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Viewers and editors no longer receive credentials from Overwatch's read APIs.** Database process-list statement text is `[hidden]` (it can show `CREATE USER … IDENTIFIED BY` during tenant creation). Traefik credentials are masked on every read surface — the global Traefik config, app definitions (`/api/apps`, `/api/apps/:id`, `/api/apps/:id/traefik`, `/api/apps/.trashed`) and tenant Traefik overrides: basicAuth/digestAuth users, forwardAuth addresses (shown as origin only, e.g. `https://auth.example/••••••••`), custom and health-check header values, plugin settings, router rules with header or query matchers, any other value containing `@` or a credential-named parameter, and every raw-label value whose key is not a known non-secret field. Admins still see full values. Saving a masked value back keeps the stored credential (resolved under the write lock, so a concurrent rotation is not reverted); a masked value with nothing stored is refused. Container logs and update progress stay readable by viewers.
+- **Docker child processes receive only an allowlist of `DOCKER_*` variables** (`DOCKER_HOST`, `DOCKER_CONFIG`, `DOCKER_CONTEXT`, `DOCKER_CERT_PATH`, `DOCKER_TLS_VERIFY`, `DOCKER_API_VERSION`, `DOCKER_BUILDKIT`, `DOCKER_DEFAULT_PLATFORM`, `DOCKER_CONTENT_TRUST`, `DOCKER_CONTENT_TRUST_SERVER`) instead of every `DOCKER_*` variable.
+- **Concurrent creates can no longer claim the same domain**; the domain check and the tenant `.env` write are serialised under one lock.
+- **The SSRF guard strips every trailing dot from a hostname** (`localhost..` is refused), and a registry `Link: next` header matches the registry origin even with an explicit `:443`; a dropped foreign-origin link is logged.
+- **The WebSocket membership re-check cannot stall**: runs never overlap, and each user-store read times out after 10 seconds.
+
+### Fixed
+
+- **Creating a tenant from a backup restores before the app first starts.** The tenant is created stopped (`docker compose create`), the database and volume paths are restored, then it starts; a failed start rolls the new tenant back. Backed-up paths must be volume mount points or exist in the image.
+- **Restore uses the tenant's own app-definition snapshot** for its services and paths, takes the per-tenant lock, and reports an invalid snapshot with its real error instead of a generic server error. Shared env regeneration also takes the per-tenant lock.
+- **Rolling back a failed update no longer overwrites a newer global app definition**; it is restored only if it is still the one this update applied.
+- **Env values with leading or trailing whitespace are quoted in generated env files**, so containers receive the exact value (verified against real `docker compose`).
+- **Lock waits have a deadline.** A caller waiting more than 30 seconds (`OVERWATCH_LOCK_TIMEOUT_MS`) gets a 409 "busy" error instead of hanging; lock files carry a per-process id, so two PID-1 containers sharing a data directory no longer reclaim each other's live lock.
+- **Saving env vars while a tenant is mid-update no longer stalls or fails.** A busy tenant is skipped after 2 seconds and its `shared.env` is rewritten in the background as soon as the running operation finishes; the save returns 200 with a warning naming the busy tenants, shown as a toast.
+- **`overwatch apps apply` refuses masked placeholders** copied from a non-admin API read instead of saving them as credentials.
+- **A stuck audit or alert log no longer retries forever.** Retries back off, at most 10 000 lines are kept in memory (oldest dropped, logged once), and shutdown waits at most 5 seconds for the final flush, logging how many lines were not written.
+- **Healthcheck `interval` / `start_period` are validated as Compose durations** on the API and `overwatch apps apply`; stored invalid values still load and fall back with a warning.
+- **`overwatch config edit` shows the "fix the values" hint only for validation errors** (listed per field again); no-op deletes no longer rewrite `overwatch.yaml`.
+- **Smaller fixes:** a backup reconcile queued after shutdown no longer restarts cron tasks; notification-channel saves take a file lock; Docker event buffering counts bytes; startup permission tightening isolates failures per file; `overwatch init` skips the MariaDB placeholder on Postgres hosts; database restore errors keep only the last 2 KB of stderr and MySQL rollback revokes the grant on a dropped database; the backup summary hides schedule, bucket and endpoint when backups are disabled; admin access `email_template` replaces every `${tenantId}`; `GET /api/auth/verify` verifies the token once; `overwatch apps restore|purge` treat an audit-write failure after success as a warning (exit 0).
+- **Web UI:** client routes containing dots are served again (only `/assets/*` and static file extensions return 404); the WebSocket client detects half-open connections and falls back to polling, and the tenant list refreshes every 2 minutes while live to catch CLI edits; editors can test the registry connection from App Settings; the service editor keeps its state when a middle service is removed; the Trash and Admin Users pages get accessible labels, Enter-to-confirm and per-row pending states ("Remove Admin" is now "Remove user").
+
+### Changed
+
+- **TypeScript 6 and `@types/dockerode` 4** for the backend (no config or output change); UI dependencies refreshed (React 19.3, react-router 7.18, Vite 8.3); `npm audit` is clean for backend and UI.
+- **CI actions updated** (checkout v7, docker/login-action v4, softprops/action-gh-release v3; SHA-pinned). Dependabot ignores zod major updates — zod stays on v3 until a dedicated migration (the MCP SDK and the UI type generator depend on v3 internals).
+- **Raw router `middlewares` labels may name any of the app's own (hyphenated) typed middlewares** at save time; a name the generator doesn't produce is dropped with a warning at generation.
+- **Docs:** viewer read scope (`docs/api.md`), the `DOCKER_*` allowlist, `OVERWATCH_LOCK_TIMEOUT_MS`, the writable `<data>/.locks` / `.config-tmp` the CLI needs, and new troubleshooting entries.
+- **Tests:** CLI end-to-end tests warm `tsx` once instead of timing out on a cold compile; new coverage for broadcast backpressure, lock reclaim and deadlines, the apps cache, JSONL outages, the config writer CLI paths, the scheduler and the create-from-backup order.
+
+### Upgrade notes
+
+- **Integrations that read app or Traefik configuration with a viewer or editor token now receive `••••••••` placeholders** for credentials and for raw-label values outside the known non-secret options (`/api/apps`, `/api/apps/:id`, `/api/apps/:id/traefik`, `/api/apps/.trashed`, `/api/traefik*`, tenant Traefik overrides), and process-list statements as `[hidden]`. Use an admin token where the real values are needed.
+- **Editors see their own raw-label values masked** when the option is not a known non-secret field; re-saving the form keeps the stored values, and a placeholder can only stand for a value already stored under the same key.
+- **Operations on a tenant that is busy for more than 30 seconds now fail with 409 "busy"** instead of waiting indefinitely (`OVERWATCH_LOCK_TIMEOUT_MS` changes the wait). Retry when the running update, create or restore finishes.
+
 ## [1.8.0] — 2026-10-14
 
 ### Security

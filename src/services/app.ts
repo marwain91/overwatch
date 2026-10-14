@@ -15,8 +15,7 @@ import {
 import { withFileLock } from './fileLock';
 import { clearAdapterCache } from '../adapters/registry';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
-import { loadConfig } from '../config/loader';
-import { isReservedSecretEnv } from '../utils/reservedEnv';
+import { isReservedSecretEnv, loadConfigOrNull } from '../utils/reservedEnv';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const APPS_D_DIR = 'apps.d';
@@ -60,9 +59,15 @@ async function readRuntimeStore(): Promise<AppRuntimeStore> {
   }
 }
 
+// The cache is invalidated after each write, in a finally: a reader that
+// started while the write was in flight may have cached the old contents, and
+// invalidating first would let exactly that entry survive.
 async function writeRuntimeStore(store: AppRuntimeStore): Promise<void> {
-  invalidateAppsCache();
-  await writeJsonAtomic(getRuntimeFile(), store, { mode: 0o644 });
+  try {
+    await writeJsonAtomic(getRuntimeFile(), store, { mode: 0o644 });
+  } finally {
+    invalidateAppsCache();
+  }
 }
 
 async function listStaticFiles(): Promise<string[]> {
@@ -84,10 +89,8 @@ const warnedReserved = new Set<string>();
 function warnReservedSecretEnv(def: { id: string; admin_access?: { secret_env?: string } }): void {
   const env = def.admin_access?.secret_env;
   if (!env) return;
-  let config = null;
-  try { config = loadConfig(); } catch { /* static reserved list still applies */ }
   const key = `${def.id}:${env}`;
-  if (isReservedSecretEnv(env, config) && !warnedReserved.has(key)) {
+  if (isReservedSecretEnv(env, loadConfigOrNull()) && !warnedReserved.has(key)) {
     warnedReserved.add(key);
     console.warn(`[apps] App '${def.id}' sets admin_access.secret_env to reserved Overwatch secret '${env}'; token minting is refused until it is changed`);
   }
@@ -213,16 +216,20 @@ function notifyAppsChanged(): void {
 
 async function writeStatic(appDef: AppDefinition): Promise<void> {
   const { createdAt, updatedAt, ...staticOnly } = appDef;
-  invalidateAppsCache();
-  await writeJsonAtomic(getStaticFile(appDef.id), staticOnly, { mode: 0o644 });
+  try {
+    await writeJsonAtomic(getStaticFile(appDef.id), staticOnly, { mode: 0o644 });
+  } finally {
+    invalidateAppsCache();
+  }
 }
 
 async function removeStatic(id: string): Promise<void> {
-  invalidateAppsCache();
   try {
     await fs.unlink(getStaticFile(id));
   } catch (err: any) {
     if (err.code !== 'ENOENT') throw err;
+  } finally {
+    invalidateAppsCache();
   }
   // Drop any cached registry adapter for this app — registry config is gone.
   clearAdapterCache(id);
@@ -326,9 +333,14 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
 export async function applyApp(
   input: unknown,
   _actor: string,
+  opts: { restore?: (candidate: unknown, stored: AppDefinition | undefined) => unknown } = {},
 ): Promise<{ result: ApplyResult; app: AppDefinition; changedKeys: string[] }> {
   return withFileLock('apps', async () => {
-    const parsed = AppDefinitionStaticSchema.safeParse(input);
+    // Read-modify-write callers (restoring masked credentials) see the stored app under this lock.
+    const candidate = opts.restore
+      ? opts.restore(input, (await readApps()).find(a => a.id === (input as { id?: string })?.id))
+      : input;
+    const parsed = AppDefinitionStaticSchema.safeParse(candidate);
     if (!parsed.success) {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`App definition failed validation: ${errors}`);

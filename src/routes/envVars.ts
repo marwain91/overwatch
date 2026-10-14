@@ -7,11 +7,19 @@ import {
   setTenantOverride,
   deleteTenantOverride,
   regenerateAllSharedEnvFiles,
-  generateSharedEnvFile,
+  regenerateTenantSharedEnv,
 } from '../services/envVars';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validateTenantId } from '../middleware/validators';
 import { requireRole } from '../middleware/requireRole';
+
+// A busy tenant is not a failure: the value is saved and its shared.env is
+// regenerated in the background once the running operation releases the tenant.
+function busyWarnings(busy: string[]): { warnings?: string[] } {
+  return busy.length
+    ? { warnings: busy.map(id => `${id} is busy; its shared.env will be updated when the current operation finishes`) }
+    : {};
+}
 
 const router = Router({ mergeParams: true });
 
@@ -67,7 +75,8 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
   // An omitted flag keeps the stored one: defaulting to false would unmask an
   // existing secret in GET /env-vars on any edit that doesn't re-send it.
   const envVar = await setEnvVar(appId, key, effectiveValue, sensitive ?? existing?.sensitive ?? false, description ?? undefined);
-  const tenantsAffected = await regenerateAllSharedEnvFiles(appId);
+  const busy: string[] = [];
+  const tenantsAffected = await regenerateAllSharedEnvFiles(appId, { busy });
 
   res.json({
     envVar: {
@@ -75,6 +84,7 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
       value: envVar.sensitive ? '••••••••' : envVar.value,
     },
     tenantsAffected,
+    ...busyWarnings(busy),
   });
 }));
 
@@ -82,8 +92,9 @@ router.post('/', requireRole('editor'), asyncHandler(async (req: Request, res: R
 router.delete('/:key', requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
   const { appId, key } = (req.params as Record<string, string>);
   await deleteEnvVar(appId, key);
-  const tenantsAffected = await regenerateAllSharedEnvFiles(appId);
-  res.json({ success: true, tenantsAffected });
+  const busy: string[] = [];
+  const tenantsAffected = await regenerateAllSharedEnvFiles(appId, { busy });
+  res.json({ success: true, tenantsAffected, ...busyWarnings(busy) });
 }));
 
 // Get effective env vars for a tenant (merged view)
@@ -112,18 +123,18 @@ router.post('/tenants/:tenantId/overrides', validateTenantId, requireRole('edito
   }
 
   await setTenantOverride(appId, tenantId, key, String(value), sensitive ?? false);
-  await generateSharedEnvFile(appId, tenantId);
+  const { busy } = await regenerateTenantSharedEnv(appId, tenantId);
 
-  res.json({ success: true });
+  res.json({ success: true, ...busyWarnings(busy ? [`${appId}/${tenantId}`] : []) });
 }));
 
 // Delete a tenant override — editor+
 router.delete('/tenants/:tenantId/overrides/:key', validateTenantId, requireRole('editor'), asyncHandler(async (req: Request, res: Response) => {
   const { appId, tenantId, key } = (req.params as Record<string, string>);
   await deleteTenantOverride(appId, tenantId, key);
-  await generateSharedEnvFile(appId, tenantId);
+  const { busy } = await regenerateTenantSharedEnv(appId, tenantId);
 
-  res.json({ success: true });
+  res.json({ success: true, ...busyWarnings(busy ? [`${appId}/${tenantId}`] : []) });
 }));
 
 export default router;

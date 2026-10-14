@@ -201,7 +201,14 @@ export function assertAppRawLabelsOwned(appId: string, services: unknown): void 
 export function assertTenantRawLabelsOwned(appId: string, tenantId: string, rawLabels: unknown): void {
   if (!rawLabels || typeof rawLabels !== 'object') return;
   for (const [service, labels] of Object.entries(rawLabels as Record<string, unknown>)) {
-    assertRawLabels(`service "${service}"`, labels, rawLabelOwnerForRouter(`${appId}-${tenantId}-${service}`));
+    const router = `${appId}-${tenantId}-${service}`;
+    // Typed middleware names may hold hyphens (`<router>-rate-limit`); generation re-checks them exactly.
+    const typedPrefix = `${router.toLowerCase()}-`;
+    const owner = {
+      ...rawLabelOwnerForRouter(router),
+      isGeneratedMiddleware: (n: string) => n.startsWith(typedPrefix) && n.length > typedPrefix.length,
+    };
+    assertRawLabels(`service "${service}"`, labels, owner);
   }
 }
 

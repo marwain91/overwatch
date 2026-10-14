@@ -1,6 +1,6 @@
 import inquirer from 'inquirer';
 import { loadConfig, loadRawConfig, findConfigPath } from '../../config/loader';
-import { writeOverwatchConfig } from '../../config/writer';
+import { writeOverwatchConfig, ConfigValidationError } from '../../config/writer';
 import { header, success, warn, fail, info, BOLD, DIM, GREEN, RED, NC } from './utils';
 
 const EDITABLE_SECTIONS = [
@@ -221,8 +221,18 @@ export async function runConfigEdit(args: string[]): Promise<void> {
   try {
     await writeOverwatchConfig(rawConfig);
   } catch (err: any) {
-    fail(err.message);
-    warn('Changes not saved. Fix the values and try again.');
+    if (err instanceof ConfigValidationError) {
+      fail('Validation failed with the new values:');
+      for (const issue of err.issues) {
+        console.log(`    ${RED}${issue.path}:${NC} ${issue.message}`);
+      }
+      console.log('');
+      warn('Changes not saved. Fix the values and try again.');
+    } else {
+      // I/O or lock failure: the values are fine, so do not tell the user to change them.
+      fail(err.message);
+      warn('Changes not saved.');
+    }
     return;
   }
 

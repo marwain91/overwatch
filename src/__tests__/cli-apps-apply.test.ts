@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -29,7 +29,7 @@ function stripAnsi(s: string): string {
 }
 
 function runCli(args: string[], stdin?: string) {
-  const raw = spawnSync('npx', ['tsx', cliEntry, ...args], {
+  const raw = spawnSync(process.execPath, ['--import', 'tsx', cliEntry, ...args], {
     input: stdin,
     encoding: 'utf-8',
     env: { ...process.env, OVERWATCH_CONFIG: configPath, FORCE_COLOR: '0', NO_COLOR: '1' },
@@ -65,8 +65,13 @@ afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
-// Each test spawns the CLI through tsx (a cold compile of the CLI graph), which
-// alone takes 1-5s and more on a loaded machine; the 5s default is too tight.
+// The first tsx spawn compiles the whole CLI graph (tens of seconds on a loaded
+// machine); warm tsx's on-disk cache once so no single test pays for it.
+beforeAll(() => {
+  spawnSync(process.execPath, ['--import', 'tsx', cliEntry, '--help'], { encoding: 'utf-8' });
+}, 180_000);
+
+// Each test still spawns a fresh CLI process (1-5s, more on a loaded machine).
 describe('overwatch apps apply — end-to-end', { timeout: 30_000 }, () => {
   it('creates an app from a file', async () => {
     const appFile = path.join(tmpRoot, 'acme.json');
@@ -88,6 +93,17 @@ describe('overwatch apps apply — end-to-end', { timeout: 30_000 }, () => {
     const proc = runCli(['apps', 'apply', appFile]);
     expect(proc.status).toBe(2);
     expect(proc.stderr).toContain('traefik.tcp.routers.x.rule');
+    await expect(fs.stat(path.join(dataDir, 'apps.d', 'acme.json'))).rejects.toThrow();
+  });
+
+  it('refuses masked credential placeholders copied from a non-admin read', async () => {
+    const def: any = validStatic('acme');
+    def.traefik = { middlewares: { gate: { type: 'basicAuth', users: ['alice:••••••••'] } } };
+    const appFile = path.join(tmpRoot, 'acme.json');
+    await fs.writeFile(appFile, JSON.stringify(def));
+    const proc = runCli(['apps', 'apply', appFile]);
+    expect(proc.status).toBe(2);
+    expect(proc.stderr).toContain('traefik.middlewares.gate');
     await expect(fs.stat(path.join(dataDir, 'apps.d', 'acme.json'))).rejects.toThrow();
   });
 

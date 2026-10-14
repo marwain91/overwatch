@@ -129,9 +129,11 @@ All backup endpoints are scoped to an app: `/api/apps/:appId/backups`.
 | `POST` | `/api/apps/:appId/backups` | `editor` | Create backup for a tenant |
 | `POST` | `/api/apps/:appId/backups/all` | `editor` | Backup all tenants in an app |
 | `POST` | `/api/apps/:appId/backups/:snapshotId/restore` | `admin` | Restore to an existing tenant |
-| `POST` | `/api/apps/:appId/backups/:snapshotId/create-tenant` | `admin` | Create a new tenant from a backup |
+| `POST` | `/api/apps/:appId/backups/:snapshotId/create-tenant` | `admin` | Create a new tenant from a backup (restored while the containers are stopped, then started) |
 | `DELETE` | `/api/apps/:appId/backups/:snapshotId` | `admin`, `confirm` | Delete a snapshot |
 | `POST` | `/api/apps/:appId/backups/prune` | `admin` | Prune old backups |
+
+When a tenant is created from a backup, its data is copied into the containers while they are stopped (before the app first starts). Backed-up paths must therefore be volume mount points or exist in the image; any other path is reported as a "not restored (copy failed)" warning.
 
 **Create backup request:**
 ```json
@@ -164,7 +166,7 @@ All env var endpoints are scoped to an app: `/api/apps/:appId/env-vars`.
 | `GET` | `/api/status/config` | `auth` | Get project configuration |
 | `GET` | `/api/status/tenants` | `auth` | List all tenants across all apps |
 | `GET` | `/api/status/containers` | `auth` | List managed containers |
-| `GET` | `/api/status/containers/:containerId/logs` | `auth` | Get container logs |
+| `GET` | `/api/status/containers/:containerId/logs` | `auth` | Get container logs (readable by every role, including `viewer`) |
 | `POST` | `/api/status/containers/:containerId/restart` | `admin` | Restart a specific container |
 
 ## Monitoring
@@ -207,12 +209,16 @@ Query parameters: `?limit=50&user=email&action=create`
 | `GET` | `/api/database/info` | `auth` | Database adapter and connection information |
 | `GET` | `/api/database/stats` | `auth` | Database-level stats |
 | `GET` | `/api/database/databases` | `auth` | List tenant databases |
-| `GET` | `/api/database/processes` | `auth` | List database processes |
+| `GET` | `/api/database/processes` | `auth` | List database processes. The `query` (statement text) of each process is `"[hidden]"` unless the caller is an `admin`, since a running statement can contain credentials |
 | `POST` | `/api/database/processes/:id/kill` | `admin` | Kill a database process |
+
+## Read scope of the `viewer` role
+
+`viewer` is the read-only support role. Container logs (`GET /api/status/containers/:containerId/logs`) and tenant update progress (REST and WebSocket `tenant:update:progress` events) are deliberately readable by viewers so they can diagnose problems; logs and progress detail are not redacted. Credential-bearing fields are redacted for every role below `admin`: notification channel webhook URLs and headers, the text of database processes, and the inline credentials in the global Traefik configuration (see below).
 
 ## Traefik
 
-Global Traefik endpoints manage `overwatch.yaml.traefik`.
+Global Traefik endpoints manage `overwatch.yaml.traefik`. Credential-bearing Traefik fields are masked for callers below `admin` on every read: the global reads (`GET /api/traefik`, `/middlewares`, `/dashboard`, `/overwatch`), app definitions (`GET /api/apps`, `GET /api/apps/:appId`, `GET /api/apps/:appId/traefik`) and tenant overrides (`GET /api/apps/:appId/tenants/:tenantId/traefik`). Masked: `basicAuth` user hashes (`user:••••••••`), everything after the origin of a `forwardAuth` address (userinfo, path, `;` segments, query, fragment; shown as `https://host/••••••••`), values of custom headers whose name contains `auth`, `credential`, `signature`, `bearer`, `token`, `secret`, `key`, `password` or `cookie`, and raw label values: `*.basicauth.users`, `*.digestauth.users` and `*.forwardauth.address` are masked as above, and every other raw label value is hidden unless its last key segment is a known non-secret option (for example `rule`, `entrypoints`, `priority`, `middlewares`, `port`, `average`, `sourcerange`), so unknown or future options such as plugin keys stay masked. Label keys stay visible. App trash listings (`GET /api/apps/.trashed`) are masked the same way. Admins get the stored values, which they need to edit them. If a masked value is saved back by an editor, the stored value for the same middleware/user/header/label is kept; a placeholder with nothing stored is rejected with 400, so it is never persisted.
 
 | Method | Endpoint | Role | Description |
 |--------|----------|------|-------------|

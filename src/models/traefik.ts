@@ -200,6 +200,17 @@ export function rawLabelOwnerForAppService(appId: string, service: string): RawL
       // `<app>-<tenant>-<service>-<token>`: strip the token, the rest must be a router name.
       return i > head.length && MIDDLEWARE_SUFFIX_RE.test(n.slice(i + 1)) && ownRouter(n.slice(0, i));
     },
+    // Typed middleware names are `<router>-<name>` and the name may itself hold
+    // hyphens (`rate-limit`). The app's middleware set is not known per tenant
+    // here, so any suffix after an own router name passes; generation re-checks
+    // against the exact generated names.
+    isGeneratedMiddleware: n => {
+      if (!n.startsWith(head)) return false;
+      for (let i = n.indexOf('-', head.length); i !== -1; i = n.indexOf('-', i + 1)) {
+        if (i < n.length - 1 && ownRouter(n.slice(0, i))) return true;
+      }
+      return false;
+    },
   };
 }
 

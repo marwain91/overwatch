@@ -1,6 +1,26 @@
 import { useState } from 'react';
 import type { AppService } from '../lib/types';
 
+let keySeq = 0;
+const nextKey = () => `svc-${++keySeq}`;
+
+/**
+ * Stable React keys for a list of services that has no natural id (names are
+ * editable and may be empty or duplicated). Keyed by index, removing a middle
+ * row would hand its expanded/advanced state to the row that shifted into it.
+ * Keep the keys in step with the list: add() with each append, remove(i) with
+ * each removal, reset(n) when the list is replaced.
+ */
+export function useServiceKeys(initialCount: number) {
+  const [keys, setKeys] = useState<string[]>(() => Array.from({ length: initialCount }, nextKey));
+  return {
+    keys,
+    add: () => setKeys((k) => [...k, nextKey()]),
+    remove: (index: number) => setKeys((k) => k.filter((_, j) => j !== index)),
+    reset: (count: number) => setKeys(Array.from({ length: count }, nextKey)),
+  };
+}
+
 interface ServiceEditorProps {
   service: AppService;
   onChange: (s: AppService) => void;

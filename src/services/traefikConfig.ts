@@ -18,6 +18,11 @@ import { NotFoundError } from '../utils/httpErrors';
 import { tenantDir } from './tenantStore';
 import * as fs from 'fs/promises';
 import { assertTenantRawLabelsOwned } from './traefikLabels';
+import {
+  restoreMiddlewareCredentials,
+  restoreRoutingCredentials,
+  restoreTenantTraefik,
+} from './traefikRedaction';
 
 const SECRET_HINTS = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
 
@@ -49,6 +54,10 @@ export async function getTraefikConfig(opts: { unmask?: boolean } = {}): Promise
 
 export async function updateTraefikConfig(patch: TraefikGlobal): Promise<TraefikGlobal> {
   const validated = TraefikGlobalSchema.parse(patch);
+  const stored = loadConfig().traefik;
+  if (validated.middlewares) validated.middlewares = restoreMiddlewareCredentials(validated.middlewares, stored?.middlewares);
+  if (validated.overwatch) validated.overwatch = restoreRoutingCredentials(validated.overwatch, stored?.overwatch);
+  if (validated.dashboard) validated.dashboard = restoreRoutingCredentials(validated.dashboard, stored?.dashboard);
   await updateOverwatchConfig(raw => { raw.traefik = validated; });
   return validated;
 }
@@ -93,7 +102,9 @@ export async function listGlobalMiddlewares(): Promise<Record<string, Middleware
 }
 
 export async function upsertGlobalMiddleware(name: string, body: unknown): Promise<MiddlewareSpec> {
-  const validated = MiddlewareSpecSchema.parse(body);
+  const parsed = MiddlewareSpecSchema.parse(body);
+  const stored = loadConfig().traefik?.middlewares;
+  const validated = restoreMiddlewareCredentials({ [name]: parsed }, stored)[name];
   await updateOverwatchConfig(raw => {
     raw.traefik = raw.traefik ?? {};
     raw.traefik.middlewares = raw.traefik.middlewares ?? {};
@@ -117,7 +128,7 @@ export async function getDashboardConfig() {
 }
 
 export async function updateDashboardConfig(body: unknown) {
-  const validated = TraefikDashboardSchema.parse(body);
+  const validated = restoreRoutingCredentials(TraefikDashboardSchema.parse(body), loadConfig().traefik?.dashboard);
   await updateOverwatchConfig(raw => {
     raw.traefik = raw.traefik ?? {};
     raw.traefik.dashboard = validated;
@@ -133,7 +144,7 @@ export async function getOverwatchRouting() {
 }
 
 export async function updateOverwatchRouting(body: unknown) {
-  const validated = TraefikOverwatchSchema.parse(body);
+  const validated = restoreRoutingCredentials(TraefikOverwatchSchema.parse(body), loadConfig().traefik?.overwatch);
   await updateOverwatchConfig(raw => {
     raw.traefik = raw.traefik ?? {};
     raw.traefik.overwatch = validated;
@@ -150,13 +161,21 @@ export async function getAppTraefik(appId: string): Promise<TraefikApp | undefin
 }
 
 export async function updateAppTraefik(appId: string, body: unknown): Promise<TraefikApp> {
-  const validated = TraefikAppSchema.parse(body);
+  const parsed = TraefikAppSchema.parse(body);
   const app = await getApp(appId);
   if (!app) throw new NotFoundError(`App '${appId}' not found`);
   const { createdAt: _c, updatedAt: _u, ...staticPart } = app;
   void _c; void _u;
-  await applyApp({ ...staticPart, traefik: validated }, 'api:traefik-update');
-  return validated;
+  // A non-admin editor saves what the masked read returned; the stored hashes are
+  // restored inside applyApp's lock so a concurrent rotation is not reverted.
+  const { app: saved } = await applyApp({ ...staticPart, traefik: parsed }, 'api:traefik-update', {
+    restore: (candidate, stored) => {
+      const t = (candidate as { traefik: TraefikApp }).traefik;
+      const middlewares = restoreMiddlewareCredentials(t.middlewares, stored?.traefik?.middlewares);
+      return { ...(candidate as object), traefik: { ...t, ...(middlewares ? { middlewares } : {}) } };
+    },
+  });
+  return saved.traefik ?? {};
 }
 
 // ─── Per-tenant Traefik ─────────────────────────────────────────────────────
@@ -178,12 +197,15 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
     if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') throw new NotFoundError(`Tenant '${tenantId}' not found in app '${appId}'`);
     throw err;
   }
-  const parsed = TraefikTenantSchema.parse(body);
-  assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);
-  if (parsed.host_aliases && parsed.host_aliases.length > 0) {
-    const normalized = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
-    parsed.host_aliases = normalized;
-  }
-  await writeTenantTraefik(appId, tenantId, parsed);
+  const incoming = TraefikTenantSchema.parse(body);
+  // Restoring masked credentials reads the stored value, so it runs under the write lock.
+  await writeTenantTraefik(appId, tenantId, async (stored) => {
+    const parsed = restoreTenantTraefik(incoming, stored);
+    assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);
+    if (parsed.host_aliases && parsed.host_aliases.length > 0) {
+      parsed.host_aliases = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
+    }
+    return parsed;
+  });
   return readTenantTraefik(appId, tenantId, { raw: true });
 }

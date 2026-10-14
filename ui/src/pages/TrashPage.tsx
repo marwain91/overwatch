@@ -72,12 +72,17 @@ export function TrashPage() {
                 <div className="flex shrink-0 gap-2">
                   <button
                     className="btn btn-primary"
-                    disabled={restore.isPending}
+                    aria-label={`Restore ${app.name} (${app.id})`}
+                    disabled={restore.isPending && restore.variables === app.id}
                     onClick={() => handleRestore(app.id)}
                   >
                     Restore
                   </button>
-                  <button className="btn btn-danger" onClick={() => setPurgeId(app.id)}>
+                  <button
+                    className="btn btn-danger"
+                    aria-label={`Purge ${app.name} (${app.id})`}
+                    onClick={() => setPurgeId(app.id)}
+                  >
                     Purge
                   </button>
                 </div>
@@ -95,11 +100,18 @@ export function TrashPage() {
             This permanently removes the definition of <strong>{purgeId}</strong> from the trash. It cannot be undone.
             Type the app id to confirm.
           </p>
+          <label className="sr-only" htmlFor="purge-confirm">{`Type ${purgeId} to confirm`}</label>
           <input
+            id="purge-confirm"
             className="input mb-4"
             placeholder={`Type ${purgeId} to confirm`}
             value={confirmText}
+            autoFocus
+            autoComplete="off"
             onChange={(e) => setConfirmText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && confirmText === purgeId && !purge.isPending) handlePurge();
+            }}
           />
           <div className="flex justify-end gap-2">
             <button className="btn btn-secondary" onClick={closePurge}>Cancel</button>
