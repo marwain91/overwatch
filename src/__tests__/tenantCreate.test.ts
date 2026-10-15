@@ -189,3 +189,17 @@ describe('createTenant derived names', () => {
     await expect(fs.access(getTenantPath('portal', tooLong))).rejects.toThrow();
   });
 });
+
+describe('createTenant over a kept database', () => {
+  it('explains that the database was kept by an earlier delete and what to do', async () => {
+    db.databaseExists.mockImplementation(async () => true);
+    const { ConflictError } = await import('../utils/httpErrors');
+    const { createTenant } = await import('../services/tenant');
+    const err = await createTenant(input('one')).catch(e => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(err.message).toMatch(/database 'portal_one' already exists/);
+    expect(err.message).toMatch(/Keep data/);
+    expect(err.message).toMatch(/deleted-tenants\/portal/);
+    expect(db.createDatabase).not.toHaveBeenCalled();
+  });
+});

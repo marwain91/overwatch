@@ -54,6 +54,7 @@ async function loadDeleteTenant(composeDown: (cb: (err: any, stdout: string, std
   vi.doMock('../config', () => ({
     loadConfig: () => ({ project: { name: 'T', prefix: 'test', db_prefix: 'test' } }),
     getAppsDir: () => appsDir,
+    getDataDir: () => path.join(tmpRoot, 'data'),
     resolveAppDbPrefix: (app?: { db_prefix?: string }) => app?.db_prefix ?? 'test',
   }));
   vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
@@ -139,5 +140,32 @@ describe('deleteTenant', () => {
     await expect(deleteTenant('demo', 'tenant-one')).rejects.toThrow(/cannot determine the database/i);
     expect(composeCalls).toEqual([]);
     expect(db.dropDatabase).not.toHaveBeenCalled();
+  });
+
+  it('keep data: stops the containers without removing volumes and saves the .env with its DB password', async () => {
+    const env = 'DB_NAME=test_demo_tenant_one\nDB_PASSWORD=s3cret\n';
+    await fs.writeFile(path.join(tenantPath, '.env'), env);
+    const { deleteTenant, db, composeCalls } = await loadDeleteTenant(cb => cb(null, '', ''));
+
+    await deleteTenant('demo', 'tenant-one', true);
+
+    const down = composeCalls.find(a => a.includes('down'))!;
+    expect(down).not.toContain('-v');
+    expect(db.dropDatabase).not.toHaveBeenCalled();
+    const savedDir = path.join(tmpRoot, 'data', 'deleted-tenants', 'demo');
+    const [saved] = await fs.readdir(savedDir);
+    expect(saved).toMatch(/^tenant-one-\d{4}-\d{2}-\d{2}T[\d-]+Z\.env$/);
+    expect(await fs.readFile(path.join(savedDir, saved), 'utf-8')).toBe(env);
+    expect((await fs.stat(path.join(savedDir, saved))).mode & 0o777).toBe(0o600);
+    await expect(fs.access(tenantPath)).rejects.toThrow();
+  });
+
+  it('keep data: refuses to delete anything when the .env cannot be saved', async () => {
+    await fs.writeFile(path.join(tmpRoot, 'data'), 'not a directory');
+    const { deleteTenant, composeCalls } = await loadDeleteTenant(cb => cb(null, '', ''));
+
+    await expect(deleteTenant('demo', 'tenant-one', true)).rejects.toThrow(/save/i);
+    expect(composeCalls).toEqual([]);
+    await expect(fs.access(path.join(tenantPath, '.env'))).resolves.toBeUndefined();
   });
 });

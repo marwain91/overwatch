@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { loadConfig } from '../config';
+import { loadConfig, getDataDir } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
@@ -289,7 +289,13 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
     await db.initialize();
     // Never adopt a database that already exists: a later rollback would drop it.
     if (await db.databaseExists(dbTenantId)) {
-      throw new ConflictError(`A database for tenant '${tenantId}' already exists on the database server`);
+      throw new ConflictError(
+        `A database '${dbName}' already exists on the database server, so tenant '${tenantId}' cannot be created: ` +
+        'Overwatch never adopts an existing database. If a tenant with this ID was deleted with "Keep data", ' +
+        `its database and volumes were kept on purpose and its .env (with the database password) was saved under deleted-tenants/${appId}/ in the Overwatch data directory. ` +
+        `To create the tenant again, back up and drop the database '${dbName}' and its user on the database server; ` +
+        `its kept volumes (${identity.namePrefix}*) are reused unless you remove them.`,
+      );
     }
     const dbResult = await db.createDatabase(dbTenantId, dbPassword);
     dbCreated = dbResult.created;
@@ -395,6 +401,31 @@ async function guardUnownedVolumes(composePath: string, appId: string, tenantId:
   }
 }
 
+/**
+ * "Keep data" keeps the database and the volumes, so keep the credentials to
+ * them as well: the tenant's .env (database password, JWT secret) is copied to
+ * <dataDir>/deleted-tenants/<appId>/<tenantId>-<timestamp>.env, mode 0600.
+ * Runs before anything is torn down; if the copy fails, nothing is deleted.
+ */
+async function saveDeletedTenantEnv(appId: string, tenantId: string, tenantPath: string): Promise<void> {
+  let content: string;
+  try {
+    content = await fs.readFile(path.join(tenantPath, '.env'), 'utf-8');
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return;
+    throw new HttpError(500, `Could not save the .env of ${appId}/${tenantId}: it cannot be read (${err?.code || err?.message || err}). Nothing was deleted.`, { expose: true });
+  }
+  const dir = path.join(getDataDir(), 'deleted-tenants', appId);
+  const file = path.join(dir, `${tenantId}-${new Date().toISOString().replace(/[:.]/g, '-')}.env`);
+  try {
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await writeSecretFile(file, content);
+  } catch (err: any) {
+    throw new HttpError(500, `Could not save the .env of ${appId}/${tenantId} to ${dir} (${err?.code || err?.message || err}). Nothing was deleted.`, { expose: true });
+  }
+  console.log(`[deleteTenant] ${appId}/${tenantId}: keeping its database and volumes; saved its .env to ${file}`);
+}
+
 export function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
   return withTenantLock(appId, tenantId, () => deleteTenantLocked(appId, tenantId, keepData));
 }
@@ -420,14 +451,19 @@ export async function deleteTenantLocked(appId: string, tenantId: string, keepDa
   const dbName = keepData ? null : await resolveTenantDbName(appId, tenantId, await resolveTenantApp(appId, tenantId));
 
   const composePath = path.join(tenantPath, 'docker-compose.yml');
-  await guardUnownedVolumes(composePath, appId, tenantId);
+  if (keepData) {
+    await saveDeletedTenantEnv(appId, tenantId, tenantPath);
+  } else {
+    await guardUnownedVolumes(composePath, appId, tenantId);
+  }
 
   // Stop containers. If this fails we refuse to drop the DB — orphaned
   // containers running against a gone DB are worse than an incomplete delete.
-  // Caller can retry once the compose issue is resolved.
+  // Caller can retry once the compose issue is resolved. Keep data keeps the
+  // volumes too, so no `-v`.
   let composeDownOk = true;
   try {
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', ...(keepData ? [] : ['-v'])]);
   } catch (err: any) {
     composeDownOk = false;
     if (!keepData) {
