@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { asyncHandler } from '../utils/asyncHandler';
+import { runDocker } from '../utils/runDocker';
 import { requireRole } from '../middleware/requireRole';
 import { requireConfirmId } from '../middleware/confirmDestructive';
 import {
@@ -22,7 +21,6 @@ import { redactTraefikCredentials, redactMiddlewareCredentials, redactRoutingCre
 import { TraefikGlobalSchema } from '../models/traefik';
 import { loadConfig } from '../config';
 
-const execFileAsync = promisify(execFile);
 const router = Router();
 
 // Reads are open to every role, but inline credentials (basicAuth hashes, auth
@@ -137,8 +135,9 @@ router.post('/reload', requireRole('admin'), asyncHandler(async (_req: Request, 
   const containerName = `${config.project.prefix}-traefik`;
   res.json({ success: true, container: containerName, note: 'Restart scheduled — brief routing pause expected.' });
   // Detach: the response is already on its way; we don't await this.
+  // runDocker: allowlisted env (Overwatch's own secrets stay out of docker's) and a timeout.
   setImmediate(() => {
-    execFileAsync('docker', ['restart', containerName]).catch((err: any) => {
+    runDocker('docker', ['restart', containerName], { timeoutMs: 120_000 }).catch((err: any) => {
       console.error(`[traefik reload] Failed to restart ${containerName}:`, err?.message || err);
     });
   });
