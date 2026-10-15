@@ -151,15 +151,17 @@ router.post('/:appId/registry/test', validateAppId, requireRole('editor'), async
 }));
 
 // App-scoped Traefik config — middleware library + default_middlewares.
-// Editor+ matches the rest of the app/tenant editing surface.
+// Writes are admin-only like PUT /:appId: default_middlewares attach to every
+// tenant router, so a forwardAuth entry would hand every tenant user's Cookie
+// and Authorization headers to its address.
 router.get('/:appId/traefik', validateAppId, asyncHandler(async (req, res) => {
   const t = await getAppTraefik((req.params as Record<string, string>).appId);
   res.json((isAdmin(res) ? t : redactAppTraefik(t)) ?? null);
 }));
 
-router.put('/:appId/traefik', validateAppId, requireRole('editor'), asyncHandler(async (req, res) => {
+router.put('/:appId/traefik', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
   const t = await updateAppTraefik((req.params as Record<string, string>).appId, req.body);
-  res.json(isAdmin(res) ? t : redactAppTraefik(t));
+  res.json(t);
 }));
 
 export default router;

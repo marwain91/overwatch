@@ -2,7 +2,7 @@
 
 From v1.6 Overwatch ships a first-class Traefik configuration surface. Cert resolvers, the global middleware library, the dashboard, Overwatch's own routing, and per-tenant overrides all live under one schema and are editable from three places:
 
-- **Web UI** — Sidebar → Traefik (admin only): Cert Resolvers, Middlewares, Entrypoints, Dashboard, Overwatch Server. Per-app middleware library is on the App Settings page; per-tenant overrides live behind the **Routing** action on each tenant row.
+- **Web UI** — Sidebar → Traefik (admin only): Cert Resolvers, Middlewares, Entrypoints, Dashboard, Overwatch Server. Per-app middleware library is on the App Settings page (admin only to edit, like the rest of the app definition: its `default_middlewares` attach to every tenant router); per-tenant overrides live behind the **Routing** action on each tenant row (editor and up).
 - **REST API** — `/api/traefik/*` and `/api/apps/:appId/traefik`, `/api/apps/:appId/tenants/:tenantId/traefik`.
 - **CLI** — `overwatch config traefik [view|resolver|migrate|reload|doctor]`.
 

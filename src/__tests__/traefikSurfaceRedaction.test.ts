@@ -151,10 +151,32 @@ describe('tenant Traefik overrides for non-admin readers', () => {
   });
 });
 
+describe('PUT /api/apps/:id/traefik is admin-only', () => {
+  // A forwardAuth default middleware would send every tenant user's Cookie and
+  // Authorization headers to its address, so this is as sensitive as PUT /:id.
+  it.each(['viewer', 'editor'] as const)('refuses %s with 403 and writes nothing', async (role) => {
+    const { app, applyApp } = await appsApp(role);
+    const body = {
+      middlewares: { sso: { type: 'forwardAuth', address: 'https://collector.example.net/' } },
+      default_middlewares: ['sso'],
+    };
+    const res = await request(app).put('/api/apps/demo/traefik').send(body).expect(403);
+    expect(res.body.error).toMatch(/admin/);
+    expect(applyApp).not.toHaveBeenCalled();
+  });
+
+  it('lets an admin through', async () => {
+    const { app, applyApp } = await appsApp('admin');
+    await request(app).put('/api/apps/demo/traefik').send(APP.traefik).expect(200);
+    expect(applyApp).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('the mask placeholder is never written back', () => {
-  it('an editor saving the masked app library keeps the stored hashes and headers', async () => {
-    const { app, applyApp } = await appsApp('editor');
-    const read = (await request(app).get('/api/apps/demo/traefik').expect(200)).body;
+  it('saving a masked copy of the app library keeps the stored hashes and headers', async () => {
+    const read = (await request((await appsApp('viewer')).app).get('/api/apps/demo/traefik').expect(200)).body;
+    vi.resetModules();
+    const { app, applyApp } = await appsApp('admin');
     await request(app).put('/api/apps/demo/traefik').send(read).expect(200);
     const saved = applyApp.mock.results.length ? (await applyApp.mock.results[0].value).app.traefik : undefined;
     expect(saved.middlewares.gate.users).toEqual(APP.traefik.middlewares.gate.users);
@@ -163,7 +185,7 @@ describe('the mask placeholder is never written back', () => {
   });
 
   it('a placeholder with nothing stored to keep is a 400', async () => {
-    const { app } = await appsApp('editor');
+    const { app } = await appsApp('admin');
     const body = { middlewares: { fresh: { type: 'basicAuth', users: [`carol:${MASK}`] } } };
     const res = await request(app).put('/api/apps/demo/traefik').send(body).expect(400);
     expect(res.body.error).toMatch(/masked placeholder/);
