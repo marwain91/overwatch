@@ -64,7 +64,7 @@ export function TenantRoutingModal({
     // Empty body deletes the override file (server handles).
     const payload = Object.keys(body).length === 0 ? null : body;
     update.mutate(payload, {
-      onSuccess: () => { toast.success('Routing saved. Run `tenant restart` to apply.'); onClose(); },
+      onSuccess: () => { toast.success('Routing saved. Restart the tenant to apply it.'); onClose(); },
       onError: (err: any) => toast.error(err?.message || 'Save failed'),
     });
   };

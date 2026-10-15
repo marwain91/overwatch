@@ -176,9 +176,9 @@ Override semantics: `middleware_overrides` is a full replacement, not a merge, s
 ## Operational notes
 
 - **Reload Traefik** after changing cert resolvers, entrypoints, or the dashboard config — the static config in `traefik.yml` is read at start. Use the **Reload Traefik** button in the UI, `overwatch config traefik reload`, or `docker restart <prefix>-traefik`.
-- **Per-tenant changes** (middleware overrides, raw labels, host aliases) only require `docker compose up -d` on that tenant.
+- **Per-tenant changes** (cert resolver, host aliases, middleware overrides, raw labels) apply when the tenant is next started or restarted from Overwatch (UI, API or MCP), or updated. Start and restart regenerate the tenant's `docker-compose.yml` from its app-definition snapshot and its current overrides, then run `docker compose up -d`, which recreates the containers whose labels changed. Running `docker compose up -d` by hand does not regenerate the file, and hand edits to the file are overwritten on the next start, restart or update.
 - **`overwatch infra deploy`** regenerates `traefik.yml`, `dynamic.yml`, the infrastructure compose, and the Overwatch compose from the global config. For legacy installs, it keeps the static templates.
-- **Frozen snapshots**: each tenant has a frozen copy of its app definition (incl. `traefik.middlewares`). Middleware changes don't affect existing tenants until you explicitly `tenant update`.
+- **Frozen snapshots**: each tenant has a frozen copy of its app definition (incl. `traefik.middlewares`). Changes to the app's middleware library don't affect existing tenants until you explicitly `tenant update`; a restart regenerates from the snapshot, not from the current app definition (only the registry, default image tag and app identity follow the current definition).
 
 ## Behind an upstream SSL terminator
 

@@ -7,7 +7,12 @@ import { assertTenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { runDocker } from '../utils/runDocker';
 import { withTenantLock } from './fileLock';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
-import { readComposeNames } from './composeGenerator';
+import { generateComposeFile, readComposeNames } from './composeGenerator';
+import { resolveTenantApp } from './tenantAppDef';
+import { readTenantTraefik } from './tenantTraefik';
+import { loadConfig } from '../config';
+import { writeFileAtomic } from '../utils/atomicJson';
+import { HttpError } from '../utils/httpErrors';
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 export { docker };
 
@@ -316,6 +321,43 @@ export async function ensureExternalVolumes(composePath: string): Promise<void> 
   }
 }
 
+/**
+ * Regenerate a tenant's docker-compose.yml from its effective app definition,
+ * its .env domain and its current Traefik overrides (host aliases, middleware
+ * overrides, raw labels), keeping the volume names it already uses. Only
+ * create and update used to regenerate it, so routing changes never reached a
+ * running tenant. Caller must hold the tenant lock.
+ *
+ * Without a definition (an app in the trash whose tenant has no snapshot) or a
+ * TENANT_DOMAIN there is nothing to render from: the file is kept as is. A
+ * definition that cannot be rendered throws and leaves the file unchanged.
+ */
+export async function reconcileTenantComposeLocked(appId: string, tenantId: string): Promise<void> {
+  const tenantPath = await assertTenantDir(appId, tenantId);
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
+  let existing: string;
+  try {
+    existing = await fs.readFile(composePath, 'utf-8');
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+    throw new HttpError(500, `Tenant ${appId}/${tenantId} has no docker-compose.yml, so its containers cannot be managed.`, { expose: true });
+  }
+  const app = await resolveTenantApp(appId, tenantId);
+  const domain = (await readTenantEnv(appId, tenantId).catch(() => ({} as Record<string, string>))).TENANT_DOMAIN;
+  if (!app || !domain) {
+    console.warn(`[compose] ${appId}/${tenantId}: no ${app ? 'TENANT_DOMAIN in .env' : 'app definition'}; using its docker-compose.yml as is`);
+    return;
+  }
+  let next: string;
+  try {
+    const tenantTraefik = await readTenantTraefik(appId, tenantId);
+    next = generateComposeFile({ app, tenantId, domain, config: loadConfig(), tenantTraefik, existingCompose: existing });
+  } catch (err: any) {
+    throw new HttpError(500, `Could not regenerate the docker-compose.yml of ${appId}/${tenantId}: ${err?.message || err}. The tenant was left as it was.`, { expose: true });
+  }
+  if (next !== existing) await writeFileAtomic(composePath, next);
+}
+
 export function startTenant(appId: string, tenantId: string): Promise<void> {
   return withTenantLock(appId, tenantId, () => startTenantLocked(appId, tenantId));
 }
@@ -323,6 +365,7 @@ export function startTenant(appId: string, tenantId: string): Promise<void> {
 async function startTenantLocked(appId: string, tenantId: string): Promise<void> {
   const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
+  await reconcileTenantComposeLocked(appId, tenantId);
   await ensureExternalVolumes(composePath);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }
@@ -344,6 +387,7 @@ export function restartTenant(appId: string, tenantId: string): Promise<void> {
 async function restartTenantLocked(appId: string, tenantId: string): Promise<void> {
   const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
+  await reconcileTenantComposeLocked(appId, tenantId);
   await ensureExternalVolumes(composePath);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }
