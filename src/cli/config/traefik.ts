@@ -10,7 +10,7 @@ import type { CertResolver } from '../../models/traefik';
 import { listApps } from '../../services/app';
 import { getAppsDir } from '../../config';
 import { validateTraefik, collectPresentEnvVars, collectTenantOverrides } from '../../services/traefikDoctor';
-import { BOLD, DIM, NC, header, success, warn, info, fail } from './utils';
+import { BOLD, DIM, NC, header, success, warn, info, fail, restartNotice } from './utils';
 
 const execFileAsync = promisify(execFile);
 
@@ -156,6 +156,7 @@ async function resolverAdd(args: string[]): Promise<void> {
   await upsertCertResolver(name, resolverObj);
 
   success(`Cert resolver "${name}" added. Run \`overwatch config traefik reload\` to apply.`);
+  restartNotice();
 }
 
 async function resolverRemove(name: string | undefined): Promise<void> {
@@ -165,6 +166,7 @@ async function resolverRemove(name: string | undefined): Promise<void> {
   }
   await deleteCertResolver(name);
   success(`Cert resolver "${name}" removed. Run \`overwatch config traefik reload\` to apply.`);
+  restartNotice();
 }
 
 // ─── migrate ────────────────────────────────────────────────────────────────
@@ -232,6 +234,7 @@ async function migrate(): Promise<void> {
 
   success('Migration complete.');
   info('Next: review overwatch.yaml, then run `overwatch infra deploy` to regenerate Traefik templates.');
+  restartNotice();
 }
 
 // ─── doctor ─────────────────────────────────────────────────────────────────

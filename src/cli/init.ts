@@ -510,11 +510,9 @@ export async function generateFiles(config: InitConfig): Promise<void> {
     SECRET_FILE_MODE, // JWT_SECRET, DB root password, registry token
   );
 
-  // Data files
-  await writeFileSafe(
-    path.join(base, 'overwatch', 'data', 'admin-users.json'),
-    '[]\n',
-  );
+  // Data files. admin-users.json is deliberately not written: the store seeds
+  // it from ALLOWED_ADMIN_EMAILS only when the file is missing, so an empty
+  // list here would reject the first login.
   const dataDir = path.join(base, 'overwatch', 'data');
   if (!fs.existsSync(path.join(dataDir, 'apps.d'))) {
     fs.mkdirSync(path.join(dataDir, 'apps.d'), { recursive: true });

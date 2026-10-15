@@ -36,7 +36,11 @@ describe('R1 withFileLock — cross-process-safe lockfile + in-process serialisa
     const dataDir = path.join(tmpRoot, 'data');
     await fs.mkdir(path.join(dataDir, '.locks'), { recursive: true });
     // Write a lockfile with an impossibly-old timestamp and a fake dead PID.
-    await fs.writeFile(path.join(dataDir, '.locks', 'test.lock'), '4194304\n0\n', { mode: 0o600 });
+    const lock = path.join(dataDir, '.locks', 'test.lock');
+    await fs.writeFile(lock, '4194304\n0\n', { mode: 0o600 });
+    // Staleness is judged by mtime (holders refresh it), so age the file itself.
+    const old = new Date(Date.now() - 3_600_000);
+    await fs.utimes(lock, old, old);
     vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
     const { withFileLock } = await import('../services/fileLock');
 
@@ -134,6 +138,8 @@ describe('stale lockfile reclamation', () => {
 
   it('still reclaims an old lockfile whose PID is dead', async () => {
     const withFileLock = await setup(`4194304\n${Date.now() - 3_600_000}\n`);
+    const old = new Date(Date.now() - 3_600_000);
+    await fs.utimes(lockFile(), old, old);
     expect(await withFileLock('test', async () => 'ok')).toBe('ok');
   });
 });
@@ -238,4 +244,107 @@ describe('withFileLock per-call wait', () => {
     await holder;
     expect(await waiter).toBe('ok');
   });
+});
+
+describe('lockfile ownership, heartbeat and bounded reclaim', () => {
+  afterEach(() => {
+    delete process.env.OVERWATCH_LOCK_TIMEOUT_MS;
+    vi.doUnmock('fs/promises');
+    vi.useRealTimers();
+  });
+
+  const lockFile = (key = 'k') => path.join(tmpRoot, 'data', '.locks', `${key}.lock`);
+  const ageFile = async (file: string, ms: number) => {
+    const t = new Date(Date.now() - ms);
+    await fs.utimes(file, t, t);
+  };
+
+  async function load(content?: string) {
+    const dataDir = path.join(tmpRoot, 'data');
+    await fs.mkdir(path.join(dataDir, '.locks'), { recursive: true });
+    if (content !== undefined) await fs.writeFile(lockFile(), content, { mode: 0o600 });
+    vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
+    return import('../services/fileLock');
+  }
+
+  it('does not reclaim a lock whose holder keeps its mtime fresh, even when its PID is not visible here', async () => {
+    // A host CLI holding a lock: its PID does not exist in the container's
+    // namespace and it acquired over a minute ago, but it is alive (heartbeat).
+    process.env.OVERWATCH_LOCK_TIMEOUT_MS = '300';
+    const foreign = `4194304\n${Date.now() - 3_600_000}\nhost-cli-instance\n`;
+    const { withFileLock } = await load(foreign);
+    const { ConflictError } = await import('../utils/httpErrors');
+    const err = await withFileLock('k', async () => 'stolen').catch(e => e);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(await fs.readFile(lockFile(), 'utf-8')).toBe(foreign);
+  });
+
+  it('refreshes the lockfile mtime while the lock is held', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { withFileLock } = await load();
+    let refreshedMs = 0;
+    await withFileLock('k', async () => {
+      await ageFile(lockFile(), 120_000);
+      vi.advanceTimersByTime(60_000);
+      // The refresh is real file I/O; give it a moment to land.
+      for (let i = 0; i < 50 && Date.now() - (await fs.stat(lockFile())).mtimeMs > 60_000; i++) {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      refreshedMs = Date.now() - (await fs.stat(lockFile())).mtimeMs;
+    });
+    expect(refreshedMs).toBeLessThan(60_000);
+  });
+
+  it('release leaves alone a lockfile that is no longer ours', async () => {
+    const { withFileLock } = await load();
+    const foreign = `4194304\n${Date.now()}\nnext-holder\nnext-token\n`;
+    await withFileLock('k', async () => {
+      // Our lock was reclaimed and another holder now owns the path.
+      await fs.unlink(lockFile());
+      await fs.writeFile(lockFile(), foreign, { mode: 0o600 });
+    });
+    expect(await fs.readFile(lockFile(), 'utf-8')).toBe(foreign);
+  });
+
+  it('a reclaimer never removes a live lock that replaced the stale one it inspected', async () => {
+    process.env.OVERWATCH_LOCK_TIMEOUT_MS = '300';
+    // Another reclaimer wins the race: between our staleness check and our
+    // claim, the stale file is replaced by its fresh, live lock.
+    const live = `${process.ppid}\n${Date.now()}\nwinner-instance\nwinner-token\n`;
+    let swapped = false;
+    vi.doMock('fs/promises', async () => {
+      const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+      const swapFirst = <A extends unknown[], R>(op: (...a: A) => Promise<R>) => async (...a: A): Promise<R> => {
+        if (!swapped && String(a[0]) === lockFile()) {
+          swapped = true;
+          await actual.unlink(lockFile());
+          await actual.writeFile(lockFile(), live, { mode: 0o600 });
+        }
+        return op(...a);
+      };
+      return { ...actual, unlink: swapFirst(actual.unlink), rename: swapFirst(actual.rename) };
+    });
+    const { withFileLock } = await load(`4194304\n0\ncrashed-instance\n`);
+    await ageFile(lockFile(), 3_600_000);
+    const { ConflictError } = await import('../utils/httpErrors');
+    const err = await withFileLock('k', async () => 'double-held').catch(e => e);
+    expect(swapped).toBe(true);
+    expect(err).toBeInstanceOf(ConflictError);
+    expect(await fs.readFile(lockFile(), 'utf-8')).toBe(live);
+  });
+
+  it('gives up within the wait when a stale lockfile cannot be removed', async () => {
+    process.env.OVERWATCH_LOCK_TIMEOUT_MS = '300';
+    vi.doMock('fs/promises', async () => {
+      const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+      const denied = async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); };
+      return { ...actual, unlink: denied, rename: denied };
+    });
+    const { withFileLock } = await load(`4194304\n0\ncrashed-instance\n`);
+    await ageFile(lockFile(), 3_600_000);
+    const started = Date.now();
+    const err = await withFileLock('k', async () => 'never').catch(e => e);
+    expect(err?.status).toBe(409);
+    expect(Date.now() - started).toBeLessThan(3_000);
+  }, 8_000);
 });

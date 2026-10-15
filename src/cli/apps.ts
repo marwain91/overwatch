@@ -2,9 +2,6 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as readline from 'readline';
 import { applyApp, restoreApp, purgeApp } from '../services/app';
-import { assertNoMaskedCredentials } from '../services/traefikRedaction';
-import { assertAppRawLabelsOwned } from '../services/traefikLabels';
-import { assertServiceNamesValid, assertHealthcheckDurationsValid } from '../utils/validators';
 import { writeAuditEntry, flushAuditLog } from '../services/auditLog';
 import { GREEN, YELLOW, RED, BOLD, NC } from './config/utils';
 
@@ -63,12 +60,8 @@ async function runApply(args: string[]): Promise<void> {
 
   const actor = `cli:${currentOsUser()}`;
   try {
-    const def = parsed as { id?: unknown; services?: unknown };
-    assertServiceNamesValid(def?.services);
-    assertHealthcheckDurationsValid(def?.services);
-    if (typeof def?.id === 'string') assertAppRawLabelsOwned(def.id, def.services);
-    // A file copied from a non-admin API read carries placeholders, not credentials.
-    if (def && typeof def === 'object') assertNoMaskedCredentials(def as Parameters<typeof assertNoMaskedCredentials>[0]);
+    // applyApp runs the same write checks as the REST API (service names,
+    // health-check durations, raw-label ownership, masked credentials).
     const { result, app, changedKeys } = await applyApp(parsed, actor);
     writeAuditEntry({
       user: actor,

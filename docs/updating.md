@@ -44,7 +44,23 @@ To check for a new CLI version without applying:
 overwatch self-update --check
 ```
 
-The self-update downloads the latest release from GitHub and atomically replaces the current binary. Supports both x64 and arm64 architectures.
+The self-update downloads the latest release from GitHub and atomically replaces the current binary. Supports both x64 and arm64 architectures. It refuses a download whose SHA256 does not match the `.sha256` file published with the release.
+
+## Verifying Release Artifacts
+
+Releases after v1.8.2 carry signed [build-provenance attestations](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds) for both CLI binaries and the container image. An attestation proves that the artifact was built by this repository's release workflow from a specific commit; the SHA256 check in `overwatch self-update` only proves the download matches what the release lists. Verify with the [GitHub CLI](https://cli.github.com/manual/gh_attestation_verify) (any machine with `gh`, logged in to GitHub):
+
+```bash
+# CLI binary, e.g. before installing or after `overwatch self-update`
+gh attestation verify ./overwatch-linux-x64 --repo marwain91/overwatch \
+  --signer-workflow marwain91/overwatch/.github/workflows/build.yml
+
+# Container image: pin the exact version you deploy
+gh attestation verify oci://ghcr.io/marwain91/overwatch:<version> --repo marwain91/overwatch \
+  --signer-workflow marwain91/overwatch/.github/workflows/build.yml
+```
+
+A successful run prints the workflow, commit and tag the artifact was built from. Treat a failure as a reason not to deploy the artifact. For the image, verify the tag you actually run (or its `@sha256:` digest) rather than `latest`, which moves with every release.
 
 ## Upgrading to v1.4.0 — apps.d/ Migration
 
@@ -64,13 +80,19 @@ overwatch migrate up
 docker start overwatch
 ```
 
-The migration is idempotent; it exits without doing anything if `data/apps.d/` is already populated. The original `data/apps.json` is renamed to `data/apps.json.pre-apps.d` as a one-time backup.
+The original `data/apps.json` is renamed to `data/apps.json.pre-apps.d` as the very last step (a backup already at that name is kept, and the new one gets a timestamp suffix). Until that rename, the migration counts as not done, so a run that stopped part-way can be run again:
+
+- Every entry is checked before anything is written: it must load under the current app schema, and ids must be unique. A bad entry stops the run with a list of problems and nothing written; fix `apps.json` and run it again.
+- The new `apps.d/` and `apps.runtime.json` are built in a staging directory and renamed into place.
+- Files that an earlier, interrupted run left in `apps.d/` are replaced only if they are identical to their `apps.json` entry. If any was edited since (or is not in `apps.json`), the run stops without changing anything and says which files differ: keep whichever side is current (move `apps.json` aside, or the outdated files out of `apps.d/`) and run it again.
+
+The schema version in `data/.schema-versions.json` is updated only after the migration succeeded.
 
 ### Why the manual step?
 
 `overwatch migrate up` is the preferred upgrade path because it runs while Overwatch is stopped and leaves an explicit operator action in deployment history.
 
-`OVERWATCH_AUTO_MIGRATE=1` is an emergency boot-time opt-in for environments where a separate CLI step is inconvenient. On legacy pre-multi-app configs, startup runs the legacy migration before the server starts. For schema-version migrations, use `overwatch migrate up`; the startup gate is intentionally conservative and should not replace the explicit migration step in normal operations.
+`OVERWATCH_AUTO_MIGRATE=1` is an emergency boot-time opt-in for environments where a separate CLI step is inconvenient. On legacy pre-multi-app configs, startup runs the legacy migration before the server starts. Pending schema-version migrations (including this `apps.json` split) run at startup through the same runner as `overwatch migrate up`; a failure stops the boot and leaves the migration pending. Without the variable, the server refuses to start while a migration is pending. Prefer the explicit `overwatch migrate up` step in normal operations.
 
 ### After migrating
 

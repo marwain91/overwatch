@@ -1,14 +1,19 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
+import { isDeepStrictEqual } from 'util';
 import * as yaml from 'js-yaml';
 import { findConfigPath } from '../config/loader';
 import { writeOverwatchConfig } from '../config/writer';
 import { LegacyOverwatchConfigSchema, OverwatchConfig } from '../config/schema';
-import { AppDefinition } from '../models/app';
+import { AppDefinition, AppDefinitionStaticSchema } from '../models/app';
 import { generateComposeFile } from './composeGenerator';
+import { formatEnvLine } from './envVars';
+import { CURRENT_SCHEMA_VERSIONS, SchemaVersions, readSchemaVersions, writeSchemaVersions, findPendingMigrations } from './schemaVersions';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { writeSecretFile } from '../utils/security';
+import { parseEnv, unquoteEnvValue } from '../utils/env';
 
 const MIGRATION_MARKER = '.migration-v2-complete';
 
@@ -53,6 +58,79 @@ function hasPopulatedAppsFile(dataDir: string): boolean {
  */
 export function isMigrationComplete(dataDir: string): boolean {
   return fsSync.existsSync(path.join(dataDir, MIGRATION_MARKER));
+}
+
+/** TENANT_DOMAIN as compose reads it (quotes removed), or '' when absent. */
+function tenantDomainFromEnv(envContent: string): string {
+  const raw = parseEnv(envContent).TENANT_DOMAIN;
+  return raw ? unquoteEnvValue(raw) : '';
+}
+
+/**
+ * Copy one legacy tenant to its multi-app location, add APP_ID and
+ * COMPOSE_PROJECT_NAME to its .env and regenerate its compose file. Only a
+ * missing .env is skipped; any other failure is thrown to the caller.
+ */
+async function migrateLegacyTenant(opts: {
+  appId: string;
+  tenantId: string;
+  oldPath: string;
+  newPath: string;
+  app: AppDefinition;
+  config: OverwatchConfig;
+}): Promise<void> {
+  const { appId, tenantId, oldPath, newPath } = opts;
+  await fs.cp(oldPath, newPath, { recursive: true });
+
+  const envPath = path.join(newPath, '.env');
+  let envContent: string;
+  try {
+    envContent = await fs.readFile(envPath, 'utf-8');
+  } catch (err: any) {
+    if (err.code !== 'ENOENT') throw err;
+    console.warn(`[Migration] Tenant '${tenantId}' has no .env; copied without updating it`);
+    return;
+  }
+
+  const keys = parseEnv(envContent);
+  if (!('APP_ID' in keys)) {
+    const appIdLine = formatEnvLine('APP_ID', appId);
+    const withHeader = envContent.replace(/^(# Tenant Identification)/m, header => `# App Identification\n${appIdLine}\n\n${header}`);
+    envContent = withHeader !== envContent ? withHeader : `${appIdLine}\n${envContent}`;
+  }
+  if (!('COMPOSE_PROJECT_NAME' in keys)) {
+    envContent = `${formatEnvLine('COMPOSE_PROJECT_NAME', `${appId}-${tenantId}`)}\n${envContent}`;
+  }
+
+  // Tenant .env holds the DB password: 0600 + atomic, as tenant.ts writes it.
+  await writeSecretFile(envPath, envContent);
+
+  // Regenerate docker-compose.yml with new container naming
+  const domain = tenantDomainFromEnv(envContent);
+  if (domain) {
+    const composeContent = generateComposeFile({ app: opts.app, tenantId, domain, config: opts.config });
+    await fs.writeFile(path.join(newPath, 'docker-compose.yml'), composeContent);
+  }
+}
+
+/** Convert a legacy array store (env-vars.json, tenant-env-overrides.json) to `{ appId: array }`. */
+async function restructureLegacyStore(file: string, appId: string): Promise<boolean> {
+  let content: string;
+  try {
+    content = await fs.readFile(file, 'utf-8');
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err: any) {
+    throw new Error(`[Migration] ${path.basename(file)} is not valid JSON (${err.message}); fix or restore it and run the migration again`);
+  }
+  if (!Array.isArray(parsed)) return false;
+  await writeJsonAtomic(file, { [appId]: parsed }, { mode: 0o600 });
+  return true;
 }
 
 /**
@@ -151,9 +229,8 @@ export async function runMigration(): Promise<void> {
       if (entry.isDirectory()) {
         try {
           const envContent = await fs.readFile(path.join(tenantsDir, entry.name, '.env'), 'utf-8');
-          const domainMatch = envContent.match(/^TENANT_DOMAIN=(.+)$/m);
-          if (domainMatch) {
-            const domain = domainMatch[1];
+          const domain = tenantDomainFromEnv(envContent);
+          if (domain) {
             // Extract base domain from tenant domain
             const parts = domain.split('.');
             if (parts.length >= 2) {
@@ -171,9 +248,11 @@ export async function runMigration(): Promise<void> {
     // No tenants dir
   }
 
-  // 2. Write apps.json — refuse to overwrite if already populated.
-  // The marker file is the primary guard, but defence-in-depth protects users
-  // whose marker vanished (volume swap, data_dir change, manual deletion).
+  // 2. Refuse to overwrite a populated apps.json. The marker file is the primary
+  // guard, but defence-in-depth protects users whose marker vanished (volume
+  // swap, data_dir change, manual deletion). apps.json itself is written only
+  // after every tenant has moved: until then, a failed run stays "legacy" and
+  // can simply be run again.
   const appsFile = path.join(dataDir, 'apps.json');
   await fs.mkdir(dataDir, { recursive: true });
   try {
@@ -189,8 +268,6 @@ export async function runMigration(): Promise<void> {
   } catch (err: any) {
     if (err.code !== 'ENOENT' && !(err instanceof SyntaxError)) throw err;
   }
-  await writeJsonAtomic(appsFile, [defaultApp], { mode: 0o644 });
-  console.log(`[Migration] Created app '${appId}' in apps.json`);
 
   // 3. Move tenants to apps/{appId}/tenants/ and regenerate compose files
   const appsDir = legacyConfig.networking?.tenants_path
@@ -208,92 +285,48 @@ export async function runMigration(): Promise<void> {
     },
   } as OverwatchConfig;
 
+  let tenantEntries: fsSync.Dirent[] = [];
   try {
-    const tenantDirs = await fs.readdir(tenantsDir, { withFileTypes: true });
-    for (const entry of tenantDirs) {
-      if (!entry.isDirectory()) continue;
-      const tenantId = entry.name;
-      const oldPath = path.join(tenantsDir, tenantId);
-      const newPath = path.join(newTenantsDir, tenantId);
-
-      // Copy tenant directory
-      await fs.cp(oldPath, newPath, { recursive: true });
-
-      // Update .env with APP_ID and COMPOSE_PROJECT_NAME
-      const envPath = path.join(newPath, '.env');
-      try {
-        let envContent = await fs.readFile(envPath, 'utf-8');
-        if (!envContent.includes('APP_ID=')) {
-          envContent = envContent.replace(
-            /^(# Tenant Identification)/m,
-            `# App Identification\nAPP_ID=${appId}\n\n$1`
-          );
-          // If the header wasn't found, just prepend it
-          if (!envContent.includes('APP_ID=')) {
-            envContent = `APP_ID=${appId}\n${envContent}`;
-          }
-        }
-
-        if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
-          envContent = `COMPOSE_PROJECT_NAME=${appId}-${tenantId}\n${envContent}`;
-        }
-
-        // Tenant .env holds the DB password: 0600 + atomic, as tenant.ts writes it.
-        await writeSecretFile(envPath, envContent);
-
-        // Regenerate docker-compose.yml with new container naming
-        const domainMatch = envContent.match(/^TENANT_DOMAIN=(.+)$/m);
-        const domain = domainMatch ? domainMatch[1] : '';
-        if (domain) {
-          const composeContent = generateComposeFile({
-            app: defaultApp,
-            tenantId,
-            domain,
-            config: minimalConfig,
-          });
-          await fs.writeFile(path.join(newPath, 'docker-compose.yml'), composeContent);
-        }
-      } catch {
-        // Skip env update if file doesn't exist
-      }
-
-      console.log(`[Migration] Moved tenant '${tenantId}' to apps/${appId}/tenants/`);
-    }
+    tenantEntries = await fs.readdir(tenantsDir, { withFileTypes: true });
   } catch (err: any) {
-    if (err.code !== 'ENOENT') {
-      console.error('[Migration] Error moving tenants:', err.message);
+    if (err.code !== 'ENOENT') throw new Error(`[Migration] Cannot read ${tenantsDir}: ${err.message}`);
+  }
+  for (const entry of tenantEntries) {
+    if (!entry.isDirectory()) continue;
+    const tenantId = entry.name;
+    try {
+      await migrateLegacyTenant({
+        appId,
+        tenantId,
+        oldPath: path.join(tenantsDir, tenantId),
+        newPath: path.join(newTenantsDir, tenantId),
+        app: defaultApp,
+        config: minimalConfig,
+      });
+    } catch (err: any) {
+      throw new Error(
+        `[Migration] Tenant '${tenantId}' could not be moved: ${err?.message || err}. ` +
+        `The migration is not marked complete; fix the cause and run it again.`,
+      );
     }
+    console.log(`[Migration] Moved tenant '${tenantId}' to apps/${appId}/tenants/`);
   }
 
   // 4. Restructure env-vars.json: array -> { appId: array }
-  const envVarsFile = path.join(dataDir, 'env-vars.json');
-  try {
-    const content = await fs.readFile(envVarsFile, 'utf-8');
-    const parsed = JSON.parse(content);
-    if (Array.isArray(parsed)) {
-      const newFormat: Record<string, any[]> = { [appId]: parsed };
-      await writeJsonAtomic(envVarsFile, newFormat, { mode: 0o600 });
-      console.log('[Migration] Restructured env-vars.json');
-    }
-  } catch {
-    // File doesn't exist or is already new format
+  if (await restructureLegacyStore(path.join(dataDir, 'env-vars.json'), appId)) {
+    console.log('[Migration] Restructured env-vars.json');
   }
 
   // 5. Restructure tenant-env-overrides.json: array -> { appId: array }
-  const overridesFile = path.join(dataDir, 'tenant-env-overrides.json');
-  try {
-    const content = await fs.readFile(overridesFile, 'utf-8');
-    const parsed = JSON.parse(content);
-    if (Array.isArray(parsed)) {
-      const newFormat: Record<string, any[]> = { [appId]: parsed };
-      await writeJsonAtomic(overridesFile, newFormat, { mode: 0o600 });
-      console.log('[Migration] Restructured tenant-env-overrides.json');
-    }
-  } catch {
-    // File doesn't exist or is already new format
+  if (await restructureLegacyStore(path.join(dataDir, 'tenant-env-overrides.json'), appId)) {
+    console.log('[Migration] Restructured tenant-env-overrides.json');
   }
 
-  // 6. Slim down overwatch.yaml (may fail if config is read-only)
+  // 6. Write apps.json now that everything it refers to is in place.
+  await writeJsonAtomic(appsFile, [defaultApp], { mode: 0o644 });
+  console.log(`[Migration] Created app '${appId}' in apps.json`);
+
+  // 7. Slim down overwatch.yaml (may fail if config is read-only)
   const slimConfig: any = {
     project: rawYaml.project,
     database: rawYaml.database,
@@ -324,16 +357,127 @@ export async function runMigration(): Promise<void> {
     console.warn(yaml.dump(slimConfig, { lineWidth: -1 }));
   }
 
-  // 7. Write migration marker (always, even if config write failed)
+  // 8. Write the migration marker: every step above succeeded (a read-only
+  // overwatch.yaml is only a warning; the data is fully migrated).
   await fs.writeFile(path.join(dataDir, MIGRATION_MARKER), new Date().toISOString());
   console.log('[Migration] Migration complete!');
   console.log(`[Migration] Created app '${appId}' with ${defaultApp.services.length} services`);
 }
 
+async function jsonFileNames(dir: string): Promise<string[]> {
+  try {
+    return (await fs.readdir(dir)).filter(e => e.endsWith('.json')).sort();
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.lstat(p);
+    return true;
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+interface LegacyAppEntry {
+  id: string;
+  staticDef: Record<string, unknown>;
+  runtime: { createdAt: string; updatedAt: string };
+}
+
+/** Every apps.json entry must load once split (same schema readApps uses), with unique ids. */
+function validateLegacyApps(legacyApps: unknown[]): LegacyAppEntry[] {
+  const problems: string[] = [];
+  const entries: LegacyAppEntry[] = [];
+  const seen = new Set<string>();
+  const now = new Date().toISOString();
+  legacyApps.forEach((app: any, i) => {
+    if (!app || typeof app !== 'object' || typeof app.id !== 'string') {
+      problems.push(`entry #${i + 1} has no string 'id' field: ${String(JSON.stringify(app)).slice(0, 120)}`);
+      return;
+    }
+    const { createdAt, updatedAt, ...staticDef } = app;
+    const parsed = AppDefinitionStaticSchema.safeParse(staticDef);
+    if (!parsed.success) {
+      problems.push(`app '${app.id}': ${parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+      return;
+    }
+    if (seen.has(app.id)) {
+      problems.push(`duplicate id '${app.id}' (entry #${i + 1})`);
+      return;
+    }
+    seen.add(app.id);
+    // Preserve any timestamp present; synthesize from 'now' if missing so we
+    // don't fail validation later. The migration runs once; this is the best
+    // historical record we can offer for entries that lacked timestamps.
+    entries.push({
+      id: app.id,
+      staticDef,
+      runtime: {
+        createdAt: typeof createdAt === 'string' ? createdAt : now,
+        updatedAt: typeof updatedAt === 'string' ? updatedAt : now,
+      },
+    });
+  });
+  if (problems.length > 0) {
+    throw new Error(
+      `apps v2→v3 migration: apps.json has entries that cannot be migrated; nothing was written. ` +
+      `Fix apps.json and run the migration again:\n  - ${problems.join('\n  - ')}`,
+    );
+  }
+  return entries;
+}
+
+/**
+ * apps.d/ files present while apps.json still exists come from an earlier run
+ * that did not finish. Redoing the split is only safe when each of them is
+ * exactly what apps.json would produce; anything else was edited since.
+ */
+async function assertNoDivergedAppFiles(appsDDir: string, entries: LegacyAppEntry[]): Promise<void> {
+  const expected = new Map(entries.map(e => [`${e.id}.json`, e.staticDef]));
+  const conflicts: string[] = [];
+  for (const file of await jsonFileNames(appsDDir)) {
+    const want = expected.get(file);
+    if (!want) {
+      conflicts.push(`apps.d/${file} is not in apps.json`);
+      continue;
+    }
+    let have: unknown;
+    try {
+      have = JSON.parse(await fs.readFile(path.join(appsDDir, file), 'utf-8'));
+    } catch {
+      have = undefined;
+    }
+    if (!isDeepStrictEqual(have, want)) conflicts.push(`apps.d/${file} differs from its apps.json entry`);
+  }
+  if (conflicts.length > 0) {
+    throw new Error(
+      `apps v2→v3 migration: apps.json is still present, but apps.d/ already holds app files that a re-run ` +
+      `would overwrite. Nothing was changed:\n  - ${conflicts.join('\n  - ')}\n` +
+      `Compare apps.json with apps.d/. If apps.d/ is current, move apps.json aside (for example to ` +
+      `apps.json.pre-apps.d); otherwise move the differing files out of apps.d/. Then run 'overwatch migrate up' again.`,
+    );
+  }
+}
+
+/** apps.json still on disk: the v2→v3 split has not completed. */
+export async function hasUnsplitAppsFile(): Promise<boolean> {
+  const { getDataDir } = await import('../config');
+  return pathExists(path.join(getDataDir(), 'apps.json'));
+}
+
 /**
  * Migrate apps schema v2 → v3: split the single data/apps.json array into
  * per-app static files in data/apps.d/ plus a data/apps.runtime.json sidecar.
- * Idempotent: if apps.d/ already contains files, exits without touching anything.
+ *
+ * apps.json is renamed away as the very last step, so its presence alone says
+ * whether the split still has to happen; a run that stopped part-way can be
+ * run again. Every entry is checked before anything is written, the new
+ * apps.d/ and runtime file are built in a staging dir and renamed into place.
  */
 export async function runAppsV3Migration(): Promise<void> {
   const { getDataDir } = await import('../config');
@@ -341,34 +485,21 @@ export async function runAppsV3Migration(): Promise<void> {
   const legacyPath = path.join(dataDir, 'apps.json');
   const appsDDir = path.join(dataDir, 'apps.d');
   const runtimePath = path.join(dataDir, 'apps.runtime.json');
-  const backupPath = path.join(dataDir, 'apps.json.pre-apps.d');
 
-  // Idempotency: already migrated if apps.d/ has files.
-  try {
-    const entries = await fs.readdir(appsDDir);
-    if (entries.filter(e => e.endsWith('.json')).length > 0) {
-      console.log('[migrate] apps.d/ already populated — skipping v3 migration');
-      return;
-    }
-  } catch (err: any) {
-    if (err.code !== 'ENOENT') throw err;
-  }
-
-  // Fresh install path: no legacy file AND empty apps.d/.
   let legacyRaw: string;
   try {
     legacyRaw = await fs.readFile(legacyPath, 'utf-8');
   } catch (err: any) {
-    if (err.code === 'ENOENT') {
-      await fs.mkdir(appsDDir, { recursive: true });
-      await fs.writeFile(runtimePath, '{}\n', { mode: 0o644 });
-      console.log('[migrate] apps v2→v3: fresh install — created empty apps.d/ and apps.runtime.json');
-      return;
-    }
-    throw err;
+    if (err.code !== 'ENOENT') throw err;
+    // Already split (apps.json renamed away) or a fresh install: make sure the
+    // v3 layout exists, never touching what is there.
+    await fs.mkdir(appsDDir, { recursive: true });
+    if (!(await pathExists(runtimePath))) await fs.writeFile(runtimePath, '{}\n', { mode: 0o644 });
+    console.log('[migrate] apps v2→v3: no apps.json to split — nothing to do');
+    return;
   }
 
-  let legacyApps: any[];
+  let legacyApps: unknown;
   try {
     legacyApps = JSON.parse(legacyRaw);
   } catch (err: any) {
@@ -377,27 +508,81 @@ export async function runAppsV3Migration(): Promise<void> {
   if (!Array.isArray(legacyApps)) {
     throw new Error(`apps v2→v3 migration: apps.json must be an array; got ${typeof legacyApps}.`);
   }
+  const entries = validateLegacyApps(legacyApps);
+  await assertNoDivergedAppFiles(appsDDir, entries);
 
-  await fs.mkdir(appsDDir, { recursive: true });
-  const runtimeStore: Record<string, { createdAt: string; updatedAt: string }> = {};
-
-  for (const app of legacyApps) {
-    if (!app || typeof app !== 'object' || typeof app.id !== 'string') {
-      throw new Error(`apps v2→v3 migration: entry without a string 'id' field: ${JSON.stringify(app).slice(0, 120)}`);
+  const staging = path.join(dataDir, `.apps-v3-${randomUUID()}`);
+  const stagedAppsD = path.join(staging, 'apps.d');
+  const stagedRuntime = path.join(staging, 'apps.runtime.json');
+  const replaced = path.join(staging, 'replaced-apps.d');
+  await fs.mkdir(stagedAppsD, { recursive: true });
+  let movedAside = false;
+  try {
+    const runtimeStore: Record<string, { createdAt: string; updatedAt: string }> = {};
+    for (const entry of entries) {
+      runtimeStore[entry.id] = entry.runtime;
+      await writeJsonAtomic(path.join(stagedAppsD, `${entry.id}.json`), entry.staticDef, { mode: 0o644 });
     }
-    const { createdAt, updatedAt, ...staticDef } = app;
-    // Preserve any timestamp present; synthesize from 'now' if missing so we
-    // don't fail validation later. The migration runs once; this is the best
-    // historical record we can offer for entries that lacked timestamps.
-    const now = new Date().toISOString();
-    runtimeStore[app.id] = {
-      createdAt: typeof createdAt === 'string' ? createdAt : now,
-      updatedAt: typeof updatedAt === 'string' ? updatedAt : now,
-    };
-    await writeJsonAtomic(path.join(appsDDir, `${app.id}.json`), staticDef, { mode: 0o644 });
+    await writeJsonAtomic(stagedRuntime, runtimeStore, { mode: 0o644 });
+
+    // Any existing apps.d/ only holds files identical to the staged ones (checked above).
+    if (await pathExists(appsDDir)) {
+      await fs.rename(appsDDir, replaced);
+      movedAside = true;
+    }
+    await fs.rename(stagedAppsD, appsDDir);
+    movedAside = false;
+    await fs.rename(stagedRuntime, runtimePath);
+
+    // Last: with apps.json gone the split counts as done. Never overwrite an older backup.
+    let backupPath = path.join(dataDir, 'apps.json.pre-apps.d');
+    if (await pathExists(backupPath)) backupPath += `.${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    await fs.rename(legacyPath, backupPath);
+    console.log(`[migrate] apps v2→v3: split ${entries.length} app(s) into apps.d/; legacy backup at ${backupPath}`);
+  } catch (err) {
+    if (movedAside && !(await pathExists(appsDDir))) await fs.rename(replaced, appsDDir).catch(() => {});
+    throw err;
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Run every pending data migration: the legacy single-app conversion, then
+ * the schema-version steps (apps v2→v3 split). The versions file is written
+ * only after all of them succeeded, so a failed run stays pending. Used by
+ * `overwatch migrate up` and by the server under OVERWATCH_AUTO_MIGRATE=1.
+ */
+export async function runPendingMigrations(log: (msg: string) => void = msg => console.log(`[migrate] ${msg}`)): Promise<{
+  legacy: boolean;
+  pending: Array<{ store: keyof SchemaVersions; from: number; to: number }>;
+  initialised: boolean;
+}> {
+  let legacy = false;
+  if (isLegacyFormat()) {
+    log('legacy → multi-app migration running...');
+    await runMigration();
+    legacy = true;
   }
 
-  await writeJsonAtomic(runtimePath, runtimeStore, { mode: 0o644 });
-  await fs.rename(legacyPath, backupPath);
-  console.log(`[migrate] apps v2→v3: split ${legacyApps.length} app(s) into apps.d/; legacy backup at ${backupPath}`);
+  const stored = await readSchemaVersions();
+  const pending = findPendingMigrations(stored);
+  const initialised = Object.keys(stored).length === 0;
+  for (const { store, from, to } of pending) {
+    if (store === 'apps' && from < 3 && to >= 3) {
+      log(`apps: v${from} → v${to} running...`);
+      await runAppsV3Migration();
+    } else {
+      log(`${store}: v${from} → v${to} (no transform required)`);
+    }
+  }
+  // No versions file yet (first run, or straight from a legacy install): an
+  // apps.json still on disk is split before the file records apps v3.
+  if (initialised && (await hasUnsplitAppsFile())) {
+    log('apps: apps.json → apps.d/ running...');
+    await runAppsV3Migration();
+  }
+
+  if (pending.length > 0 || initialised) await writeSchemaVersions(CURRENT_SCHEMA_VERSIONS);
+  return { legacy, pending, initialised };
 }

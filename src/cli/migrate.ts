@@ -1,5 +1,5 @@
-import { isLegacyFormat, runMigration } from '../services/migration';
-import { CURRENT_SCHEMA_VERSIONS, readSchemaVersions, writeSchemaVersions, findPendingMigrations } from '../services/schemaVersions';
+import { isLegacyFormat, runPendingMigrations } from '../services/migration';
+import { CURRENT_SCHEMA_VERSIONS, readSchemaVersions } from '../services/schemaVersions';
 import { GREEN, YELLOW, RED, BOLD, DIM, NC } from './config/utils';
 
 function usage(): void {
@@ -42,37 +42,14 @@ export async function runMigrate(args: string[]): Promise<void> {
   }
 
   if (sub === 'up') {
-    let ranSomething = false;
-    if (isLegacyFormat()) {
-      console.log(`${BOLD}Running legacy → multi-app migration...${NC}`);
-      await runMigration();
-      ranSomething = true;
-    }
-
-    const stored = await readSchemaVersions();
-    const pending = findPendingMigrations(stored);
-    if (pending.length > 0) {
-      for (const { store, from, to } of pending) {
-        if (store === 'apps' && from < 3 && to >= 3) {
-          console.log(`${DIM}[migrate]${NC} apps: v${from} → v${to} running...`);
-          const { runAppsV3Migration } = await import('../services/migration');
-          await runAppsV3Migration();
-        } else {
-          console.log(`${DIM}[migrate]${NC} ${store}: v${from} → v${to} (no transform required)`);
-        }
-      }
-      await writeSchemaVersions(CURRENT_SCHEMA_VERSIONS);
-      ranSomething = true;
-    }
-
-    // Initialise the marker if missing so future boots know the schema baseline.
-    if (Object.keys(stored).length === 0) {
-      await writeSchemaVersions(CURRENT_SCHEMA_VERSIONS);
+    // Same runner as the server's OVERWATCH_AUTO_MIGRATE=1 path. It records the
+    // new schema versions only once every step succeeded.
+    const { legacy, pending, initialised } = await runPendingMigrations(msg => console.log(`${DIM}[migrate]${NC} ${msg}`));
+    if (initialised) {
       console.log(`${DIM}[migrate]${NC} initialised schema-versions.json at current versions`);
-      ranSomething = true;
     }
 
-    if (!ranSomething) {
+    if (!legacy && pending.length === 0 && !initialised) {
       console.log(`${GREEN}✓${NC} No migrations required.`);
     } else {
       console.log('');

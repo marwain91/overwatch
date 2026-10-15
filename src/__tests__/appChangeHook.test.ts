@@ -88,6 +88,10 @@ describe('apps changed hook on apply / restore / purge', () => {
     expect(hook).toHaveBeenCalledTimes(1);
     await svc.deleteApp('gone', true, 'tester');
     hook.mockClear();
+    // Purge is refused while the tenant still exists; delete it first.
+    await expect(svc.purgeApp('gone')).rejects.toThrow(/tenant/);
+    expect(hook).not.toHaveBeenCalled();
+    await fs.rm(path.join(dir, 'appsroot', 'gone', 'tenants', 't1'), { recursive: true });
     await svc.purgeApp('gone');
     expect(hook).toHaveBeenCalledTimes(1);
   });

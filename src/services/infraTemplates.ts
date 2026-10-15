@@ -1,15 +1,17 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import * as yaml from 'js-yaml';
 import { loadConfig } from '../config';
 import type { OverwatchConfig } from '../config/schema';
 import { EMBEDDED_TEMPLATES } from '../generated/embeddedTemplates';
 import { buildTraefikStaticYml, buildTraefikDynamicYml, shouldUseDynamicTraefik } from './traefikDynamicGenerator';
 import { buildInfraComposeYml, buildOverwatchComposeYml } from './infraComposeGenerator';
+import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
+import { runDocker } from '../utils/runDocker';
 
-const execFileAsync = promisify(execFile);
+// Quick docker queries (inspect, network create). `compose up` gets the long
+// bound: its first run pulls the Traefik and database images.
+const DOCKER_QUICK_TIMEOUT_MS = 60_000;
 
 /**
  * Install-time template substitution. Only these keys are replaced when
@@ -100,21 +102,24 @@ async function writeAtomic(destPath: string, content: string): Promise<void> {
 async function ensureNetwork(name: string): Promise<'created' | 'exists'> {
   // `docker network inspect` exits non-zero when the network is absent.
   try {
-    await execFileAsync('docker', ['network', 'inspect', name]);
+    await runDocker('docker', ['network', 'inspect', name], { timeoutMs: DOCKER_QUICK_TIMEOUT_MS });
     return 'exists';
   } catch {
     // Not present — create it. Plain bridge network, no special driver opts.
-    await execFileAsync('docker', ['network', 'create', '--driver', 'bridge', name]);
+    await runDocker('docker', ['network', 'create', '--driver', 'bridge', name], { timeoutMs: DOCKER_QUICK_TIMEOUT_MS });
     return 'created';
   }
 }
 
+// runDocker passes only an env allowlist, so operator secrets in this process
+// never reach compose; the stack's ${VAR}s come from infrastructure/.env, which
+// compose reads from the compose file's directory.
 async function runCompose(composeFile: string): Promise<void> {
-  await execFileAsync('docker', [
+  await runDocker('docker', [
     'compose',
     '--file', composeFile,
     'up', '-d', '--remove-orphans',
-  ], { maxBuffer: 10 * 1024 * 1024 });
+  ], { cwd: path.dirname(composeFile), timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }
 
 /**
@@ -183,7 +188,7 @@ export function isDbDowngrade(runningImage: string, nextImage: string): boolean 
 
 async function inspectRunningImage(container: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('docker', ['inspect', '--format', '{{.Config.Image}}', container]);
+    const { stdout } = await runDocker('docker', ['inspect', '--format', '{{.Config.Image}}', container], { timeoutMs: DOCKER_QUICK_TIMEOUT_MS });
     const image = String(stdout).trim();
     return image || null;
   } catch {

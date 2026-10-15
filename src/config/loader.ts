@@ -276,7 +276,23 @@ export function resolveAppDbPrefix(app?: Pick<AppDefinition, 'db_prefix'>): stri
  * This is the root directory containing app subdirectories.
  */
 export function getAppsDir(): string {
-  return loadConfig().networking?.apps_path || '/app/apps';
+  const dir = loadConfig().networking?.apps_path || '/app/apps';
+
+  // If the path exists (inside container or custom path), use it
+  if (fs.existsSync(dir)) return dir;
+
+  // Fallback (CLI running on host), as getDataDir does: apps_path is usually
+  // the container path. The deploy layout keeps apps/ next to overwatch/
+  // ({deployDir}/apps, what `infra deploy` mounts); a dev checkout keeps it
+  // next to overwatch.yaml.
+  try {
+    const overwatchDir = path.dirname(findConfigPath());
+    for (const candidate of [path.join(overwatchDir, '..', 'apps'), path.join(overwatchDir, 'apps')]) {
+      if (fs.existsSync(candidate)) return path.resolve(candidate);
+    }
+  } catch {}
+
+  return dir;
 }
 
 /**

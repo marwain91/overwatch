@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { isDeepStrictEqual } from 'util';
 import { getDataDir } from '../config';
 import {
   AppDefinition,
@@ -17,6 +18,9 @@ import { clearAdapterCache } from '../adapters/registry';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 import { isReservedSecretEnv, loadConfigOrNull } from '../utils/reservedEnv';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/httpErrors';
+import { assertServiceNamesValid, assertHealthcheckDurationsValid } from '../utils/validators';
+import { assertAppRawLabelsOwned } from './traefikLabels';
+import { assertNoMaskedCredentials } from './traefikRedaction';
 
 const APPS_D_DIR = 'apps.d';
 const RUNTIME_FILE = 'apps.runtime.json';
@@ -266,6 +270,52 @@ async function saveTrashed(entries: TrashedApp[]): Promise<void> {
   await writeJsonAtomic(getTrashedAppsFile(), entries, { mode: 0o644 });
 }
 
+/**
+ * Write-path checks every caller gets: the REST routes, `apps apply`, image
+ * manifests and Traefik edits. Only what differs from the stored definition is
+ * checked, so a definition that loaded before a check existed can still be
+ * saved again (a Traefik-only edit, a manifest that leaves a legacy service
+ * name alone); new and changed values must pass.
+ */
+function assertWritable(next: { id: string; services?: unknown[]; traefik?: unknown }, stored: AppDefinition | undefined): void {
+  const services = (Array.isArray(next.services) ? next.services : []) as Array<Record<string, any>>;
+  const before = new Map((stored?.services ?? []).map(s => [s.name, s as Record<string, any>]));
+  const changed = (pick: (svc: Record<string, any> | undefined) => unknown) =>
+    services.filter(svc => !isDeepStrictEqual(pick(svc), pick(before.get(svc?.name))));
+
+  assertServiceNamesValid(services.filter(svc => !before.has(svc?.name)));
+  assertHealthcheckDurationsValid(changed(svc => svc?.health_check));
+  const rawLabelsChanged = changed(svc => svc?.routing?.raw_labels);
+  assertAppRawLabelsOwned(next.id, rawLabelsChanged);
+  // A file copied from a non-admin API read carries placeholders, not credentials.
+  assertNoMaskedCredentials({
+    traefik: isDeepStrictEqual(next.traefik, stored?.traefik) ? undefined : next.traefik as AppDefinition['traefik'],
+    services: rawLabelsChanged,
+  });
+}
+
+async function assertNotTrashed(id: string): Promise<void> {
+  const trashed = await readTrashed();
+  if (trashed.some(t => t.app.id === id)) {
+    throw new ConflictError(
+      `App '${id}' is in trash. Restore with 'overwatch apps restore ${id}' ` +
+      `or permanently remove with 'overwatch apps purge ${id}' before applying.`,
+    );
+  }
+}
+
+/** Tenant directories under apps/<id>/tenants (dot-entries ignored). */
+async function countTenantDirs(id: string): Promise<number> {
+  const { getAppsDir } = await import('../config/loader');
+  try {
+    const entries = await fs.readdir(path.join(getAppsDir(), id, 'tenants'));
+    return entries.filter(e => !e.startsWith('.')).length;
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return 0;
+    throw err;
+  }
+}
+
 export async function listApps(): Promise<AppDefinition[]> {
   return readApps();
 }
@@ -281,6 +331,8 @@ export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
     if (existing.find(a => a.id === input.id)) {
       throw new ConflictError(`App '${input.id}' already exists`);
     }
+    // A new app with a trashed id would silently adopt the trashed app's tenants.
+    await assertNotTrashed(input.id);
 
     const now = new Date().toISOString();
     const app: AppDefinition = { ...input, createdAt: now, updatedAt: now };
@@ -289,9 +341,11 @@ export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`Invalid app definition: ${errors}`);
     }
+    assertWritable(parsed.data, undefined);
 
     await writeStatic(parsed.data);
     await upsertRuntime(parsed.data.id, () => ({ createdAt: now, updatedAt: now }));
+    await reconcileEnvVarDeclarations(parsed.data);
     notifyAppsChanged();
     return parsed.data;
   });
@@ -305,6 +359,8 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
       throw new NotFoundError(`App '${input.id}' not found`);
     }
 
+    await assertNotTrashed(input.id);
+
     const now = new Date().toISOString();
     const updated: AppDefinition = { ...apps[index], ...input, updatedAt: now };
     const parsed = AppDefinitionSchema.safeParse(updated);
@@ -312,6 +368,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`Invalid app definition: ${errors}`);
     }
+    assertWritable(parsed.data, apps[index]);
 
     await writeStatic(parsed.data);
     clearAdapterCache(parsed.data.id);
@@ -319,6 +376,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
       createdAt: prev?.createdAt ?? parsed.data.createdAt,
       updatedAt: now,
     }));
+    await reconcileEnvVarDeclarations(parsed.data);
     notifyAppsChanged();
     return parsed.data;
   });
@@ -337,9 +395,8 @@ export async function applyApp(
 ): Promise<{ result: ApplyResult; app: AppDefinition; changedKeys: string[] }> {
   return withFileLock('apps', async () => {
     // Read-modify-write callers (restoring masked credentials) see the stored app under this lock.
-    const candidate = opts.restore
-      ? opts.restore(input, (await readApps()).find(a => a.id === (input as { id?: string })?.id))
-      : input;
+    const stored = (await readApps()).find(a => a.id === (input as { id?: string })?.id);
+    const candidate = opts.restore ? opts.restore(input, stored) : input;
     const parsed = AppDefinitionStaticSchema.safeParse(candidate);
     if (!parsed.success) {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
@@ -347,13 +404,8 @@ export async function applyApp(
     }
     const next = parsed.data;
 
-    const trashed = await readTrashed();
-    if (trashed.some(t => t.app.id === next.id)) {
-      throw new ConflictError(
-        `App '${next.id}' is in trash. Restore with 'overwatch apps restore ${next.id}' ` +
-        `or permanently remove with 'overwatch apps purge ${next.id}' before applying.`,
-      );
-    }
+    await assertNotTrashed(next.id);
+    assertWritable(next, stored?.id === next.id ? stored : undefined);
 
     const currentFile = getStaticFile(next.id);
     let prevRaw: string | null = null;
@@ -479,15 +531,7 @@ export async function deleteApp(id: string, force: boolean = false, deletedBy: s
       throw new NotFoundError(`App '${id}' not found`);
     }
 
-    const { getAppsDir } = await import('../config/loader');
-    const tenantDir = path.join(getAppsDir(), id, 'tenants');
-    let tenantCount = 0;
-    try {
-      const entries = await fs.readdir(tenantDir);
-      tenantCount = entries.filter(e => !e.startsWith('.')).length;
-    } catch (err: any) {
-      if (err.code !== 'ENOENT') throw err;
-    }
+    const tenantCount = await countTenantDirs(id);
 
     if (tenantCount > 0 && !force) {
       throw new ConflictError(`App '${id}' has ${tenantCount} tenant(s). Delete all tenants first or use force=true.`);
@@ -538,7 +582,9 @@ export async function restoreApp(id: string): Promise<AppDefinition> {
 /**
  * Permanently remove a soft-deleted app from the trash. Does NOT clean up any
  * tenant containers or databases — caller must stop and delete tenants first
- * through the normal tenant lifecycle.
+ * through the normal tenant lifecycle. Refused while tenant directories
+ * remain: with the trash entry gone they would keep running but be invisible
+ * (unless a live app with the same id already lists them).
  */
 export async function purgeApp(id: string): Promise<void> {
   return withFileLock('apps', async () => {
@@ -546,6 +592,13 @@ export async function purgeApp(id: string): Promise<void> {
     const tIdx = trashed.findIndex(t => t.app.id === id);
     if (tIdx === -1) {
       throw new NotFoundError(`No trashed app with id '${id}' to purge`);
+    }
+    const tenantCount = await countTenantDirs(id);
+    if (tenantCount > 0 && !(await readApps()).some(a => a.id === id)) {
+      throw new ConflictError(
+        `Cannot purge '${id}': ${tenantCount} tenant(s) still exist under apps/${id}/tenants and would become invisible. ` +
+        `Restore the app with 'overwatch apps restore ${id}', delete its tenants, then delete the app.`,
+      );
     }
     trashed.splice(tIdx, 1);
     await saveTrashed(trashed);

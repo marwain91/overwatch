@@ -30,10 +30,19 @@ afterEach(async () => {
 describe('deployment and image build hardening', () => {
   it('builds the server from source in the Dockerfile instead of copying checked-in dist', async () => {
     const dockerfile = await fs.readFile(path.join(process.cwd(), 'Dockerfile'), 'utf-8');
-    expect(dockerfile).toContain('FROM node:24-alpine AS server-build');
+    expect(dockerfile).toMatch(/^FROM node:24-alpine@sha256:[0-9a-f]{64} AS server-build$/m);
     expect(dockerfile).toContain('RUN npm run build');
     expect(dockerfile).toContain('COPY --from=server-build /app/dist ./dist');
     expect(dockerfile).not.toMatch(/^COPY dist\/ .*dist/m);
+  });
+
+  it('pins every base image by digest, keeping the tag that Dependabot tracks', async () => {
+    const dockerfile = await fs.readFile(path.join(process.cwd(), 'Dockerfile'), 'utf-8');
+    const froms = dockerfile.split('\n').filter(l => /^FROM\s/i.test(l));
+    expect(froms.length).toBeGreaterThan(0);
+    for (const line of froms) expect(line).toMatch(/^FROM [a-z0-9./-]+:[\w.-]+@sha256:[0-9a-f]{64}( AS [\w-]+)?$/);
+    // One base image for every stage, so a digest bump moves them together.
+    expect(new Set(froms.map(l => l.split(' ')[1])).size).toBe(1);
   });
 
   it('keeps generated and runtime-heavy paths out of Docker build context', async () => {

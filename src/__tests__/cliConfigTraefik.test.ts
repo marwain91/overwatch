@@ -88,3 +88,30 @@ describe('services/traefikConfig no-op deletes', () => {
     expect(fsSync.readFileSync(configPath, 'utf-8')).toBe(text);
   });
 });
+
+describe('CLI traefik on the host', () => {
+  it('getAppsDir falls back to the deploy dir\'s apps/ when apps_path is a container path', async () => {
+    // Host layout: <deploy>/overwatch/overwatch.yaml next to <deploy>/apps.
+    const deploy = path.join(tmpRoot, 'deploy');
+    const hostConfig = path.join(deploy, 'overwatch', 'overwatch.yaml');
+    await fs.mkdir(path.join(deploy, 'apps', 'shop', 'tenants', 't1'), { recursive: true });
+    await fs.mkdir(path.dirname(hostConfig), { recursive: true });
+    await fs.writeFile(hostConfig, yaml.dump({
+      ...BASE, data_dir: dataDir,
+      networking: { external_network: 'acme-net', apps_path: path.join(tmpRoot, 'container-only', 'app', 'apps') },
+    }));
+    process.env.OVERWATCH_CONFIG = hostConfig;
+    const { getAppsDir, clearConfigCache } = await import('../config/loader');
+    clearConfigCache();
+    expect(getAppsDir()).toBe(path.join(deploy, 'apps'));
+  });
+
+  it('resolver remove tells the operator the running server needs a restart', async () => {
+    await writeConfig({ traefik: { cert_resolvers: [RESOLVER, { ...RESOLVER, name: 'other' }] } });
+    const lines: string[] = [];
+    (console.log as any).mockImplementation((...a: any[]) => { lines.push(a.join(' ')); });
+    const { runConfigTraefik } = await import('../cli/config/traefik');
+    await runConfigTraefik(['resolver', 'remove', 'le']);
+    expect(lines.join('\n')).toMatch(/recreate|restart.*overwatch/i);
+  });
+});

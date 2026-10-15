@@ -11,7 +11,8 @@ function usage(): void {
   console.log('    create [label]    Snapshot apps.d/, apps.runtime.json, env-vars.json, and related state');
   console.log('    list              List existing snapshots');
   console.log('    restore <name>    Restore the named snapshot (pre-restore snapshot is made first)');
-  console.log('    prune [--keep N]  Prune old snapshots, keeping the N most recent (default 30)');
+  console.log('    prune [--keep N]  Prune old snapshots, keeping the N most recent (default 30, at least 1)');
+  console.log('                      plus up to min(N, 10) boot snapshots; pre-restore snapshots are kept');
   console.log('');
 }
 
@@ -47,15 +48,22 @@ export async function runSnapshot(args: string[]): Promise<void> {
       console.error(`${RED}snapshot restore requires a snapshot name${NC}`);
       process.exit(1);
     }
-    await restoreSnapshot(name);
+    const preRestore = await restoreSnapshot(name);
     console.log(`${GREEN}✓${NC} Restored from ${BOLD}${name}${NC}`);
+    console.log(`  ${DIM}Previous state saved as ${preRestore.name}${NC}`);
     console.log(`  ${YELLOW}!${NC} Restart Overwatch to pick up the restored state.`);
     return;
   }
 
   if (sub === 'prune') {
     const keepIdx = args.indexOf('--keep');
-    const keep = keepIdx !== -1 && args[keepIdx + 1] ? Number(args[keepIdx + 1]) : 30;
+    const keepArg = keepIdx === -1 ? '30' : args[keepIdx + 1];
+    // `--keep 0` used to delete every snapshot but the pre-restore ones.
+    if (!keepArg || !/^\d+$/.test(keepArg) || Number(keepArg) < 1) {
+      console.error(`${RED}--keep must be a whole number of at least 1${NC} (got ${keepArg ?? 'nothing'})`);
+      process.exit(1);
+    }
+    const keep = Number(keepArg);
     const pruned = await pruneOldSnapshots(keep);
     console.log(`${GREEN}✓${NC} Pruned ${pruned} snapshot(s), kept ${keep} most recent.`);
     return;

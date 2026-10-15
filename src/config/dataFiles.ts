@@ -19,11 +19,13 @@ export const DATA_FILES: readonly DataFileSpec[] = [
   { name: 'env-vars.json', secret: true, snapshot: true, bindRepair: true },
   { name: 'tenant-env-overrides.json', secret: true, snapshot: true, bindRepair: true },
   { name: 'admin-users.json', snapshot: true, bindRepair: true },
-  { name: 'audit.log', snapshot: true, bindRepair: true },
+  // Not snapshotted: an append-only history that restore must never rewind, and large.
+  { name: 'audit.log', bindRepair: true },
   { name: '.schema-versions.json', snapshot: true },
   { name: 'alert-history.jsonl', bindRepair: true },
   { name: 'notification-channels.json', secret: true, snapshot: true, bindRepair: true },
-  { name: 'mcp-oauth.json', snapshot: true },
+  // Not snapshotted: hashed OAuth tokens and client registrations; restoring it would revive revoked grants.
+  { name: 'mcp-oauth.json' },
 ];
 
 type DataFileFlag = 'secret' | 'snapshot' | 'bindRepair';
