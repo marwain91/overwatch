@@ -4,7 +4,7 @@ import { constants as fsConstants } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { AppDefinition } from '../models/app';
-import { withRegistryLogin } from '../adapters/registry';
+import { ensureRegistryLogin } from '../adapters/registry';
 import { DockerCommandError, runDocker } from '../utils/runDocker';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 
@@ -38,8 +38,8 @@ export async function extractFileFromImage(
     // A pull would hit the same unreachable or hung daemon, for up to an hour.
     if (err instanceof DockerCommandError && (err.kind === 'timeout' || err.kind === 'daemon_unreachable')) throw err;
     // Image not locally present — pull it.
-    const pull = () => runDocker('docker', ['pull', '--', imageRef], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
-    await (app ? withRegistryLogin(app, pull) : pull());
+    if (app) await ensureRegistryLogin(app);
+    await runDocker('docker', ['pull', '--', imageRef], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
   }
 
   // A private directory, so nothing else can pre-create or swap the target path.
@@ -130,10 +130,18 @@ export async function readManifestFromAppImage(
   const pathInImage = resolveManifestPathInImage(app);
   const raw = await extractFileFromImage(imageRef, pathInImage, app);
   if (raw === null) return null;
+  let manifest: unknown;
   try {
-    return JSON.parse(raw);
+    manifest = JSON.parse(raw);
   } catch {
     // The parser's message quotes the input; keep file content out of errors and logs.
     throw new Error(`Manifest at ${imageRef}:${pathInImage} is not valid JSON`);
   }
+  // Where to pull from is the app's decision, not the image's: tenant update
+  // replaces this block anyway, and an image built with an older registry
+  // config must not fail manifest validation over it.
+  if (manifest && typeof manifest === 'object' && !Array.isArray(manifest) && 'registry' in manifest) {
+    return { ...manifest, registry: app.registry };
+  }
+  return manifest;
 }

@@ -108,7 +108,7 @@ describe('tenant create', () => {
     expect(events.indexOf('login:portal')).toBeLessThan(events.indexOf('docker:up'));
   });
 
-  it('rolls back and names the registry when the login fails', async () => {
+  it('rolls back if the registry login step throws', async () => {
     ensureRegistryLogin.mockRejectedValue(new Error("Registry login to ghcr.io failed for app 'portal': denied"));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { createTenant, getTenantPath } = await import('../services/tenant');
@@ -130,7 +130,7 @@ describe('tenant update', () => {
     expect(events.indexOf('login:portal')).toBeLessThan(events.indexOf('docker:pull'));
   });
 
-  it('restores the tenant and reports the pull step failed when the login fails', async () => {
+  it('restores the tenant and reports the pull step failed if the registry login step throws', async () => {
     const tenantPath = await seedTenant();
     ensureRegistryLogin.mockRejectedValue(new Error("Registry login to ghcr.io failed for app 'portal': denied"));
     vi.spyOn(console, 'warn').mockImplementation(() => {});

@@ -22,7 +22,9 @@ export const AppRegistryAuthSchema = z.object({
 // letter or digit (never `-`, so never an option) and use the reference
 // charset, which also rules out whitespace and URL syntax. Case is not
 // checked: docker refuses uppercase repositories itself, and older images
-// embed such values in their manifests.
+// embed such values in their manifests. Surrounding whitespace is trimmed
+// rather than refused, so a pasted value cannot stop a stored definition from
+// loading.
 const REGISTRY_PATH_COMPONENT = '[A-Za-z0-9][A-Za-z0-9._-]*';
 const REGISTRY_URL_RE = new RegExp(
   `^(?:[A-Za-z0-9][A-Za-z0-9._-]*|\\[[0-9A-Fa-f:.]+\\])(?::[0-9]{1,5})?(?:/${REGISTRY_PATH_COMPONENT})*$`,
@@ -48,9 +50,9 @@ function isRegistryApiUrl(value: string): boolean {
 // differ. Unused (and unset) for GHCR/DockerHub/ECR/Custom.
 export const AppRegistrySchema = z.object({
   type: z.enum(['ghcr', 'dockerhub', 'ecr', 'custom', 'gitlab']),
-  url: z.string().regex(REGISTRY_URL_RE, 'must be a registry host with optional port and path, e.g. ghcr.io or registry.acme.com:5050'),
-  api_url: z.string().refine(isRegistryApiUrl, 'must be an http(s) URL without credentials, query or fragment, e.g. https://gitlab.acme.com').optional(),
-  repository: z.string().regex(REGISTRY_REPOSITORY_RE, 'must be a repository path such as org/app: letters, digits, ".", "_" and "-", separated by "/"'),
+  url: z.string().trim().regex(REGISTRY_URL_RE, 'must be a registry host with optional port and path, e.g. ghcr.io or registry.acme.com:5050'),
+  api_url: z.string().trim().refine(isRegistryApiUrl, 'must be an http(s) URL without credentials, query or fragment, e.g. https://gitlab.acme.com').optional(),
+  repository: z.string().trim().regex(REGISTRY_REPOSITORY_RE, 'must be a repository path such as org/app: letters, digits, ".", "_" and "-", separated by "/"'),
   auth: AppRegistryAuthSchema,
   tag_pattern: z.string().optional(),
 });

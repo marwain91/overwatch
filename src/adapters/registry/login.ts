@@ -17,8 +17,7 @@ export const REGISTRY_LOGIN_HOLD_MS = 60_000;
 /**
  * The login could not run, or its result could not be stored: no AWS CLI or no
  * AWS credentials for ECR, or a read-only docker config (the host's
- * `/root/.docker` mounted `:ro` when Overwatch runs as root). Pulls then use
- * whatever docker credentials already exist, as they did before.
+ * `/root/.docker` mounted `:ro` when Overwatch runs as root).
  */
 export class RegistryLoginUnavailableError extends Error {
   constructor(message: string) {
@@ -110,20 +109,31 @@ function failureReason(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// The caller holds the host for target.fingerprint.
+function isFresh(state: HostState, fingerprint: string): boolean {
+  const stored = state.stored;
+  return !!stored && stored.fingerprint === fingerprint && Date.now() - stored.at < REGISTRY_LOGIN_TTL_MS;
+}
+
+// The caller holds the host for target.fingerprint, so no other credential can
+// replace a fresh login while this runs.
+//
+// A failed login never fails the pull. Before per-pull logins only boot logged
+// in, and a failure there just warned: pulls ran with whatever docker had (the
+// host's mounted credentials, another login, anonymous access to public
+// images). The warning names the registry and the reason.
 function loginIfNeeded(state: HostState, target: RegistryLoginTarget): Promise<void> {
+  if (isFresh(state, target.fingerprint)) return Promise.resolve();
   const run = loginQueue.then(async () => {
-    const stored = state.stored;
-    if (stored && stored.fingerprint === target.fingerprint && Date.now() - stored.at < REGISTRY_LOGIN_TTL_MS) return;
+    if (isFresh(state, target.fingerprint)) return;
     state.stored = null;
     try {
       await target.login();
     } catch (err) {
-      if (err instanceof RegistryLoginUnavailableError) {
-        console.warn(`[registry] Login to ${target.host} for ${target.label} skipped: ${err.message}. Pulling with the existing docker credentials.`);
-        return;
-      }
-      throw new Error(`Registry login to ${target.host} failed for ${target.label}: ${failureReason(err)}`);
+      const reason = err instanceof RegistryLoginUnavailableError
+        ? `Registry login to ${target.host} skipped for ${target.label}: ${err.message}`
+        : `Registry login to ${target.host} failed for ${target.label}: ${failureReason(err)}`;
+      console.warn(`[registry] ${reason}. Pulling with the existing docker credentials.`);
+      return;
     }
     state.stored = { fingerprint: target.fingerprint, at: Date.now() };
   });

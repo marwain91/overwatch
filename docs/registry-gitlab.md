@@ -164,7 +164,7 @@ GitLab tokens don't auto-rotate. When you rotate one:
 3. Recreate the Overwatch container (`docker compose up -d`) so it reads the new value. Overwatch reads env vars only at start. The next tenant create or update logs in with the new token, so no other step is needed. If you instead point the app's `token_env` at a variable Overwatch already has, the next pull uses it without a restart.
 4. The old token can be deleted from GitLab once Overwatch is verified working.
 
-If the token expires before you rotate, the next tag listing fails with HTTP 401, and the next tenant create or update fails with `Registry login to <url> failed for app '<id>'`. Both are reported in the UI, and the login gives up after 60 seconds instead of hanging.
+If the token expires before you rotate, the next tag listing fails with HTTP 401, which the UI reports. The next tenant create or update logs `Registry login to <url> failed for app '<id>'` and pulls with the docker credentials it already has; for a private project that pull then fails with docker's `unauthorized` or `denied` error. The login gives up after 60 seconds instead of hanging.
 
 ---
 

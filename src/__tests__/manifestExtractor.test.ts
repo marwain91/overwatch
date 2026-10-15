@@ -336,16 +336,11 @@ describe('extractFileFromImage — timeouts, env and cleanup', () => {
     expect(calls.map(c => c.args[0])).toEqual(['image']);
   });
 
-  it('readManifestFromAppImage pulls inside the app registry login', async () => {
+  it('readManifestFromAppImage logs in to the app registry right before pulling', async () => {
     const fsSync = await import('fs');
     const order: string[] = [];
-    const withRegistryLogin = vi.fn(async (_app: unknown, fn: () => Promise<unknown>) => {
-      order.push('login');
-      const result = await fn();
-      order.push('release');
-      return result;
-    });
-    vi.doMock('../adapters/registry', () => ({ withRegistryLogin }));
+    const ensureRegistryLogin = vi.fn(async () => { order.push('login'); });
+    vi.doMock('../adapters/registry', () => ({ ensureRegistryLogin }));
     mockExecFile((args) => {
       order.push(args[0]);
       if (local(args)) return { fail: missing };
@@ -355,14 +350,14 @@ describe('extractFileFromImage — timeouts, env and cleanup', () => {
     const { readManifestFromAppImage } = await import('../services/manifestExtractor');
     const app = buildApp();
     await expect(readManifestFromAppImage(app, 'v1')).resolves.toEqual({ id: 'acme' });
-    expect(withRegistryLogin).toHaveBeenCalledWith(app, expect.any(Function));
-    expect(order.slice(0, 4)).toEqual(['image', 'login', 'pull', 'release']);
+    expect(ensureRegistryLogin).toHaveBeenCalledWith(app);
+    expect(order.slice(0, 3)).toEqual(['image', 'login', 'pull']);
   });
 
   it('readManifestFromAppImage does not log in for an image that is already local', async () => {
     const fsSync = await import('fs');
-    const withRegistryLogin = vi.fn();
-    vi.doMock('../adapters/registry', () => ({ withRegistryLogin }));
+    const ensureRegistryLogin = vi.fn();
+    vi.doMock('../adapters/registry', () => ({ ensureRegistryLogin }));
     mockExecFile((args) => {
       if (local(args)) return { stdout: '[{}]' };
       if (args[0] === 'cp') { fsSync.writeFileSync(args[2], '{"id":"acme"}'); return {}; }
@@ -370,6 +365,35 @@ describe('extractFileFromImage — timeouts, env and cleanup', () => {
     });
     const { readManifestFromAppImage } = await import('../services/manifestExtractor');
     await readManifestFromAppImage(buildApp(), 'v1');
-    expect(withRegistryLogin).not.toHaveBeenCalled();
+    expect(ensureRegistryLogin).not.toHaveBeenCalled();
+  });
+
+  it('readManifestFromAppImage replaces the registry block the image embeds with the app one', async () => {
+    // Tenant update keeps the global registry anyway; an image built with an
+    // older or malformed registry block must not fail manifest validation over it.
+    const fsSync = await import('fs');
+    const embedded = { id: 'acme', registry: { type: 'ghcr', url: 'https://ghcr.io/', repository: 'Old Org/acme', auth: { type: 'token' } } };
+    mockExecFile((args) => {
+      if (local(args)) return { stdout: '[{}]' };
+      if (args[0] === 'cp') { fsSync.writeFileSync(args[2], JSON.stringify(embedded)); return {}; }
+      return {};
+    });
+    const { readManifestFromAppImage } = await import('../services/manifestExtractor');
+    const { AppRegistrySchema } = await import('../models/app');
+    const app = buildApp();
+    const manifest = await readManifestFromAppImage(app, 'v1') as { registry: unknown };
+    expect(manifest.registry).toEqual(app.registry);
+    expect(AppRegistrySchema.safeParse(manifest.registry).success).toBe(true);
+  });
+
+  it('readManifestFromAppImage leaves a manifest without a registry block as it is', async () => {
+    const fsSync = await import('fs');
+    mockExecFile((args) => {
+      if (local(args)) return { stdout: '[{}]' };
+      if (args[0] === 'cp') { fsSync.writeFileSync(args[2], '{"id":"acme"}'); return {}; }
+      return {};
+    });
+    const { readManifestFromAppImage } = await import('../services/manifestExtractor');
+    await expect(readManifestFromAppImage(buildApp(), 'v1')).resolves.toEqual({ id: 'acme' });
   });
 });

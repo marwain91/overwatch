@@ -141,25 +141,52 @@ describe('ensureRegistryLogin', () => {
     expect(logins()).toHaveLength(1);
   });
 
-  it('fails closed with a clear message when the registry rejects the login, and does not cache it', async () => {
+  it('warns and still pulls when the registry rejects the login, and retries on the next pull', async () => {
+    // Before per-pull logins a failed boot login only warned; pulls then ran with
+    // whatever docker had (host-mounted credentials, anonymous for public images).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { ensureRegistryLogin, DockerCommandError } = await load();
     runDockerMock.mockRejectedValueOnce(new DockerCommandError('docker login --username=x-access-token --password-stdin -- ghcr.io failed', 'unknown', {
       stderr: 'Error response from daemon: Get "https://ghcr.io/v2/": denied: denied\n', stdout: '', exitCode: 1, command: 'docker', args: [],
     }));
-    const err = (await ensureRegistryLogin(app('a')).catch(e => e)) as Error;
-    expect(err).toBeInstanceOf(Error);
-    expect(err.message).toMatch(/Registry login to ghcr\.io failed for app 'a'/);
-    expect(err.message).toMatch(/denied/);
-    expect(err.message).not.toContain('token-a');
+    await expect(ensureRegistryLogin(app('a'))).resolves.toBeUndefined();
+    const message = warn.mock.calls.map(c => String(c[0])).join('\n');
+    expect(message).toMatch(/Registry login to ghcr\.io failed for app 'a': Error response from daemon: .*denied/);
+    expect(message).toMatch(/existing docker credentials/);
+    expect(message).not.toContain('token-a');
     await ensureRegistryLogin(app('a'));
     expect(logins()).toHaveLength(2);
   });
 
-  it('releases the host at once after a failed login', async () => {
+  it('does not let a timed-out login stop the pull', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { ensureRegistryLogin } = await load();
     runDockerMock.mockRejectedValueOnce(new Error('docker login… timed out after 60000ms'));
-    await expect(ensureRegistryLogin(app('a'))).rejects.toThrow(/timed out/);
-    await ensureRegistryLogin(app('b', withToken('TOKEN_B')));
+    await expect(ensureRegistryLogin(app('a'))).resolves.toBeUndefined();
+  });
+
+  it('skips the login, without failing the pull, when the app registry config cannot be used', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.JWT_SECRET = 'jwt-secret';
+    const { ensureRegistryLogin, withRegistryLogin } = await load();
+    // An invalid tag_pattern only ever broke tag listing.
+    await expect(ensureRegistryLogin(app('a', { tag_pattern: '[' }))).resolves.toBeUndefined();
+    // A reserved secret is never handed to a registry.
+    await expect(withRegistryLogin(app('b', withToken('JWT_SECRET')), async () => 'pulled')).resolves.toBe('pulled');
+    expect(runDockerMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/app 'b'.*reserved/));
+  });
+
+  it('does not make a fresh login wait for another registry login in progress', async () => {
+    const { ensureRegistryLogin } = await load();
+    await ensureRegistryLogin(app('a'));
+    const slowLogin = deferred<{ stdout: string; stderr: string }>();
+    runDockerMock.mockReturnValueOnce(slowLogin.promise);
+    const gitlab = ensureRegistryLogin(app('g', { type: 'gitlab', url: 'registry.gitlab.com', ...withToken('TOKEN_B') }));
+    await flush();
+    await expect(ensureRegistryLogin(app('a'))).resolves.toBeUndefined();
+    slowLogin.resolve({ stdout: '', stderr: '' });
+    await gitlab;
     expect(loginSecrets()).toEqual(['token-a', 'token-b']);
   });
 
@@ -230,12 +257,28 @@ describe('withRegistryLogin', () => {
     expect(logins()).toHaveLength(2);
   });
 
-  it('does not pull after a failed login', async () => {
+  it('still pulls after a failed login', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { withRegistryLogin } = await load();
     runDockerMock.mockRejectedValueOnce(new Error('unauthorized'));
-    const pull = vi.fn();
-    await expect(withRegistryLogin(app('a'), pull)).rejects.toThrow(/Registry login to ghcr\.io failed for app 'a': unauthorized/);
-    expect(pull).not.toHaveBeenCalled();
+    await expect(withRegistryLogin(app('a'), async () => 'pulled')).resolves.toBe('pulled');
+  });
+
+  it('gives a waiting credential its turn before later arrivals with the held one', async () => {
+    const { withRegistryLogin } = await load();
+    const pullA = deferred();
+    const order: string[] = [];
+    const a = withRegistryLogin(app('a'), async () => { order.push('a'); await pullA.promise; });
+    await flush();
+    const b = withRegistryLogin(app('b', withToken('TOKEN_B')), async () => { order.push('b'); });
+    await flush();
+    const a2 = withRegistryLogin(app('a2'), async () => { order.push('a2'); });
+    await flush();
+    expect(order).toEqual(['a']);
+    pullA.resolve();
+    await Promise.all([a, b, a2]);
+    expect(order).toEqual(['a', 'b', 'a2']);
+    expect(loginSecrets()).toEqual(['token-a', 'token-b', 'token-a']);
   });
 
   it('uses Docker Hub as the host for dockerhub apps', async () => {
@@ -252,6 +295,14 @@ describe('boot login', () => {
     const { loginToAllRegistries, ensureRegistryLogin } = await load();
     await loginToAllRegistries([app('a'), app('none', { auth: { type: 'token' } })]);
     await ensureRegistryLogin(app('a'));
+    expect(logins()).toHaveLength(1);
+  });
+
+  it('reports an unusable registry config at boot and carries on', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { loginToAllRegistries } = await load();
+    await loginToAllRegistries([app('bad', { tag_pattern: '[' }), app('a')]);
+    expect(error).toHaveBeenCalledWith(expect.stringMatching(/app 'bad'/), expect.anything());
     expect(logins()).toHaveLength(1);
   });
 

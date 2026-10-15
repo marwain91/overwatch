@@ -464,9 +464,9 @@ environment:
 | `repository` | Path of `/`-separated components | `org/app`, `group/sub/project` |
 | `api_url` (GitLab only) | `http(s)://` URL without credentials, query or fragment | `https://gitlab.acme.com` |
 
-Each host label and path component starts with a letter or digit and contains only letters, digits, `.`, `_` and `-`. A value that starts with `-`, contains whitespace, or has an empty component is rejected. Docker also requires `repository` to be lowercase before it pulls.
+Each host label and path component starts with a letter or digit and contains only letters, digits, `.`, `_` and `-`. Surrounding whitespace is trimmed. A value that starts with `-`, contains whitespace, or has an empty component is rejected. Docker also requires `repository` to be lowercase before it pulls.
 
-A stored definition that fails these checks stops Overwatch at boot with `<id>.json failed validation: registry.<field>: ...`. Docker could never pull with such a value. Fix the file in `data/apps.d/` and restart.
+A stored definition that fails these checks stops Overwatch at boot with `<id>.json failed validation: registry.<field>: ...`. For `url` and `repository`, docker could never pull with such a value; `api_url` is only used to list tags. Fix the file in `data/apps.d/` and restart. The registry block that an image embeds in its `/overwatch/app.json` is replaced by the app's own before validation, so it cannot fail a manifest sync.
 
 ### Registry login
 
@@ -474,11 +474,12 @@ Overwatch logs in to an app's registry right before it pulls that app's images: 
 
 - **Apps without credentials** are never logged in for: no `token_env`, an empty token variable, or for `basic` auth no username. Their pulls use whatever docker login state exists, as before.
 - **Reuse:** a login is reused for 6 hours per registry host and credential. ECR tokens last 12 hours.
-- **Failures:** `docker login` has a 60-second timeout. A rejected or timed-out login fails the pull with `Registry login to <host> failed for app '<id>': <reason>`. Tenant create is rolled back, and tenant update restores the tenant and reports the pull step as failed.
-- **Shared hosts:** Docker stores one credential per registry host. Apps on the same host with different credentials pull one after the other; apps with the same credential pull together.
+- **Failures:** `docker login` has a 60-second timeout. A login never fails the pull. A rejected or timed-out login logs `Registry login to <host> failed for app '<id>': <reason>. Pulling with the existing docker credentials.`, and the pull runs as it did before this release: with the host's mounted credentials, another app's login for that host, or anonymously. If the pull then fails, the tenant error shows docker's message and the server log has the login reason. The next pull tries the login again.
+- **Unusable registry config:** if the app's registry config cannot be used (a reserved `token_env`, an invalid `tag_pattern`), Overwatch logs `No registry login for app '<id>'` and pulls without logging in.
+- **Shared hosts:** Docker stores one credential per registry host, and docker and compose read it when a pull starts. Apps on the same host with different credentials take turns: each login keeps the host for 60 seconds so its pull can start. Apps with the same credential do not wait for each other.
 - **Where logins are stored:** in the Overwatch container at `$HOME/.docker/config.json`, which is `/home/node/.docker` for the default runtime user. It does not survive recreating the container, so the next pull logs in again.
 - **The `/root/.docker` mount** in the shipped compose file is read only when Overwatch runs as root (`OVERWATCH_UID=0`). In that case `docker login` cannot save into the read-only mount, so Overwatch logs a warning and pulls with the mounted credentials, as before.
-- **ECR** logins need the AWS CLI (`aws`), which the Overwatch image does not include. Without it, or without AWS credentials, the login is skipped with a warning. Tag listing then reports the error.
+- **ECR** logins need the AWS CLI (`aws`), which the Overwatch image does not include. Without it, or without AWS credentials, the login is skipped with a warning (`Registry login to <host> skipped`). Tag listing then reports the error.
 
 ---
 

@@ -104,7 +104,7 @@ describe('AppRegistrySchema — field formats', () => {
   });
 
   it.each([
-    '-H', '--config=/tmp/x', '-', '', ' ghcr.io', 'ghcr.io ', 'ghcr.io\n', '\tghcr.io', 'ghcr .io',
+    '-H', '--config=/tmp/x', '-', '', ' ', ' -H', 'ghcr .io', 'ghcr.io\nx', 'ghcr\t.io',
     'https://ghcr.io', 'ghcr.io/', 'user@ghcr.io', 'ghcr.io/../x', 'ghcr.io/.x', 'ghcr.io?x', 'ghcr.io#x',
     'ghcr.io:port', 'ghcr.io/-x', 'ghcr.io//x', 'ghcr.io\\x', 'ghcr.io;x', 'ghcr.io\0',
   ])('rejects url %j', (url) => {
@@ -122,7 +122,7 @@ describe('AppRegistrySchema — field formats', () => {
   });
 
   it.each([
-    '-x', '--help', 'org/-repo', 'org/repo ', ' org/repo', 'org repo', 'org//repo', '/org/repo', 'org/repo/',
+    '-x', '--help', 'org/-repo', 'org repo', 'org\trepo', 'org//repo', '/org/repo', 'org/repo/',
     '../etc', 'org/../repo', 'org/.hidden', '', 'org/repo:tag', 'org/repo@sha256:abc', 'org\nrepo', 'org/repo?x',
   ])('rejects repository %j', (repository) => {
     expect(ok({ repository })).toBe(false);
@@ -139,10 +139,21 @@ describe('AppRegistrySchema — field formats', () => {
 
   it.each([
     '-x', '--config', '', 'ftp://gitlab.acme.com', 'file:///etc/passwd', 'https://user:pw@gitlab.acme.com',
-    'https://gitlab.acme.com ', ' https://gitlab.acme.com', 'https://gitlab .acme.com', 'https://gitlab.acme.com/?x=1',
+    'https://gitlab .acme.com', 'https://gitlab.acme.com/?x=1',
     'https://gitlab.acme.com/#x', 'https://gitlab.acme.com/\nx',
   ])('rejects api_url %j', (api_url) => {
     expect(ok({ type: 'gitlab', url: 'registry.acme.com:5050', api_url })).toBe(false);
+  });
+
+  it('trims surrounding whitespace instead of failing a stored definition over it', () => {
+    // A pasted trailing space reached docker as part of the image reference, and
+    // the URL parser dropped it from api_url, which therefore worked.
+    const result = AppRegistrySchema.parse(registry({
+      type: 'gitlab', url: ' registry.acme.com:5050\n', repository: 'group/app ', api_url: 'https://gitlab.acme.com ',
+    }));
+    expect(result.url).toBe('registry.acme.com:5050');
+    expect(result.repository).toBe('group/app');
+    expect(result.api_url).toBe('https://gitlab.acme.com');
   });
 
   it('names the field and the expected shape in the error', () => {
