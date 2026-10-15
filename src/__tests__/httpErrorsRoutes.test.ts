@@ -134,7 +134,7 @@ describe('exposed 5xx from a service reaches the client through the real handler
   it('PATCH tenant: compose pull failure keeps its message', async () => {
     const tenantPath = path.join(appsDir, 'acme', 'tenants', 't1');
     await fs.mkdir(tenantPath, { recursive: true });
-    await fs.writeFile(path.join(tenantPath, '.env'), 'X=1\n');
+    await fs.writeFile(path.join(tenantPath, '.env'), 'X=1\nIMAGE_TAG=v1\n');
     await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), 'services: {}\n');
     const failure: any = new Error('pull access denied for ns/acme-web');
     failure.stderr = 'pull access denied for ns/acme-web';

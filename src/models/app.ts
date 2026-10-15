@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { TraefikAppSchema, RawLabelsSchema, TlsTerminationSchema } from './traefik';
+import { volumeNameIssues } from '../utils/validators';
 
 // Registry auth configuration for app.
 //
@@ -64,7 +65,8 @@ export const AppServiceRoutingSchema = z.object({
   tls_termination: TlsTerminationSchema.optional().describe('Override TLS termination mode for this service (defaults to global traefik.tls_termination, or "traefik")'),
 });
 
-// Service volume configuration
+// Service volume configuration. Stored definitions load with this schema as
+// is; write paths add the name check in AppServicesWriteSchema below.
 export const AppServiceVolumeSchema = z.object({
   name: z.string(),
   container_path: z.string(),
@@ -91,6 +93,16 @@ export const AppServiceSchema = z.object({
   volumes: z.array(AppServiceVolumeSchema).optional(),
   depends_on: z.array(z.string()).optional(),
   networks: z.array(z.enum(['external', 'internal'])).optional(),
+});
+
+// Services as create, update and `overwatch apps apply` accept them: a volume
+// name Docker would mount as a host path (`/var/run/docker.sock`, `./data`,
+// `x:/etc`) is refused. Loading keeps AppServiceSchema alone, so a stored
+// definition that predates the check still loads (the generator warns).
+export const AppServicesWriteSchema = z.array(AppServiceSchema).min(1).superRefine((services, ctx) => {
+  for (const issue of volumeNameIssues(services)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: issue.path, message: issue.message });
+  }
 });
 
 // App-level backup configuration
@@ -192,7 +204,7 @@ export const AppDefinitionSchema = z.object({
 export const CreateAppSchema = AppDefinitionSchema.omit({
   createdAt: true,
   updatedAt: true,
-});
+}).extend({ services: AppServicesWriteSchema });
 
 // Schema for updating an app (all fields optional except id)
 export const UpdateAppSchema = CreateAppSchema.partial().required({ id: true });

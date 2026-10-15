@@ -18,7 +18,7 @@ import { clearAdapterCache } from '../adapters/registry';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 import { isReservedSecretEnv, loadConfigOrNull } from '../utils/reservedEnv';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/httpErrors';
-import { assertServiceNamesValid, assertHealthcheckDurationsValid } from '../utils/validators';
+import { assertServiceNamesValid, assertHealthcheckDurationsValid, assertVolumeNamesValid } from '../utils/validators';
 import { assertAppRawLabelsOwned } from './traefikLabels';
 import { assertNoMaskedCredentials } from './traefikRedaction';
 
@@ -285,6 +285,7 @@ function assertWritable(next: { id: string; services?: unknown[]; traefik?: unkn
 
   assertServiceNamesValid(services.filter(svc => !before.has(svc?.name)));
   assertHealthcheckDurationsValid(changed(svc => svc?.health_check));
+  assertVolumeNamesValid(changed(svc => svc?.volumes));
   const rawLabelsChanged = changed(svc => svc?.routing?.raw_labels);
   assertAppRawLabelsOwned(next.id, rawLabelsChanged);
   // A file copied from a non-admin API read carries placeholders, not credentials.

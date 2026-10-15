@@ -73,6 +73,40 @@ export async function readTenantAppDef(
 }
 
 /**
+ * Overlay the global definition onto a tenant snapshot. The snapshot owns the
+ * app's shape (services, backup, env_vars, traefik library, db_prefix), so a
+ * tenant on an older image keeps working when a newer one changes it. Where
+ * images are pulled from (`registry`, `default_image_tag`) and the app's
+ * identity (`id`, `name`, `domain_template`) always follow the global
+ * definition: an admin's registry switch or an app rename must reach existing
+ * tenants. Without a global definition (trashed app) the snapshot is returned
+ * as is.
+ */
+export function overlayGlobalApp<T extends AppDefinition | AppDefinitionStatic>(snapshot: T, global: AppDefinition | null): T {
+  if (!global) return snapshot;
+  return {
+    ...snapshot,
+    registry: global.registry,
+    default_image_tag: global.default_image_tag,
+    id: global.id,
+    name: global.name,
+    domain_template: global.domain_template,
+  } as T;
+}
+
+/**
+ * The app definition in effect for one tenant: its snapshot (or the global
+ * definition for a tenant without one) with `overlayGlobalApp` applied. Null
+ * when neither exists. Every per-tenant operation (update, delete, compose
+ * regeneration) uses this, so they cannot disagree about the definition.
+ */
+export async function resolveTenantApp(appId: string, tenantId: string): Promise<AppDefinition | null> {
+  const snapshot = await readTenantAppDef(appId, tenantId);
+  if (!snapshot) return null;
+  return overlayGlobalApp(snapshot, await getApp(appId));
+}
+
+/**
  * Write the per-tenant snapshot. Caller supplies the static shape (the
  * thing you'd pass to `overwatch apps apply`). Runtime timestamps are
  * global and not stored per tenant.

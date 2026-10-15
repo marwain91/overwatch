@@ -4,6 +4,7 @@ import { getDataDir } from '../config';
 import { bindRepairDataFiles, secretDataFiles } from '../config/dataFiles';
 import { writeSecretFile } from '../utils/security';
 import { listTenantDirs } from './tenantStore';
+import { tenantIdentity } from './tenantIdentity';
 
 /**
  * Chores `src/index.ts` runs once per boot to bring older deployments up to
@@ -21,16 +22,17 @@ export async function backfillComposeProjectNames(): Promise<number> {
 
   for (const { appId, tenantId, dir } of await listTenantDirs(undefined, { onError: () => {} })) {
     const envPath = path.join(dir, '.env');
+    const project = tenantIdentity(appId, tenantId).composeProject;
     try {
       let envContent = await fs.readFile(envPath, 'utf-8');
       if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
         envContent = envContent.replace(
           /^(# App Identification)/m,
-          `# Docker Compose Project Name (must be unique across all apps)\nCOMPOSE_PROJECT_NAME=${appId}-${tenantId}\n\n$1`
+          `# Docker Compose Project Name (must be unique across all apps)\nCOMPOSE_PROJECT_NAME=${project}\n\n$1`
         );
         // If the header wasn't found, just prepend it
         if (!envContent.includes('COMPOSE_PROJECT_NAME=')) {
-          envContent = `COMPOSE_PROJECT_NAME=${appId}-${tenantId}\n${envContent}`;
+          envContent = `COMPOSE_PROJECT_NAME=${project}\n${envContent}`;
         }
         await writeSecretFile(envPath, envContent);
         count++;

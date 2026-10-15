@@ -1,26 +1,17 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { tenantAppDefMock } from './tenantAppDefMock';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as util from 'util';
 
-/**
- * Wrap a vi.fn execFile mock so `promisify(execFile)` resolves with
- * `{stdout, stderr}` (matching the real Node `child_process.execFile`),
- * not just the second callback argument.
- */
+/** execFile mock with Node's `(cmd, args, opts, cb)` signature, as runDocker calls it. */
 function withPromisify(
   mock: (cmd: string, args: string[], cb: (err: any, stdout: string, stderr: string) => void) => void,
-): typeof mock & { [k: symbol]: any } {
-  const fn = vi.fn(mock) as any;
-  fn[util.promisify.custom] = (cmd: string, args: string[]) =>
-    new Promise((resolve, reject) => {
-      fn(cmd, args, (err: any, stdout: string, stderr: string) => {
-        if (err) reject(err);
-        else resolve({ stdout, stderr });
-      });
-    });
-  return fn;
+) {
+  return vi.fn((cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
+    mock(cmd, args, cb);
+    return { on: () => {} };
+  });
 }
 
 
@@ -89,7 +80,8 @@ function baseApp(id = 'customer-portal') {
 }
 
 describe('tenant update image cleanup', () => {
-  it('removes image tags the regenerated compose no longer references', async () => {
+  /** Update customer-portal/tenant-one 1.0.0 -> 1.1.0 next to `others` ([appId, tenantId, .env]); returns the rmi'd refs. */
+  async function updateWithNeighbours(others: Array<[string, string, string]>) {
     const appsDir = path.join(tmpRoot, 'apps');
     const tenantPath = path.join(appsDir, 'customer-portal', 'tenants', 'tenant-one');
     await fs.mkdir(tenantPath, { recursive: true });
@@ -117,7 +109,8 @@ describe('tenant update image cleanup', () => {
       getApp: vi.fn(async () => baseApp('customer-portal')),
       applyApp: vi.fn(async (def: any) => ({ result: 'noop', app: def, changedKeys: [] })),
     }));
-    vi.doMock('../services/envVars', () => ({
+    vi.doMock('../services/envVars', async () => ({
+      ...(await vi.importActual<object>('../services/envVars')),
       generateSharedEnvFile: vi.fn(async () => {
         await fs.writeFile(sharedEnvPath, 'SHARED=2\n', { mode: 0o600 });
       }),
@@ -128,7 +121,7 @@ describe('tenant update image cleanup', () => {
       resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/customer-portal/web-api:1.1.0'),
     }));
     vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
-    vi.doMock('../services/tenantAppDef', () => ({
+    vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
       readTenantAppDef: vi.fn(async () => baseApp('customer-portal')),
       writeTenantAppDef: vi.fn(async () => undefined),
     }));
@@ -157,12 +150,37 @@ describe('tenant update image cleanup', () => {
       }),
     }));
 
+    for (const [otherApp, otherTenant, env] of others) {
+      const dir = path.join(appsDir, otherApp, 'tenants', otherTenant);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, '.env'), env, { mode: 0o600 });
+    }
+
     const { updateTenant } = await import('../services/tenant');
     await updateTenant('customer-portal', 'tenant-one', '1.1.0');
-
     expect(configCalls).toBe(2);
-    expect(rmiCalls).toEqual(['ghcr.io/acme/customer-portal/web-api:1.0.0']);
+    return rmiCalls;
+  }
+
+  it('removes image tags the regenerated compose no longer references', async () => {
+    expect(await updateWithNeighbours([])).toEqual(['ghcr.io/acme/customer-portal/web-api:1.0.0']);
   });
+
+  it('keeps an old tag that a stopped tenant of the same app still runs on', async () => {
+    // A stopped tenant has no containers, so `docker rmi` would not refuse.
+    expect(await updateWithNeighbours([['customer-portal', 'tenant-two', 'IMAGE_TAG=1.0.0\n']])).toEqual([]);
+  });
+
+  it('keeps an old tag that a tenant of another app pulls from the same repository', async () => {
+    const env = 'IMAGE_REGISTRY=ghcr.io/acme/customer-portal\nIMAGE_TAG=1.0.0\n';
+    expect(await updateWithNeighbours([['portal-copy', 't1', env]])).toEqual([]);
+  });
+
+  it('still removes an old tag that only an unrelated repository uses', async () => {
+    const env = 'IMAGE_REGISTRY=ghcr.io/other/thing\nIMAGE_TAG=1.0.0\n';
+    expect(await updateWithNeighbours([['other-app', 't1', env]])).toEqual(['ghcr.io/acme/customer-portal/web-api:1.0.0']);
+  });
+
 
   it('skips cleanup when the compose file still references the same image ref', async () => {
     const appsDir = path.join(tmpRoot, 'apps');
@@ -188,7 +206,8 @@ describe('tenant update image cleanup', () => {
       getApp: vi.fn(async () => baseApp('customer-portal')),
       applyApp: vi.fn(async (def: any) => ({ result: 'noop', app: def, changedKeys: [] })),
     }));
-    vi.doMock('../services/envVars', () => ({
+    vi.doMock('../services/envVars', async () => ({
+      ...(await vi.importActual<object>('../services/envVars')),
       generateSharedEnvFile: vi.fn(async () => undefined),
       deleteTenantAllOverrides: vi.fn(),
     }));
@@ -197,7 +216,7 @@ describe('tenant update image cleanup', () => {
       resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/customer-portal/web-api:latest'),
     }));
     vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
-    vi.doMock('../services/tenantAppDef', () => ({
+    vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
       readTenantAppDef: vi.fn(async () => baseApp('customer-portal')),
       writeTenantAppDef: vi.fn(async () => undefined),
     }));

@@ -1,28 +1,27 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import { loadConfig } from '../config';
+import { loadConfig, getDataDir } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
-import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue } from './envVars';
+import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue, formatEnvLine } from './envVars';
 import { getApp, applyApp } from './app';
-import { generateComposeFile } from './composeGenerator';
+import { generateComposeFile, readComposeNames, protectUnownedVolumes } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
 import { applyManifestPolicy, manifestPolicyBaseline } from './manifestPolicy';
-import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
+import { writeTenantAppDef, resolveTenantApp, overlayGlobalApp } from './tenantAppDef';
 import { describeFailedInitContainers } from './initContainerDiagnostics';
 import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
 import { eventBus } from './eventBus';
 import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from './eventBus';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
-import { tenantDir, tenantsDir, assertTenantDir } from './tenantStore';
+import { tenantDir, tenantsDir, assertTenantDir, listTenantDirs, parseTenantEnv } from './tenantStore';
+import { tenantIdentity, findIdentityConflict, assertTenantDbName, isTenantOwnedVolume, type TenantIdentity, type TenantNames } from './tenantIdentity';
 import { SLUG_RE } from '../utils/validators';
-import { resolveTenantDbId } from './tenantDb';
-import { getDockerEnv } from '../utils/runDocker';
+import { resolveTenantDbName } from './tenantDb';
+import { runDocker } from '../utils/runDocker';
 import { writeFileAtomic } from '../utils/atomicJson';
 import { withFileLock, withTenantLock } from './fileLock';
 import { isDeepStrictEqual } from 'util';
@@ -30,15 +29,12 @@ import { extractComposeErrorMessage } from '../utils/composeErrors';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 
-const execFileAsync = promisify(execFile);
-// Compose resolves ${VAR} against its own environment, so docker runs with the
-// curated one rather than Overwatch's (which holds operator secrets).
-// Timeout and maxBuffer follow runDocker's pattern: a hung daemon or a registry
-// stall must not pin the tenant lock (and a request) forever.
-const DOCKER_MAX_BUFFER = 64 * 1024 * 1024;
+// runDocker gives every call the curated env (compose resolves ${VAR} against
+// its own environment, and Overwatch's holds operator secrets) and a timeout,
+// so a hung daemon or a registry stall cannot pin the tenant lock forever.
 const COMPOSE_TIMEOUT_MS = 300_000;
 const execDocker = (args: string[], timeoutMs: number = COMPOSE_TIMEOUT_MS) =>
-  execFileAsync('docker', args, { env: getDockerEnv(), timeout: timeoutMs, maxBuffer: DOCKER_MAX_BUFFER });
+  runDocker('docker', args, { timeoutMs });
 
 export interface CreateTenantInput {
   appId: string;
@@ -128,27 +124,60 @@ export function overlayInfrastructure(snapshot: AppDefinition, global: AppDefini
   };
 }
 
-function overlayRuntimeIdentityAndInfrastructure<T extends AppDefinition | AppDefinitionStatic>(snapshot: T, global: AppDefinition | null): T {
-  if (!global) return snapshot;
-  return {
-    ...snapshot,
-    registry: global.registry,
-    default_image_tag: global.default_image_tag,
-    id: global.id,
-    name: global.name,
-    domain_template: global.domain_template,
-  } as T;
-}
-
-async function overlayInfrastructureFromGlobal(snapshot: AppDefinition, appId: string = snapshot.id): Promise<AppDefinition> {
-  const global = await getApp(appId);
-  return overlayRuntimeIdentityAndInfrastructure(snapshot, global);
-}
-
 function toStaticAppDefinition(app: AppDefinition): AppDefinitionStatic {
   const { createdAt: _createdAt, updatedAt: _updatedAt, ...staticDef } = app;
   void _createdAt; void _updatedAt;
   return staticDef as AppDefinitionStatic;
+}
+
+/** The names a tenant being created would use, read back from its generated compose file. */
+function candidateNames(identity: TenantIdentity, dbName: string, composeContent: string): TenantNames {
+  const { containerNames, volumes } = readComposeNames(composeContent);
+  return {
+    appId: identity.appId,
+    tenantId: identity.tenantId,
+    composeProject: identity.composeProject,
+    namePrefix: identity.namePrefix,
+    dbName,
+    containerNames,
+    // Shared (external) volumes are shared on purpose; only owned ones must be unique.
+    volumeNames: volumes.filter(v => !v.external && isTenantOwnedVolume(v.name, identity.appId, identity.tenantId)).map(v => v.name),
+  };
+}
+
+/**
+ * Names every existing tenant uses: the compose project and database from its
+ * .env (what it actually runs with), containers and volumes from its compose
+ * file. A .env that exists but cannot be read fails the check (closed).
+ */
+async function existingTenantNames(): Promise<TenantNames[]> {
+  const refs = await listTenantDirs();
+  return Promise.all(refs.map(async ({ appId, tenantId, dir }): Promise<TenantNames> => {
+    const identity = tenantIdentity(appId, tenantId);
+    let env: Record<string, string> = {};
+    try {
+      env = parseTenantEnv(await fs.readFile(path.join(dir, '.env'), 'utf-8'));
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        throw new HttpError(500, `Cannot check tenant names: the .env of ${appId}/${tenantId} could not be read (${err?.code || err?.message || err})`, { expose: true });
+      }
+    }
+    const names: TenantNames = {
+      appId,
+      tenantId,
+      composeProject: env.COMPOSE_PROJECT_NAME || identity.composeProject,
+      namePrefix: identity.namePrefix,
+      dbName: env.DB_NAME || undefined,
+    };
+    try {
+      const { containerNames, volumes } = readComposeNames(await fs.readFile(path.join(dir, 'docker-compose.yml'), 'utf-8'));
+      names.containerNames = containerNames;
+      names.volumeNames = volumes.map(v => v.name);
+    } catch {
+      // No readable compose file: the project, prefix and database checks still apply.
+    }
+    return names;
+  }));
 }
 
 export function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
@@ -192,12 +221,16 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
   const db = getDatabaseAdapter(app);
   const tenantPath = getTenantPath(appId, tenantId);
   const appTenantsDir = tenantsDir(appId);
-  const dbTenantId = `${appId}_${tenantId}`;
+  const identity = tenantIdentity(appId, tenantId);
+  const dbTenantId = identity.dbId;
+  const dbName = db.getDatabaseName(dbTenantId);
+  // A name the database server would refuse fails here, before anything exists.
+  assertTenantDbName(dbName, config.database?.type);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   let tenantDirCreated = false;
   let dbCreated = false;
   let userCreated = false;
-  let composeWritten = false;
+  let upAttempted = false;
 
   try {
     await fs.mkdir(appTenantsDir, { recursive: true });
@@ -209,12 +242,28 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
     const dbPassword = generatePassword(dbPasswordLength);
     const jwtSecret = generatePassword(jwtSecretLength);
 
-    // The domain check reads other tenants' .env files, so the check and the
-    // write of this tenant's .env must be one step: two concurrent creates of
-    // different tenants with the same domain would otherwise both pass.
+    // Generate docker-compose.yml from app service definitions.
+    // Tenant overrides don't exist yet at create-time — they're added later via
+    // `PUT /api/apps/:id/tenants/:tid/traefik`. Pass undefined.
+    const composeContent = generateComposeFile({
+      app,
+      tenantId,
+      domain,
+      config,
+      tenantTraefik: undefined,
+    });
+    const candidate = candidateNames(identity, dbName, composeContent);
+
+    // The domain and name checks read other tenants' files, so the checks and
+    // the write of this tenant's .env and compose file must be one step: two
+    // concurrent creates would otherwise both pass.
     await withFileLock('tenant-domains', async () => {
       // Reserved Overwatch hosts and other tenants' domains/aliases (create-from-backup goes through here too).
       await assertTenantDomainAllowed(appId, tenantId, domain);
+      const conflict = findIdentityConflict(candidate, await existingTenantNames());
+      if (conflict) {
+        throw new ConflictError(`Tenant '${tenantId}' cannot be created in app '${appId}': ${conflict}. Choose a different tenant ID.`);
+      }
 
       // Atomically create tenant directory — fails if already exists (prevents TOCTOU race)
       try {
@@ -230,8 +279,9 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
       // Verify the path hasn't been manipulated via symlinks
       await assertWithinDir(tenantPath, appTenantsDir);
 
-      const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
+      const envContent = generateEnvContent(config, app, identity, dbName, domain, tag, dbPassword, jwtSecret);
       await writeSecretFile(path.join(tenantPath, '.env'), envContent);
+      await fs.writeFile(composePath, composeContent);
     });
 
     // Initialize database adapter and create database.
@@ -239,7 +289,13 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
     await db.initialize();
     // Never adopt a database that already exists: a later rollback would drop it.
     if (await db.databaseExists(dbTenantId)) {
-      throw new ConflictError(`A database for tenant '${tenantId}' already exists on the database server`);
+      throw new ConflictError(
+        `A database '${dbName}' already exists on the database server, so tenant '${tenantId}' cannot be created: ` +
+        'Overwatch never adopts an existing database. If a tenant with this ID was deleted with "Keep data", ' +
+        `its database and volumes were kept on purpose and its .env (with the database password) was saved under deleted-tenants/${appId}/ in the Overwatch data directory. ` +
+        `To create the tenant again, back up and drop the database '${dbName}' and its user on the database server; ` +
+        `its kept volumes (${identity.namePrefix}*) are reused unless you remove them.`,
+      );
     }
     const dbResult = await db.createDatabase(dbTenantId, dbPassword);
     dbCreated = dbResult.created;
@@ -247,19 +303,6 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
 
     // Generate shared.env for this tenant (we hold the tenant lock)
     await generateSharedEnvFile(appId, tenantId, { alreadyLocked: true });
-
-    // Generate docker-compose.yml from app service definitions.
-    // Tenant overrides don't exist yet at create-time — they're added later via
-    // `PUT /api/apps/:id/tenants/:tid/traefik`. Pass undefined.
-    const composeContent = generateComposeFile({
-      app,
-      tenantId,
-      domain,
-      config,
-      tenantTraefik: undefined,
-    });
-    await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), composeContent);
-    composeWritten = true;
 
     // Seed this tenant's frozen app-definition snapshot. From v1.5.5 on,
     // per-tenant snapshots drive compose regen + backup config so tenants
@@ -271,20 +314,22 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
 
     // Create external volumes and start tenant
     await ensureExternalVolumes(composePath);
+    upAttempted = true;
     await execDocker(
       ['compose', '--project-directory', tenantPath, '-f', composePath, input.start === false ? 'create' : 'up', ...(input.start === false ? [] : ['-d'])],
       COMPOSE_LONG_TIMEOUT_MS,
     );
   } catch (error) {
-    // Rollback in reverse order of creation. If compose was written and `up` was
-    // attempted, containers may exist even when the original command failed —
-    // always attempt `down -v` so we don't leak them.
-    // Gather init container evidence first: `down -v` deletes the containers
+    // Rollback in reverse order of creation. If `up` was attempted, containers
+    // may exist even when the original command failed — always attempt `down`
+    // so we don't leak them. Without -v: the tenant's volumes may predate this
+    // create (kept by an earlier "keep data" delete of the same tenant ID).
+    // Gather init container evidence first: `down` deletes the containers
     // whose logs explain a failed first migration.
     let initFailures = '';
-    if (composeWritten) {
+    if (upAttempted) {
       initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
-      await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
+      await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down']).catch(() => {});
     }
     if (tenantDirCreated) {
       await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
@@ -321,10 +366,64 @@ export async function startCreatedTenantLocked(appId: string, tenantId: string):
     await ensureExternalVolumes(composePath);
     await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--no-recreate'], COMPOSE_LONG_TIMEOUT_MS);
   } catch (error) {
-    const app = await readTenantAppDef(appId, tenantId).catch(() => null);
+    const app = await resolveTenantApp(appId, tenantId).catch(() => null);
     const initFailures = app ? await describeFailedInitContainers(app, tenantId).catch(() => '') : '';
     throw new HttpError(500, `${extractComposeErrorMessage(error)}${initFailures ? `\n\n${initFailures}` : ''}`, { expose: true });
   }
+}
+
+/**
+ * Before `down -v`: a compose file written before tenant-scoped volume names
+ * can declare unscoped volumes other tenants share. Rewrite them as external
+ * so compose removes only the tenant's own volumes.
+ */
+async function guardUnownedVolumes(composePath: string, appId: string, tenantId: string): Promise<void> {
+  let text: string;
+  try {
+    text = await fs.readFile(composePath, 'utf-8');
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+  let guarded: string | null;
+  try {
+    guarded = protectUnownedVolumes(text, appId, tenantId);
+  } catch (err: any) {
+    throw new HttpError(
+      500,
+      `Cannot read the docker-compose.yml of ${appId}/${tenantId} (${err?.message || err}), so its volumes cannot be told apart from shared ones. Refusing to delete them; fix the file and retry.`,
+      { expose: true },
+    );
+  }
+  if (guarded !== null) {
+    console.warn(`[deleteTenant] ${appId}/${tenantId}: keeping volumes the tenant does not own (shared legacy volumes)`);
+    await writeFileAtomic(composePath, guarded);
+  }
+}
+
+/**
+ * "Keep data" keeps the database and the volumes, so keep the credentials to
+ * them as well: the tenant's .env (database password, JWT secret) is copied to
+ * <dataDir>/deleted-tenants/<appId>/<tenantId>-<timestamp>.env, mode 0600.
+ * Runs before anything is torn down; if the copy fails, nothing is deleted.
+ */
+async function saveDeletedTenantEnv(appId: string, tenantId: string, tenantPath: string): Promise<void> {
+  let content: string;
+  try {
+    content = await fs.readFile(path.join(tenantPath, '.env'), 'utf-8');
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return;
+    throw new HttpError(500, `Could not save the .env of ${appId}/${tenantId}: it cannot be read (${err?.code || err?.message || err}). Nothing was deleted.`, { expose: true });
+  }
+  const dir = path.join(getDataDir(), 'deleted-tenants', appId);
+  const file = path.join(dir, `${tenantId}-${new Date().toISOString().replace(/[:.]/g, '-')}.env`);
+  try {
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await writeSecretFile(file, content);
+  } catch (err: any) {
+    throw new HttpError(500, `Could not save the .env of ${appId}/${tenantId} to ${dir} (${err?.code || err?.message || err}). Nothing was deleted.`, { expose: true });
+  }
+  console.log(`[deleteTenant] ${appId}/${tenantId}: keeping its database and volumes; saved its .env to ${file}`);
 }
 
 export function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
@@ -334,8 +433,6 @@ export function deleteTenant(appId: string, tenantId: string, keepData: boolean 
 /** Caller must hold the tenant lock. */
 export async function deleteTenantLocked(appId: string, tenantId: string, keepData: boolean): Promise<void> {
   const tenantPath = getTenantPath(appId, tenantId);
-  const app = await getApp(appId);
-  const db = getDatabaseAdapter(app ?? undefined);
 
   // Check if tenant exists
   try {
@@ -347,15 +444,26 @@ export async function deleteTenantLocked(appId: string, tenantId: string, keepDa
   // Verify path hasn't been manipulated via symlinks
   await assertTenantDir(appId, tenantId);
 
-  // DB_NAME in the tenant .env may differ from the constructed name (migrated tenants)
-  const dbTenantId = await resolveTenantDbId(appId, tenantId, app);
+  // The exact database, resolved before anything is stopped: the tenant's own
+  // definition (getApp() is null for a trashed app, whose db_prefix may differ
+  // from the project's) and its .env DB_NAME. Throws when it cannot be
+  // determined, so the delete fails closed instead of orphaning the database.
+  const dbName = keepData ? null : await resolveTenantDbName(appId, tenantId, await resolveTenantApp(appId, tenantId));
+
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
+  if (keepData) {
+    await saveDeletedTenantEnv(appId, tenantId, tenantPath);
+  } else {
+    await guardUnownedVolumes(composePath, appId, tenantId);
+  }
 
   // Stop containers. If this fails we refuse to drop the DB — orphaned
   // containers running against a gone DB are worse than an incomplete delete.
-  // Caller can retry once the compose issue is resolved.
+  // Caller can retry once the compose issue is resolved. Keep data keeps the
+  // volumes too, so no `-v`.
   let composeDownOk = true;
   try {
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', ...(keepData ? [] : ['-v'])]);
   } catch (err: any) {
     composeDownOk = false;
     if (!keepData) {
@@ -369,10 +477,12 @@ export async function deleteTenantLocked(appId: string, tenantId: string, keepDa
     console.warn(`[deleteTenant] compose down failed: ${err?.message || err}. Continuing because keepData=true.`);
   }
 
-  // Drop database unless keeping data
-  if (!keepData && composeDownOk) {
+  // Drop database unless keeping data. dbName is the full name, so the
+  // adapter must not prepend a prefix.
+  if (dbName !== null && composeDownOk) {
+    const db = getDatabaseAdapter({ db_prefix: '' });
     await db.initialize();
-    await db.dropDatabase(dbTenantId);
+    await db.dropDatabase(dbName);
   }
 
   // Clean up tenant env var overrides only once teardown has succeeded: a
@@ -442,26 +552,26 @@ async function updateTenantLocked(
   // Verify path hasn't been manipulated via symlinks
   await assertTenantDir(appId, tenantId);
 
-  // Load this tenant's current app definition. Prefer the per-tenant
-  // snapshot; fall back to apps.d/<id>.json for legacy tenants without
-  // a snapshot (boot seeds these, but this keeps the path resilient).
-  let app = await readTenantAppDef(appId, tenantId);
+  // This tenant's effective app definition: its snapshot, with registry,
+  // default tag and identity from the global definition (see overlayGlobalApp).
+  let app = await resolveTenantApp(appId, tenantId);
   if (!app) {
     throw new NotFoundError(`App '${appId}' not found`);
   }
-  // Overlay infrastructure-level fields (`registry`, `default_image_tag`)
-  // from the global definition. The frozen snapshot owns service-level
-  // schema (services, backup, env_vars declarations, traefik library) so
-  // a tenant on v1.0 doesn't break when v2.0 changes the schema — but
-  // *registry* is a "where do we pull from" decision that should always
-  // reflect the current global config. Without this, an admin's "switch
-  // app to a new repo" edit silently fails to propagate to existing
-  // tenants until each is manually reseeded.
-  app = await overlayInfrastructureFromGlobal(app, appId);
 
   // Read current .env
   const originalEnvContent = await fs.readFile(envPath, 'utf-8');
   const originalComposeContent = await fs.readFile(composePath, 'utf-8');
+  // Without the line the tag could not change, and the update would report a
+  // success that never happened.
+  const IMAGE_TAG_LINE = /^IMAGE_TAG=.*$/m;
+  if (!IMAGE_TAG_LINE.test(originalEnvContent)) {
+    throw new ConflictError(
+      `Tenant '${tenantId}' has no IMAGE_TAG line in its .env, so its image tag cannot be changed. ` +
+      'Add IMAGE_TAG=<current tag> to the tenant .env and retry.',
+    );
+  }
+  const originalEnv = parseTenantEnv(originalEnvContent);
 
   // Resolve the image refs the tenant is currently running so we can clean
   // them up after a successful update. Done before any mutation so env
@@ -514,8 +624,8 @@ async function updateTenantLocked(
     }
   };
 
-  // Update IMAGE_TAG in .env
-  const newEnvContent = originalEnvContent.replace(/^IMAGE_TAG=.*/m, `IMAGE_TAG=${newTag}`);
+  // Update IMAGE_TAG in .env (a function replacement: `$` in it stays literal).
+  const newEnvContent = originalEnvContent.replace(IMAGE_TAG_LINE, () => formatEnvLine('IMAGE_TAG', newTag));
   await writeSecretFile(envPath, newEnvContent);
 
   // Sync the app definition from the embedded manifest inside the new image,
@@ -531,7 +641,7 @@ async function updateTenantLocked(
         throw new HttpError(500, `Image manifest failed validation: ${errors}`, { expose: true });
       }
       const globalForManifest = await getApp(appId);
-      const normalizedManifest = overlayRuntimeIdentityAndInfrastructure(parsed.data, globalForManifest);
+      const normalizedManifest = overlayGlobalApp(parsed.data, globalForManifest);
       // The image may only change allowlisted fields; protected ones keep the
       // admin's value. The snapshot and the global definition get the same result.
       const { next: allowedManifest, ignored } = applyManifestPolicy(
@@ -554,13 +664,13 @@ async function updateTenantLocked(
       } else {
         emit('manifest', 'completed', `noop (manifest matches current definition)${ignoredNote}`);
       }
-      const reloaded = await readTenantAppDef(appId, tenantId);
       // Re-apply the overlay: manifest sync can overwrite the registry block
       // with whatever is in the image's embedded /overwatch/app.json, which
       // for older images may carry a stale repo. The global definition is
       // the source of truth for "where do we pull from"; manifest content
       // for that field is ignored.
-      if (reloaded) app = await overlayInfrastructureFromGlobal(reloaded, appId);
+      const reloaded = await resolveTenantApp(appId, tenantId);
+      if (reloaded) app = reloaded;
     } else {
       emit('manifest', 'skipped', 'image carries no /overwatch/app.json — keeping existing definition');
     }
@@ -578,12 +688,12 @@ async function updateTenantLocked(
   try {
     await generateSharedEnvFile(appId, tenantId, { alreadyLocked: true });
 
-    const domainMatch = originalEnvContent.match(/^TENANT_DOMAIN=(.*)$/m);
-    const domain = domainMatch ? domainMatch[1] : '';
+    // The value as compose reads it: quotes written by formatEnvValue removed.
+    const domain = originalEnv.TENANT_DOMAIN ?? '';
 
     try {
       const tenantTraefik = await readTenantTraefik(appId, tenantId);
-      const composeContent = generateComposeFile({ app, tenantId, domain, config, tenantTraefik });
+      const composeContent = generateComposeFile({ app, tenantId, domain, config, tenantTraefik, existingCompose: originalComposeContent });
       await writeFileAtomic(composePath, composeContent);
     } catch (err) {
       console.warn('Failed to regenerate docker-compose.yml:', err);
@@ -656,10 +766,27 @@ async function listComposeImages(tenantPath: string, composePath: string): Promi
 }
 
 /**
+ * Whether some tenant's .env still pins the tag of image `ref`
+ * (`<repository>:<tag>`) for that repository: a tenant of the same app, or
+ * one whose IMAGE_REGISTRY the repository lives under. A stopped tenant has
+ * no containers, so `docker rmi` would not refuse to remove its image. A
+ * ref without a tag counts as used.
+ */
+function imageStillPinned(ref: string, appId: string, pins: Array<{ appId: string; env: Record<string, string> }>): boolean {
+  const colon = ref.lastIndexOf(':');
+  if (colon <= ref.lastIndexOf('/')) return true;
+  const repository = ref.slice(0, colon);
+  const tag = ref.slice(colon + 1);
+  return pins.some(({ appId: pinApp, env }) => env.IMAGE_TAG === tag && (
+    pinApp === appId || !env.IMAGE_REGISTRY || repository.startsWith(`${env.IMAGE_REGISTRY}/`)
+  ));
+}
+
+/**
  * After a successful tenant update, drop the previous image tags that the
- * regenerated compose no longer references. `docker rmi` fails harmlessly
- * when another container still references the image, so this is safe across
- * tenants that share a repo on different tags. Best-effort: never throws.
+ * regenerated compose no longer references and no tenant .env still pins.
+ * `docker rmi` also fails harmlessly while a container still uses the image.
+ * Best-effort: never throws, and skips cleanup when the tenants can't be read.
  */
 async function pruneReplacedImages(
   oldImages: string[],
@@ -671,8 +798,19 @@ async function pruneReplacedImages(
   if (oldImages.length === 0) return;
   try {
     const newImages = new Set(await listComposeImages(tenantPath, composePath));
+    const pins = await Promise.all((await listTenantDirs()).map(async ref => ({
+      appId: ref.appId,
+      env: await fs.readFile(path.join(ref.dir, '.env'), 'utf-8').then(parseTenantEnv, (err: any) => {
+        if (err?.code === 'ENOENT') return {};
+        throw err;
+      }),
+    })));
     for (const img of oldImages) {
       if (newImages.has(img)) continue;
+      if (imageStillPinned(img, appId, pins)) {
+        console.log(`[tenant:update] keep ${img} for ${appId}/${tenantId}: a tenant .env still uses its tag`);
+        continue;
+      }
       await execDocker(['rmi', img]).catch((err: any) => {
         const detail = (err?.stderr ?? '').toString().trim() || err?.message || String(err);
         console.log(`[tenant:update] skip rmi ${img} for ${appId}/${tenantId}: ${detail}`);
@@ -689,16 +827,16 @@ async function pruneReplacedImages(
 function generateEnvContent(
   config: ReturnType<typeof loadConfig>,
   app: AppDefinition,
-  tenantId: string,
+  identity: TenantIdentity,
+  dbName: string,
   domain: string,
   imageTag: string,
   dbPassword: string,
   jwtSecret: string
 ): string {
+  const { tenantId } = identity;
   const imageRegistry = `${app.registry.url}/${app.registry.repository}`;
   const sharedNetwork = config.networking?.external_network || `${config.project.prefix}-network`;
-  const db = getDatabaseAdapter(app);
-  const dbName = db.getDatabaseName(`${app.id}_${tenantId}`);
 
   // Resolve cert resolver via the new `traefik.cert_resolvers` model.
   // The loader-level shim synthesizes this from the legacy `networking.cert_resolvers`
@@ -727,7 +865,7 @@ function generateEnvContent(
 # Generated: ${new Date().toISOString()}
 
 # Docker Compose Project Name (must be unique across all apps)
-COMPOSE_PROJECT_NAME=${app.id}-${tenantId}
+COMPOSE_PROJECT_NAME=${identity.composeProject}
 
 # App Identification
 APP_ID=${formatEnvValue(app.id)}

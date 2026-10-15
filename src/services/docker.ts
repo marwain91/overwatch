@@ -1,13 +1,18 @@
 import Docker from 'dockerode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as yaml from 'js-yaml';
 import { listApps } from './app';
 import type { AppDefinition } from '../models/app';
 import { assertTenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { runDocker } from '../utils/runDocker';
 import { withTenantLock } from './fileLock';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
+import { generateComposeFile, readComposeNames } from './composeGenerator';
+import { resolveTenantApp } from './tenantAppDef';
+import { readTenantTraefik } from './tenantTraefik';
+import { loadConfig } from '../config';
+import { writeFileAtomic } from '../utils/atomicJson';
+import { HttpError } from '../utils/httpErrors';
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 export { docker };
 
@@ -229,22 +234,47 @@ export async function restartContainer(containerId: string): Promise<void> {
   await container.restart();
 }
 
-export async function listTenants(): Promise<TenantStatus[]> {
+/** Tenant .env files read at once by listTenants (every UI poll reads them all). */
+const ENV_READ_CONCURRENCY = 16;
+
+/** `fn` over `items` with at most `limit` calls in flight; results keep the input order. */
+async function mapWithLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/**
+ * Tenants with their container state, for UI listings: of one app when
+ * `appId` is given, else of every app. Any failure reads as "no tenants"
+ * (see listTenantDirs for a listing that throws).
+ */
+export async function listTenants(appId?: string): Promise<TenantStatus[]> {
   try {
     const apps = await listApps();
+    const scanned = appId === undefined ? apps : apps.filter(a => a.id === appId);
 
     // Pass 1: tenants that have a readable .env (others are skipped).
-    const found: Array<{ app: AppDefinition; dir: string; env: Record<string, string> }> = [];
-    for (const app of apps) {
+    const refs: Array<{ app: AppDefinition; dir: string }> = [];
+    for (const app of scanned) {
       // An unreadable tenants dir just means this app has no tenants to report.
       for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {}, followSymlinks: true })) {
-        try {
-          found.push({ app, dir: tenantId, env: await readTenantEnv(app.id, tenantId) });
-        } catch {
-          // Skip if no .env file
-        }
+        refs.push({ app, dir: tenantId });
       }
     }
+    const envs = await mapWithLimit(refs, ENV_READ_CONCURRENCY,
+      ({ app, dir }) => readTenantEnv(app.id, dir).catch(() => null)); // no .env: skipped
+    const found = refs.flatMap((ref, i) => {
+      const env = envs[i];
+      return env ? [{ ...ref, env }] : [];
+    });
     if (found.length === 0) return [];
 
     // One Docker call for all tenants, grouped by app and tenant.
@@ -299,25 +329,58 @@ export async function getTenantInfo(appId: string, tenantId: string): Promise<{ 
   }
 }
 
-/** Names of the top-level volumes a compose file declares `external: true`. */
-function externalVolumeNames(composeText: string): string[] {
-  const doc = yaml.load(composeText) as { volumes?: Record<string, { external?: unknown } | null> } | null;
-  const volumes = doc && typeof doc === 'object' ? doc.volumes : undefined;
-  if (!volumes || typeof volumes !== 'object') return [];
-  return Object.entries(volumes)
-    .filter(([, def]) => def && typeof def === 'object' && def.external === true)
-    .map(([name]) => name);
-}
-
+/**
+ * Create the external volumes a tenant compose file declares, under their
+ * Docker names. Compose refuses to start with a missing external volume and
+ * never creates or removes one itself.
+ */
 export async function ensureExternalVolumes(composePath: string): Promise<void> {
   const content = await fs.readFile(composePath, 'utf-8');
-  for (const volumeName of externalVolumeNames(content)) {
+  const external = readComposeNames(content).volumes.filter(v => v.external).map(v => v.name);
+  for (const volumeName of external) {
     try {
       await runDocker('docker', ['volume', 'inspect', volumeName], { timeoutMs: 15_000 });
     } catch {
       await runDocker('docker', ['volume', 'create', volumeName], { timeoutMs: 30_000 });
     }
   }
+}
+
+/**
+ * Regenerate a tenant's docker-compose.yml from its effective app definition,
+ * its .env domain and its current Traefik overrides (host aliases, middleware
+ * overrides, raw labels), keeping the volume names it already uses. Only
+ * create and update used to regenerate it, so routing changes never reached a
+ * running tenant. Caller must hold the tenant lock.
+ *
+ * Without a definition (an app in the trash whose tenant has no snapshot) or a
+ * TENANT_DOMAIN there is nothing to render from: the file is kept as is. A
+ * definition that cannot be rendered throws and leaves the file unchanged.
+ */
+export async function reconcileTenantComposeLocked(appId: string, tenantId: string): Promise<void> {
+  const tenantPath = await assertTenantDir(appId, tenantId);
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
+  let existing: string;
+  try {
+    existing = await fs.readFile(composePath, 'utf-8');
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+    throw new HttpError(500, `Tenant ${appId}/${tenantId} has no docker-compose.yml, so its containers cannot be managed.`, { expose: true });
+  }
+  let next: string;
+  try {
+    const app = await resolveTenantApp(appId, tenantId);
+    const domain = (await readTenantEnv(appId, tenantId).catch(() => ({} as Record<string, string>))).TENANT_DOMAIN;
+    if (!app || !domain) {
+      console.warn(`[compose] ${appId}/${tenantId}: no ${app ? 'TENANT_DOMAIN in .env' : 'app definition'}; using its docker-compose.yml as is`);
+      return;
+    }
+    const tenantTraefik = await readTenantTraefik(appId, tenantId);
+    next = generateComposeFile({ app, tenantId, domain, config: loadConfig(), tenantTraefik, existingCompose: existing });
+  } catch (err: any) {
+    throw new HttpError(500, `Could not regenerate the docker-compose.yml of ${appId}/${tenantId}: ${err?.message || err}. The tenant was left as it was.`, { expose: true });
+  }
+  if (next !== existing) await writeFileAtomic(composePath, next);
 }
 
 export function startTenant(appId: string, tenantId: string): Promise<void> {
@@ -327,6 +390,7 @@ export function startTenant(appId: string, tenantId: string): Promise<void> {
 async function startTenantLocked(appId: string, tenantId: string): Promise<void> {
   const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
+  await reconcileTenantComposeLocked(appId, tenantId);
   await ensureExternalVolumes(composePath);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }
@@ -348,6 +412,7 @@ export function restartTenant(appId: string, tenantId: string): Promise<void> {
 async function restartTenantLocked(appId: string, tenantId: string): Promise<void> {
   const tenantPath = await assertTenantDir(appId, tenantId);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
+  await reconcileTenantComposeLocked(appId, tenantId);
   await ensureExternalVolumes(composePath);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }

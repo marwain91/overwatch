@@ -15,9 +15,7 @@ const router = Router({ mergeParams: true });
 // List tenants for an app
 router.get('/', asyncHandler(async (req, res) => {
   const { appId } = (req.params as Record<string, string>);
-  const allTenants = await listTenants();
-  const appTenants = appId ? allTenants.filter(t => t.appId === appId) : allTenants;
-  res.json(appTenants);
+  res.json(await listTenants(appId || undefined));
 }));
 
 // Create a new tenant — editor+

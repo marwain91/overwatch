@@ -79,6 +79,49 @@ Messages you may see in `docker logs overwatch`, and what they mean.
 3. **If the migration succeeded but the re-run fails**, the init container is not idempotent. Compose starts a completed init container again on every `up`, so a migration runner must be safe to re-run and exit 0 when there is nothing to do. See [configuration.md](./configuration.md#init-containers-and-depends_on).
 4. To inspect state by hand: `docker ps -a | grep <app>-<tenant>-` — an init container in `Exited (0)` is healthy; any non-zero exit blocks its dependents.
 
+## Shared Legacy Volumes
+
+**Symptom:** The Overwatch log shows `[compose] <app>/<tenant> uses the shared legacy volume '<name>'`, tenants see each other's uploaded files, or a tenant backup contains other tenants' files.
+
+**Cause:** Overwatch v1.8.2 and older gave two kinds of volume the same Docker name in every tenant, and compose does not add the project name to an explicit `name:`. All tenants (of every app) that declared the name shared one volume:
+
+- a `volumes[]` entry without `name_template`, e.g. `uploads`;
+- a backup path the service does not mount itself, named `<service>-<local>`, e.g. `backend-exports`.
+
+Each tenant then reads and writes the others' files, every tenant backup copies all of them, a restore writes into the shared volume, and deleting one tenant (or a failed create) could remove the volume with everyone's data.
+
+**What Overwatch does now:** new tenants get their own volumes (`<app>-<tenant>-<name>`). An existing tenant keeps exactly the names its `docker-compose.yml` declares, so nothing is moved or renamed on upgrade. Those names are declared `external: true`, so Overwatch never removes them when a tenant is deleted, and every regeneration of the tenant's compose file logs the warning above.
+
+**Detect** (run on each host, in the deployment directory):
+
+```sh
+# Volume names that more than one tenant declares (any version of the compose files)
+for f in apps/*/tenants/*/docker-compose.yml; do
+  awk '/^volumes:/{v=1;next} /^[^ ]/{v=0} v && /^  [^ ]/{sub(/:$/,"",$1); print $1}' "$f"
+done | sort | uniq -c | awk '$1>1'
+
+# Same check on compose files written by v1.8.2 or older (before the upgrade regenerates them)
+grep -H '^    name: ' apps/*/tenants/*/docker-compose.yml | awk '{print $NF}' | sort | uniq -c | awk '$1>1'
+
+# App definitions that produce shared names
+jq -r '.id as $a|.services[]|. as $s|[.volumes[]?.container_path] as $m|(select(.backup.enabled==true)|.backup.paths[]?|select(.container as $c|$m|index($c)|not)|"\($a)/\($s.name) backup -> \($s.name)-\(.local)"),((.volumes//[])[]|select(.name_template==null and .external!=true)|"\($a)/\($s.name) volume \(.name)")' data/apps.d/*.json
+```
+
+**Give one tenant its own volume.** Do one tenant at a time. For tenant `<tenant>` of app `<app>` using shared volume `<old>`, the tenant's own volume is `<app>-<tenant>-<old>`:
+
+1. Back the tenant up.
+2. Stop the tenant in Overwatch.
+3. Copy the shared volume into the tenant's own volume:
+   ```sh
+   docker volume create <app>-<tenant>-<old>
+   docker run --rm -v <old>:/f:ro -v <app>-<tenant>-<old>:/t alpine cp -a /f/. /t/
+   ```
+4. In `apps/<app>/tenants/<tenant>/docker-compose.yml`, delete the `<old>:` entry and its indented lines under the top-level `volumes:`. Leave the service's mount line; the next start rewrites the file.
+5. Start the tenant in Overwatch. Starting regenerates the compose file; with `<old>` no longer declared, the tenant mounts `<app>-<tenant>-<old>`. Compose warns that the volume "already exists but was not created by Docker Compose"; that is expected.
+6. Check the tenant, and that `docker inspect <app>-<tenant>-<service> --format '{{json .Mounts}}'` shows the new volume.
+
+The copy holds every file that was in the shared volume, including other tenants' files. Removing those from each tenant's copy needs knowledge of how the app lays out its files (for example a per-tenant directory or database references). Once no tenant declares `<old>` any more, back it up and remove it with `docker volume rm <old>`.
+
 ## Google OAuth Not Working
 
 **Symptom:** "Google OAuth not configured" error or login fails.

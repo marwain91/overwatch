@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { tenantAppDefMock } from './tenantAppDefMock';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -73,7 +74,7 @@ beforeEach(async () => {
     readTenantTraefik: vi.fn(async () => undefined),
     assertTenantDomainAllowed: vi.fn(async () => {}),
   }));
-  vi.doMock('../services/tenantAppDef', () => ({
+  vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
     readTenantAppDef: vi.fn(async () => baseApp()),
     writeTenantAppDef: vi.fn(async () => undefined),
   }));

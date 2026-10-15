@@ -1,23 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { tenantAppDefMock } from './tenantAppDefMock';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as util from 'util';
 import type { HttpError } from '../utils/httpErrors';
 
-/** execFile mock whose promisified form resolves `{stdout, stderr}` like Node's. */
+/** execFile mock with Node's `(cmd, args, opts, cb)` signature, as runDocker calls it. */
 function withPromisify(
   mock: (cmd: string, args: string[], cb: (err: any, stdout: string, stderr: string) => void) => void,
 ) {
-  const fn = vi.fn(mock) as any;
-  fn[util.promisify.custom] = (cmd: string, args: string[]) =>
-    new Promise((resolve, reject) => {
-      fn(cmd, args, (err: any, stdout: string, stderr: string) => {
-        if (err) reject(err);
-        else resolve({ stdout, stderr });
-      });
-    });
-  return fn;
+  return vi.fn((cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
+    mock(cmd, args, cb);
+    return { on: () => {} };
+  });
 }
 
 let tmpRoot: string;
@@ -113,7 +108,8 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
     getApp: vi.fn(async (id: string) => id === 'shop' ? globalApp : null),
     applyApp,
   }));
-  vi.doMock('../services/envVars', () => ({
+  vi.doMock('../services/envVars', async () => ({
+    ...(await vi.importActual<object>('../services/envVars')),
     generateSharedEnvFile: vi.fn(async () => undefined),
     deleteTenantAllOverrides: vi.fn(),
   }));
@@ -122,7 +118,7 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
     resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/shop/backend:1.2.0'),
   }));
   vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
-  vi.doMock('../services/tenantAppDef', () => ({
+  vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
     readTenantAppDef: vi.fn(async () => tenantSnapshot),
     writeTenantAppDef,
   }));

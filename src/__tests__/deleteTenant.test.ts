@@ -12,7 +12,7 @@ beforeEach(async () => {
   appsDir = path.join(tmpRoot, 'apps');
   tenantPath = path.join(appsDir, 'demo', 'tenants', 'tenant-one');
   await fs.mkdir(tenantPath, { recursive: true });
-  await fs.writeFile(path.join(tenantPath, '.env'), 'DB_NAME=test_demo_tenant-one\n');
+  await fs.writeFile(path.join(tenantPath, '.env'), 'DB_NAME=test_demo_tenant_one\n');
   await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), 'services: {}\n');
 });
 
@@ -27,29 +27,56 @@ afterEach(async () => {
   vi.doUnmock('../services/envVars');
 });
 
+let globalApp: any;
+
 async function loadDeleteTenant(composeDown: (cb: (err: any, stdout: string, stderr: string) => void) => void) {
   const calls: string[] = [];
+  const dropped: string[] = [];
+  const composeCalls: string[][] = [];
   const db = {
     initialize: vi.fn(async () => undefined),
     dropDatabase: vi.fn(async () => { calls.push('dropDatabase'); }),
   };
+  // Adapters prepend their db_prefix, as the real ones do; `dropped` holds full names.
+  const adapterFor = (prefix: string) => ({
+    ...db,
+    dropDatabase: vi.fn(async (id: string) => { dropped.push(prefix ? `${prefix}_${id}` : id); await db.dropDatabase(); }),
+  });
   const deleteTenantAllOverrides = vi.fn(async () => { calls.push('deleteOverrides'); });
   vi.doMock('child_process', () => ({
-    execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => composeDown(cb)),
+    execFile: vi.fn((_cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
+      composeCalls.push(args);
+      composeDown(cb);
+      return { on: () => {} };
+    }),
   }));
   vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
   vi.doMock('../config', () => ({
     loadConfig: () => ({ project: { name: 'T', prefix: 'test', db_prefix: 'test' } }),
     getAppsDir: () => appsDir,
-    resolveAppDbPrefix: () => 'test',
+    getDataDir: () => path.join(tmpRoot, 'data'),
+    resolveAppDbPrefix: (app?: { db_prefix?: string }) => app?.db_prefix ?? 'test',
   }));
   vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
-  vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => db }));
-  vi.doMock('../services/app', () => ({ getApp: vi.fn(async () => ({ id: 'demo', services: [] })), applyApp: vi.fn() }));
+  vi.doMock('../adapters/database', () => ({
+    getDatabaseAdapter: (app?: { db_prefix?: string }) => adapterFor(app?.db_prefix ?? 'test'),
+  }));
+  vi.doMock('../services/app', () => ({ getApp: vi.fn(async () => globalApp), applyApp: vi.fn() }));
   vi.doMock('../services/envVars', () => ({ generateSharedEnvFile: vi.fn(), deleteTenantAllOverrides }));
   const { deleteTenant } = await import('../services/tenant');
-  return { deleteTenant, db, deleteTenantAllOverrides, calls };
+  return { deleteTenant, db, deleteTenantAllOverrides, calls, dropped, composeCalls };
 }
+
+/** A tenant's frozen app-definition snapshot, as tenant create writes it. */
+async function writeSnapshot(dbPrefix: string) {
+  await fs.writeFile(path.join(tenantPath, 'app-definition.json'), JSON.stringify({
+    id: 'demo', name: 'Demo', domain_template: '*.demo.test',
+    registry: { type: 'ghcr', url: 'ghcr.io', repository: 'acme/demo', auth: { type: 'token' } },
+    services: [{ name: 'web' }], default_image_tag: 'latest', db_prefix: dbPrefix,
+  }));
+}
+
+beforeEach(() => { globalApp = { id: 'demo', services: [] }; });
 
 describe('deleteTenant', () => {
   it('keeps env overrides (and the DB) when compose down fails, so a retry still has them', async () => {
@@ -69,5 +96,76 @@ describe('deleteTenant', () => {
 
     expect(calls).toEqual(['dropDatabase', 'deleteOverrides']);
     await expect(fs.access(tenantPath)).rejects.toThrow();
+  });
+
+  it('drops the database named in the .env of a tenant whose app is in the trash', async () => {
+    globalApp = null; // trashed: getApp() no longer finds it
+    await writeSnapshot('custom');
+    await fs.writeFile(path.join(tenantPath, '.env'), 'DB_NAME=custom_demo_tenant_one\n');
+    const { deleteTenant, dropped } = await loadDeleteTenant(cb => cb(null, '', ''));
+
+    await deleteTenant('demo', 'tenant-one');
+
+    expect(dropped).toEqual(['custom_demo_tenant_one']);
+  });
+
+  it('uses the snapshot db_prefix when the .env has no DB_NAME', async () => {
+    globalApp = null;
+    await writeSnapshot('custom');
+    await fs.writeFile(path.join(tenantPath, '.env'), 'TENANT_DOMAIN=x.demo.test\n');
+    const { deleteTenant, dropped } = await loadDeleteTenant(cb => cb(null, '', ''));
+
+    await deleteTenant('demo', 'tenant-one');
+
+    expect(dropped).toEqual(['custom_demo_tenant_one']);
+  });
+
+  it('refuses to delete, before stopping anything, when the database cannot be determined', async () => {
+    globalApp = null; // no snapshot, no global definition, no DB_NAME
+    await fs.writeFile(path.join(tenantPath, '.env'), 'TENANT_DOMAIN=x.demo.test\n');
+    const { deleteTenant, db, composeCalls } = await loadDeleteTenant(cb => cb(null, '', ''));
+
+    await expect(deleteTenant('demo', 'tenant-one')).rejects.toThrow(/cannot determine the database/i);
+
+    expect(composeCalls).toEqual([]);
+    expect(db.dropDatabase).not.toHaveBeenCalled();
+    await expect(fs.access(tenantPath)).resolves.toBeUndefined();
+  });
+
+  it('refuses to delete when the .env cannot be read', async () => {
+    await fs.rm(path.join(tenantPath, '.env'));
+    await fs.mkdir(path.join(tenantPath, '.env'));
+    const { deleteTenant, db, composeCalls } = await loadDeleteTenant(cb => cb(null, '', ''));
+
+    await expect(deleteTenant('demo', 'tenant-one')).rejects.toThrow(/cannot determine the database/i);
+    expect(composeCalls).toEqual([]);
+    expect(db.dropDatabase).not.toHaveBeenCalled();
+  });
+
+  it('keep data: stops the containers without removing volumes and saves the .env with its DB password', async () => {
+    const env = 'DB_NAME=test_demo_tenant_one\nDB_PASSWORD=s3cret\n';
+    await fs.writeFile(path.join(tenantPath, '.env'), env);
+    const { deleteTenant, db, composeCalls } = await loadDeleteTenant(cb => cb(null, '', ''));
+
+    await deleteTenant('demo', 'tenant-one', true);
+
+    const down = composeCalls.find(a => a.includes('down'))!;
+    expect(down).not.toContain('-v');
+    expect(db.dropDatabase).not.toHaveBeenCalled();
+    const savedDir = path.join(tmpRoot, 'data', 'deleted-tenants', 'demo');
+    const [saved] = await fs.readdir(savedDir);
+    expect(saved).toMatch(/^tenant-one-\d{4}-\d{2}-\d{2}T[\d-]+Z\.env$/);
+    expect(await fs.readFile(path.join(savedDir, saved), 'utf-8')).toBe(env);
+    expect((await fs.stat(path.join(savedDir, saved))).mode & 0o777).toBe(0o600);
+    await expect(fs.access(tenantPath)).rejects.toThrow();
+  });
+
+  it('keep data: refuses to delete anything when the .env cannot be saved', async () => {
+    await fs.writeFile(path.join(tmpRoot, 'data'), 'not a directory');
+    const { deleteTenant, composeCalls } = await loadDeleteTenant(cb => cb(null, '', ''));
+
+    await expect(deleteTenant('demo', 'tenant-one', true)).rejects.toThrow(/save/i);
+    expect(composeCalls).toEqual([]);
+    await expect(fs.access(path.join(tenantPath, '.env'))).resolves.toBeUndefined();
   });
 });
