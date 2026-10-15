@@ -38,6 +38,7 @@ vi.mock('../config', () => ({
   resolveAppDbPrefix: () => 'acme',
 }));
 vi.mock('../adapters/database', () => ({ getDatabaseAdapter: () => db }));
+import { DatabaseResetRefusedError } from '../adapters/database/types';
 vi.mock('../services/app', () => ({ getApp: vi.fn(async () => mockApp), listApps: vi.fn(async () => [mockApp]) }));
 vi.mock('../services/tenantAppDef', () => ({ readTenantAppDef: vi.fn(async () => mockApp) }));
 vi.mock('../services/docker', () => ({ getTenantInfo: vi.fn(async (appId: string, tenantId: string) => ({ appId, tenantId })) }));
@@ -50,10 +51,12 @@ const SAFETY_FULL = SAFETY.repeat(8);
 
 const world = {
   snapshots: {} as Record<string, { id: string; short_id: string; tags?: string[] }[]>,
-  running: true,
+  /** Compose state of the tenant's containers ('' = none running). */
+  running: 'running' as '' | 'running' | 'restarting',
   failSafetyBackup: false,
-  safetyLsError: null as null | string,
-  cpFail: [] as string[], // snapshot ids whose path copy fails
+  /** stderr of copying data out of the containers (safety snapshot). */
+  copyOutError: null as null | string,
+  cpFail: [] as string[], // contents of the data whose copy into the container fails
   failStart: false,
   failStop: false,
 };
@@ -100,7 +103,10 @@ vi.mock('child_process', () => ({
       }
       if (cmd === 'docker' && args[0] === 'compose') {
         const sub = args[args.indexOf('-f') + 2];
-        if (sub === 'ps') return done(null, { stdout: world.running ? 'c0ffee\n' : '', stderr: '' });
+        if (sub === 'ps') {
+          const statuses = args.filter((_a, i) => args[i - 1] === '--status');
+          return done(null, { stdout: world.running && statuses.includes(world.running) ? 'c0ffee\n' : '', stderr: '' });
+        }
         if (sub === 'stop') {
           if (world.failStop) return fail('compose stop failed');
           log.push('stop');
@@ -111,15 +117,17 @@ vi.mock('child_process', () => ({
         }
         return done(null, { stdout: '', stderr: '' });
       }
-      if (cmd === 'docker' && args.includes('ls')) {
-        if (world.safetyLsError) return fail('Command failed', world.safetyLsError);
-        return done(null, { stdout: 'f\n', stderr: '' });
+      if (cmd === 'docker' && args[0] === 'cp' && args[1].includes(':')) {
+        // copy out of the (stopped) containers for the safety snapshot
+        if (world.copyOutError) return fail('Command failed', world.copyOutError);
+        await fs.writeFile(path.join(args[2], 'f'), 'live-files');
+        log.push(`copy-out:${args[1]}`);
+        return done(null, { stdout: '', stderr: '' });
       }
       if (cmd === 'docker' && args[0] === 'cp') {
-        if (args[1].includes(':')) return done(null, { stdout: '', stderr: '' }); // copy out (safety backup)
         const content = await fs.readFile(path.join(args[1].replace(/\/\.$/, ''), 'f'), 'utf-8').catch(() => '');
         if (world.cpFail.includes(content)) return fail('docker cp failed', 'no space left on device');
-        log.push(`cp:${content === SAFETY_FULL ? 'safety' : 'snapshot'}:${args[2]}`);
+        log.push(`cp:${content === 'live-files' ? 'live' : 'snapshot'}:${args[2]}`);
         return done(null, { stdout: '', stderr: '' });
       }
       if (cmd === 'docker' && args[0] === 'exec') log.push(`exec:${args.slice(2).join(' ')}`);
@@ -143,7 +151,7 @@ beforeEach(async () => {
   log.length = 0;
   resticRestores.length = 0;
   backupTags.length = 0;
-  Object.assign(world, { running: true, failSafetyBackup: false, safetyLsError: null, cpFail: [], failStart: false, failStop: false });
+  Object.assign(world, { running: 'running', failSafetyBackup: false, copyOutError: null, cpFail: [], failStart: false, failStop: false });
   world.snapshots = {
     [SNAP]: owned(['app:gadgets', 'tenant:t1']),
     [SAFETY_FULL]: [{ id: SAFETY_FULL, short_id: SAFETY, tags: ['app:gadgets', 'pre-restore', 'tenant:t1'] }],
@@ -202,14 +210,17 @@ describe('restore checks that the snapshot belongs to the app and tenant', () =>
 });
 
 describe('in-place restore safety sequence', () => {
-  it('takes a pre-restore snapshot, stops the tenant, resets and imports, copies, then starts it again', async () => {
+  const changes = () => log.filter(l => /^(reset|import|cp:)/.test(l));
+
+  it('stops the tenant, snapshots it, resets and imports, copies, then starts it again', async () => {
     const r = await restoreBackup('gadgets', SNAP, 't1');
     expect(r).toMatchObject({ success: true, safetySnapshotId: SAFETY_FULL });
     expect(backupTags).toEqual([['app:gadgets', 'tenant:t1', 'pre-restore']]);
+    // Stopped before the safety snapshot: nothing written in between is lost.
     expect(log).toEqual([
       'restic-restore:snapshot',
-      'dump', 'safety-backup',
       'stop',
+      'dump', 'copy-out:gadgets-t1-web:/data/.', 'safety-backup',
       'reset:gadgets_t1',
       'import:gadgets_t1:-- snapshot',
       'cp:snapshot:gadgets-t1-web:/data/',
@@ -217,49 +228,76 @@ describe('in-place restore safety sequence', () => {
     ]);
   });
 
-  it('aborts with nothing changed when the safety snapshot fails', async () => {
+  it('cleans up every staging dir', async () => {
+    await restoreBackup('gadgets', SNAP, 't1');
+    expect(await fs.readdir(`/tmp/rsafe${process.pid}-backups`)).toEqual([]);
+  });
+
+  it('aborts with nothing changed, and starts the tenant again, when the safety snapshot fails', async () => {
     world.failSafetyBackup = true;
     const r = await restoreBackup('gadgets', SNAP, 't1');
     expect(r.success).toBe(false);
     expect(r.error).toMatch(/safety snapshot.*nothing was changed/i);
-    expect(log.filter(l => /^(stop|reset|import|cp:|up)/.test(l))).toEqual([]);
+    expect(changes()).toEqual([]);
+    expect(log.at(-1)).toBe('up:up -d --no-recreate');
   });
 
   it('aborts when the safety snapshot could not save every path', async () => {
-    world.safetyLsError = 'Error response from daemon: container gadgets-t1-web is not running';
+    world.copyOutError = 'Error response from daemon: No such container: gadgets-t1-web';
     const r = await restoreBackup('gadgets', SNAP, 't1');
     expect(r.success).toBe(false);
     expect(r.error).toMatch(/web:\/data/);
-    expect(log.filter(l => /^(stop|reset|import|cp:|up)/.test(l))).toEqual([]);
+    expect(changes()).toEqual([]);
+    expect(log.at(-1)).toBe('up:up -d --no-recreate');
   });
 
-  it('leaves a tenant that was not running stopped', async () => {
-    world.running = false;
+  // A tenant whose containers are stopped (or crash-looping) is the usual reason to restore.
+  it('restores a stopped tenant from its stopped containers and leaves it stopped', async () => {
+    world.running = '';
     const r = await restoreBackup('gadgets', SNAP, 't1');
     expect(r.success).toBe(true);
-    expect(log.some(l => l === 'stop' || l.startsWith('up:'))).toBe(false);
+    expect(log).toContain('copy-out:gadgets-t1-web:/data/.');
+    expect(log.some(l => l.startsWith('up:'))).toBe(false);
+  });
+
+  it('counts a restarting (crash-looping) tenant as running', async () => {
+    world.running = 'restarting';
+    await restoreBackup('gadgets', SNAP, 't1');
+    expect(log.indexOf('stop')).toBeLessThan(log.indexOf('dump'));
+    expect(log.at(-1)).toBe('up:up -d --no-recreate');
   });
 
   it('aborts before any change when the tenant cannot be stopped', async () => {
     world.failStop = true;
     const r = await restoreBackup('gadgets', SNAP, 't1');
     expect(r.success).toBe(false);
-    expect(log.some(l => l.startsWith('reset') || l.startsWith('import'))).toBe(false);
+    expect(log.some(l => l === 'dump' || /^(reset|import)/.test(l))).toBe(false);
   });
 
-  it('puts the safety snapshot back when the import fails, and reports both', async () => {
+  it('changes nothing when the database reset is refused, and starts the tenant again', async () => {
+    db.resetDatabase.mockImplementationOnce(async () => { throw new DatabaseResetRefusedError('Database gadgets_t1 was not reset: its role does not exist'); });
+    const r = await restoreBackup('gadgets', SNAP, 't1');
+    expect(r.success).toBe(false);
+    expect(r.rolledBack).toBeUndefined();
+    expect(r.error).toMatch(/Nothing was changed/);
+    expect(changes()).toEqual([]);
+    expect(log.at(-1)).toBe('up:up -d --no-recreate');
+  });
+
+  it('puts the safety snapshot back from its local copy when the import fails, and reports both', async () => {
     db.restoreDatabase.mockImplementationOnce(async () => { log.push('import-failed'); throw new Error('ERROR 1064 near ...'); });
     const r = await restoreBackup('gadgets', SNAP, 't1');
     expect(r).toMatchObject({ success: false, rolledBack: true, safetySnapshotId: SAFETY_FULL });
     expect(r.error).toMatch(/database import failed/i);
     expect(r.error).toMatch(/rolled back.*5afe0001/i);
     expect(r.error).not.toMatch(/1064/);
+    // No second download: the rollback does not depend on the repository.
+    expect(resticRestores).toEqual([SNAP_FULL]);
     expect(log.slice(log.indexOf('import-failed'))).toEqual([
       'import-failed',
-      'restic-restore:safety',
       'reset:gadgets_t1',
-      'import:gadgets_t1:-- safety',
-      'cp:safety:gadgets-t1-web:/data/',
+      'import:gadgets_t1:-- live',
+      'cp:live:gadgets-t1-web:/data/',
       'up:up -d --no-recreate',
     ]);
   });
@@ -269,7 +307,7 @@ describe('in-place restore safety sequence', () => {
     const r = await restoreBackup('gadgets', SNAP, 't1');
     expect(r).toMatchObject({ success: false, rolledBack: true });
     expect(r.error).toMatch(/\/data/);
-    expect(log).toContain('import:gadgets_t1:-- safety');
+    expect(log).toContain('import:gadgets_t1:-- live');
   });
 
   it('reports a failed rollback and leaves the tenant stopped', async () => {
@@ -294,8 +332,10 @@ describe('in-place restore safety sequence', () => {
     expect(r.safetySnapshotId).toBe(SAFETY_FULL);
   });
 
-  it('explains a Postgres dump that names another tenant role', async () => {
-    db.restoreDatabase.mockImplementationOnce(async () => { throw new Error('psql restore exited with code 3: ERROR:  must be able to SET ROLE "acme_gadgets_src"'); });
+  it('explains a Postgres dump that gives its tables to another tenant role', async () => {
+    db.restoreDatabase.mockImplementationOnce(async () => {
+      throw new Error('psql restore exited with code 3: ERROR:  restored objects are owned by role(s) acme_gadgets_src instead of acme_gadgets_t1');
+    });
     const r = await restoreBackupLocked('gadgets', SNAP, 't1', { createNew: true, newDomain: 'x.example.com', containersStopped: true });
     expect(r.success).toBe(false);
     expect(r.error).toMatch(/older Overwatch version/);

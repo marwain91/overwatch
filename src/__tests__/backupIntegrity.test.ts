@@ -57,7 +57,7 @@ vi.mock('../services/docker', () => ({
 }));
 
 // Behaviour switches for the docker/restic mock
-const behaviour = { lsError: null as null | string, cpError: null as null | string, restoreDir: '', loopData: false, noData: false };
+const behaviour = { copyOutError: null as null | string, cpError: null as null | string, restoreDir: '', loopData: false, noData: false };
 const cpTimeouts: Array<number | undefined> = [];
 const dockerCmds: string[][] = [];
 let metadata: any = {};
@@ -98,9 +98,8 @@ vi.mock('child_process', () => ({
         return done(null, { stdout: out.join('\n'), stderr: '' });
       }
       if (cmd === 'docker') dockerCmds.push(args);
-      if (cmd === 'docker' && args.includes('ls')) {
-        if (behaviour.lsError) return fail('Command failed', behaviour.lsError);
-        return done(null, { stdout: 'file.txt\n', stderr: '' });
+      if (cmd === 'docker' && args[0] === 'cp' && args[1].includes(':') && behaviour.copyOutError) {
+        return fail('Command failed', behaviour.copyOutError);
       }
       if (cmd === 'docker' && args[0] === 'cp') {
         cpTimeouts.push(opts?.timeout);
@@ -127,7 +126,7 @@ describe('backup/restore integrity', () => {
     vi.clearAllMocks();
     mockReadTenantAppDef.mockImplementation(async () => mockApp);
     lockLog.length = 0; dockerCmds.length = 0;
-    behaviour.lsError = null; behaviour.cpError = null; behaviour.loopData = false; behaviour.noData = false; backedUpMetadata = undefined;
+    behaviour.copyOutError = null; behaviour.cpError = null; behaviour.loopData = false; behaviour.noData = false; backedUpMetadata = undefined;
     metadata = { appId: 'gadgets', tenants: ['t1'] };
     process.env.RESTIC_PASSWORD = 'test';
     process.env.S3_ENDPOINT = 'https://s3';
@@ -157,8 +156,8 @@ describe('backup/restore integrity', () => {
     expect(mockRestore).toHaveBeenCalledWith('proj_t1', expect.any(String));
   });
 
-  it('records an exec ls failure (stopped container) as an incomplete path', async () => {
-    behaviour.lsError = 'Error response from daemon: container x is not running';
+  it('records a path that could not be copied (container removed) as an incomplete path', async () => {
+    behaviour.copyOutError = 'Error response from daemon: No such container: gadgets-t1-web';
     const r = await createBackup('gadgets', 't1');
     expect(r.success).toBe(true);
     const meta = backedUpMetadata;
@@ -166,10 +165,18 @@ describe('backup/restore integrity', () => {
     expect(meta.missingPaths[0]).toMatchObject({ service: 'web', path: '/data' });
   });
 
-  it('treats "No such file or directory" as an empty path, not incomplete', async () => {
-    behaviour.lsError = "ls: /data: No such file or directory";
+  it('treats a path missing in the container as empty, not incomplete', async () => {
+    behaviour.copyOutError = 'Error response from daemon: Could not find the file /data/. in container gadgets-t1-web';
     await createBackup('gadgets', 't1');
     expect(backedUpMetadata.incomplete).toBeUndefined();
+  });
+
+  // exec needs a running container; docker cp also reads a stopped one.
+  it('copies data out without exec, so a stopped tenant is backed up completely', async () => {
+    const r = await createBackup('gadgets', 't1');
+    expect(r.incomplete).toBeUndefined();
+    expect(dockerCmds.some(a => a[0] === 'exec')).toBe(false);
+    expect(dockerCmds.find(a => a[0] === 'cp')).toEqual(['cp', 'gadgets-t1-web:/data/.', expect.stringMatching(/\/t1\/data\/$/)]);
   });
 
   // In place a failed copy rolls the tenant back (restoreSafety.test.ts); a

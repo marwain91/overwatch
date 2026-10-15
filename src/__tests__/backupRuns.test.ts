@@ -49,26 +49,28 @@ vi.mock('../services/fileLock', async () => {
     withTenantLock: async (a: string, t: string, fn: () => Promise<unknown>, opts?: unknown) => {
       lockCalls.push({ key: `${a}/${t}`, opts });
       if (lockBusy) throw new ConflictError(`Tenant '${a}/${t}' is busy: another operation has held it for over 10s. Try again shortly.`);
-      return fn();
+      order.push('lock');
+      try { return await fn(); } finally { order.push('unlock'); }
     },
   };
 });
 
-const behaviour = { lsError: null as null | string };
+const behaviour = { copyOutError: null as null | string };
+const order: string[] = [];
 const stagedDirs: string[] = [];
 vi.mock('child_process', () => ({
   execFile: (cmd: string, args: string[], opts: any, cb?: Function) => {
     const done = typeof opts === 'function' ? opts : cb!;
     (async () => {
       if (cmd === 'restic' && args[0] === 'backup') {
+        order.push('upload');
         stagedDirs.push(args[1]);
         const st = await fs.stat(args[1]);
         expect(st.mode & 0o777).toBe(0o700);
         return done(null, { stdout: '{"message_type":"summary","snapshot_id":"abc"}', stderr: '' });
       }
-      if (cmd === 'docker' && args.includes('ls')) {
-        if (behaviour.lsError) return done(Object.assign(new Error('Command failed'), { stderr: behaviour.lsError }));
-        return done(null, { stdout: 'file.txt\n', stderr: '' });
+      if (cmd === 'docker' && args[0] === 'cp' && behaviour.copyOutError) {
+        return done(Object.assign(new Error('Command failed'), { stderr: behaviour.copyOutError }));
       }
       return done(null, { stdout: '', stderr: '' });
     })();
@@ -96,7 +98,8 @@ beforeEach(async () => {
   mockDump.mockResolvedValue(undefined);
   lockCalls.length = 0;
   lockBusy = false;
-  behaviour.lsError = null;
+  behaviour.copyOutError = null;
+  order.length = 0;
   stagedDirs.length = 0;
   events.length = 0;
   eventBus.on('backup:completed', onCompleted);
@@ -124,6 +127,13 @@ describe('createBackup', () => {
     expect(lockCalls[0].opts.waitMs).toBeLessThanOrEqual(30_000);
   });
 
+  // The upload can take an hour; updates and restarts of the tenant must not wait for it.
+  it('releases the tenant lock once the data is captured, before the upload', async () => {
+    await addTenant('t1');
+    await createBackup('gadgets', 't1');
+    expect(order).toEqual(['lock', 'unlock', 'upload']);
+  });
+
   it('reports a busy tenant as a failed backup, with an event', async () => {
     await addTenant('t1');
     lockBusy = true;
@@ -136,7 +146,7 @@ describe('createBackup', () => {
 
   it('surfaces paths that could not be copied as incomplete', async () => {
     await addTenant('t1');
-    behaviour.lsError = 'Error response from daemon: container x is not running';
+    behaviour.copyOutError = 'Error response from daemon: No such container: gadgets-t1-web';
     const r = await createBackup('gadgets', 't1');
     expect(r).toMatchObject({ success: true, incomplete: true, missingPaths: ['web:/data'] });
     expect(events).toEqual([['backup:completed', { appId: 'gadgets', tenantId: 't1', incomplete: true, missingPaths: ['web:/data'] }]]);
