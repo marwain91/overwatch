@@ -46,11 +46,12 @@ beforeEach(async () => {
   }));
   vi.doMock('../services/app', () => ({ getApp: vi.fn(async () => ({ id: 'demo', services: [] })), applyApp: vi.fn(), listApps: vi.fn(async () => []) }));
   vi.doMock('../services/envVars', () => ({ generateSharedEnvFile: vi.fn(), deleteTenantAllOverrides: vi.fn() }));
+  vi.doMock('../adapters/registry', () => ({ ensureRegistryLogin: vi.fn(async () => undefined) }));
 });
 
 afterEach(async () => {
   vi.resetModules();
-  for (const m of ['child_process', '../config', '../config/loader', '../adapters/database', '../services/app', '../services/envVars']) vi.doUnmock(m);
+  for (const m of ['child_process', '../config', '../config/loader', '../adapters/database', '../services/app', '../services/envVars', '../adapters/registry']) vi.doUnmock(m);
   await fs.rm(root, { recursive: true, force: true });
 });
 

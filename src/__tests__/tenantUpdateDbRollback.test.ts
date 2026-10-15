@@ -98,18 +98,16 @@ afterEach(async () => {
     '../services/app', '../services/tenantTraefik', '../services/envVars', '../services/manifestExtractor', '../adapters/registry']) vi.doUnmock(m);
 });
 
-const tempDumpDirs = async () => (await fs.readdir(os.tmpdir())).filter(n => n.startsWith('overwatch-update-') && !n.startsWith('overwatch-update-db-'));
-
 describe('tenant update and the database', () => {
   it('dumps the database before the new version starts, and discards the dump on success', async () => {
-    const before = await tempDumpDirs();
     const { updateTenant } = await import('../services/tenant');
     await updateTenant('shop', 't1', 'v2');
 
     expect(events.slice(0, 2)).toEqual(['db:dump', 'docker:up-new']);
     expect(db.resetDatabase).not.toHaveBeenCalled();
     expect(db.restoreDatabase).not.toHaveBeenCalled();
-    expect(await tempDumpDirs()).toEqual(before);
+    const dumpPath = db.dumpDatabase.mock.calls[0][1] as string;
+    await expect(fs.access(path.dirname(dumpPath))).rejects.toThrow();
   });
 
   it('restores the pre-update database when the new version fails to start, before the old one starts again', async () => {

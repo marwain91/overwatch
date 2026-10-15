@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { updateDbMethods } from './updateDbMock';
 
 /**
  * Every docker / docker compose call tenant.ts makes goes through
@@ -57,6 +58,7 @@ beforeEach(async () => {
   vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
   vi.doMock('../adapters/database', () => ({
     getDatabaseAdapter: () => ({
+      ...updateDbMethods(),
       initialize: vi.fn(async () => undefined),
       databaseExists: vi.fn(async () => false),
       createDatabase: vi.fn(async () => ({ created: true, userCreated: true })),
