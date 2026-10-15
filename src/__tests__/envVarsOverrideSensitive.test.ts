@@ -8,7 +8,7 @@ let tmpRoot: string;
 beforeEach(async () => {
   vi.resetModules();
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-override-sensitive-'));
-  vi.doMock('../config', () => ({ getDataDir: () => tmpRoot }));
+  vi.doMock('../config', () => ({ getDataDir: () => tmpRoot, getAppsDir: () => path.join(tmpRoot, 'apps') }));
   await fs.writeFile(path.join(tmpRoot, 'env-vars.json'), JSON.stringify({
     demo: [
       { key: 'API_TOKEN', value: 'global-secret', sensitive: true, createdAt: 'x', updatedAt: 'x' },
