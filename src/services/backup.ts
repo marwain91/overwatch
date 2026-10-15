@@ -1069,8 +1069,33 @@ export async function restoreBackupLocked(
   }
 }
 
+/**
+ * Why a dump cannot be imported back into the server it was taken from, for
+ * the cases known to fail every time. Checked before an in-place restore
+ * resets anything: the import would fail after the reset, and the rollback
+ * (dumped by the same server) the same way.
+ */
+async function unrestorableDumpReason(file: string): Promise<string | null> {
+  // mysqldump writes it in the header, before any table.
+  const handle = await fs.open(file, 'r');
+  try {
+    const { buffer, bytesRead } = await handle.read(Buffer.alloc(256 * 1024), 0, 256 * 1024, 0);
+    if (/@@GLOBAL\.GTID_PURGED/i.test(buffer.subarray(0, bytesRead).toString('utf-8'))) {
+      return 'the database dump sets @@GLOBAL.GTID_PURGED (MySQL with GTID mode on), which cannot be imported into the server it was taken from';
+    }
+  } finally {
+    await handle.close();
+  }
+  return null;
+}
+
 async function restoreInPlace(target: RestoreTarget, staged: StagedSnapshot, dirs: string[]): Promise<RestoreBackupResult> {
   const { appId, tenantId } = target;
+
+  const targetDumpProblem = await unrestorableDumpReason(path.join(staged.tenantDir, 'database.sql'));
+  if (targetDumpProblem) {
+    return { success: false, error: `Restore aborted: ${targetDumpProblem}. Nothing was changed.` };
+  }
 
   // 1. Nothing may write while the data is saved and replaced: stop (not down)
   //    the tenant first, so the safety snapshot is exactly what gets replaced.
@@ -1110,6 +1135,11 @@ async function restoreInPlace(target: RestoreTarget, staged: StagedSnapshot, dir
         + "(see server logs; a tenant whose containers were removed must be started once first). Nothing was changed.",
       { safetySnapshotId },
     );
+  }
+
+  const safetyDumpProblem = await unrestorableDumpReason(path.join(safety.staged.tenantDir, 'database.sql'));
+  if (safetyDumpProblem) {
+    return abort(`Restore aborted: ${safetyDumpProblem}, so a failed restore could not be rolled back. Nothing was changed.`, { safetySnapshotId });
   }
 
   // 3. Replace the data; 4. on failure, put the safety snapshot back.

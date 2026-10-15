@@ -332,6 +332,19 @@ describe('in-place restore safety sequence', () => {
     expect(r.safetySnapshotId).toBe(SAFETY_FULL);
   });
 
+  // The import would fail after the reset, and the rollback (dumped by the same server) the same way.
+  it('refuses, with nothing changed, a MySQL dump that sets GTID_PURGED', async () => {
+    db.dumpDatabase.mockImplementationOnce(async (_id: string, out: string) => {
+      log.push('dump');
+      await fs.writeFile(out, "-- MySQL dump\nSET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ 'a1b2:1-9';\nCREATE TABLE t (x int);\n");
+    });
+    const r = await restoreBackup('gadgets', SNAP, 't1');
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/GTID_PURGED[\s\S]*Nothing was changed/);
+    expect(changes()).toEqual([]);
+    expect(log.at(-1)).toBe('up:up -d --no-recreate');
+  });
+
   it('explains a Postgres dump that gives its tables to another tenant role', async () => {
     db.restoreDatabase.mockImplementationOnce(async () => {
       throw new Error('psql restore exited with code 3: ERROR:  restored objects are owned by role(s) acme_gadgets_src instead of acme_gadgets_t1');

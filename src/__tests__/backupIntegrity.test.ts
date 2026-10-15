@@ -22,7 +22,8 @@ const mockApp = {
   createdAt: '', updatedAt: '',
 };
 
-const mockDump = vi.fn().mockResolvedValue(undefined);
+// Like the adapters, the dump writes its file (a restore checks the safety dump).
+const mockDump = vi.fn(async (_id: string, out: string) => { await fs.writeFile(out, '-- dump'); });
 const mockRestore = vi.fn().mockResolvedValue(undefined);
 vi.mock('../config', () => ({
   loadConfig: () => ({ project: { name: 'acme', prefix: 'acme', db_prefix: 'acme' } }),
