@@ -16,6 +16,7 @@ let tenantPath: string;
 let tenantTraefik: any;
 let globalApp: any;
 const calls: Array<{ args: string[]; compose?: string }> = [];
+const logins: string[] = [];
 
 function app(services?: any[]) {
   return {
@@ -42,6 +43,7 @@ beforeEach(async () => {
   appsDir = path.join(tmpRoot, 'apps');
   tenantPath = path.join(appsDir, 'shop', 'tenants', 't1');
   calls.length = 0;
+  logins.length = 0;
   tenantTraefik = undefined;
   globalApp = app();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -58,6 +60,9 @@ beforeEach(async () => {
   vi.doMock('../config/loader', () => ({ loadConfig: () => config, resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
   vi.doMock('../services/app', () => ({ getApp: vi.fn(async () => globalApp), listApps: vi.fn(async () => [globalApp]) }));
   vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => tenantTraefik) }));
+  vi.doMock('../adapters/registry', () => ({
+    ensureRegistryLogin: vi.fn(async (a: any) => { logins.push(`${a.id}@${calls.length}`); }),
+  }));
   await fs.mkdir(tenantPath, { recursive: true });
   await fs.writeFile(path.join(tenantPath, '.env'), 'TENANT_DOMAIN=t1.example.test\nIMAGE_TAG=v1\n');
 });
@@ -66,7 +71,7 @@ afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
   vi.restoreAllMocks();
   vi.resetModules();
-  for (const m of ['../utils/runDocker', '../config', '../config/loader', '../services/app', '../services/tenantTraefik']) vi.doUnmock(m);
+  for (const m of ['../utils/runDocker', '../config', '../config/loader', '../services/app', '../services/tenantTraefik', '../adapters/registry']) vi.doUnmock(m);
 });
 
 /** The tenant's compose file as it was generated before any override was set. */
@@ -115,6 +120,15 @@ describe('tenant start/restart apply the current compose definition', () => {
     const doc = yaml.load(calls.find(c => c.args.includes('up'))!.compose!) as any;
     expect(doc.services.web.volumes).toEqual(['uploads:/data']);
     expect(doc.volumes).toEqual({ uploads: { external: true } });
+  });
+
+  it.each(['startTenant', 'restartTenant'] as const)('%s logs in to the app registry before compose up, which may pull', async (fn) => {
+    await writeCurrentCompose();
+    const docker = await import('../services/docker');
+    await docker[fn]('shop', 't1');
+
+    const upIndex = calls.findIndex(c => c.args.includes('up'));
+    expect(logins).toEqual([`shop@${upIndex}`]);
   });
 
   it('starts a tenant without any app definition with its existing compose file', async () => {

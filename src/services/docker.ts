@@ -1,7 +1,8 @@
 import Docker from 'dockerode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { listApps } from './app';
+import { getApp, listApps } from './app';
+import { ensureRegistryLogin } from '../adapters/registry';
 import type { AppDefinition } from '../models/app';
 import { assertTenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { runDocker } from '../utils/runDocker';
@@ -383,6 +384,12 @@ export async function reconcileTenantComposeLocked(appId: string, tenantId: stri
   if (next !== existing) await writeFileAtomic(composePath, next);
 }
 
+/** `compose up` pulls an image that is missing locally, so log in to the app's registry first. */
+async function loginBeforeUp(appId: string): Promise<void> {
+  const app = await getApp(appId);
+  if (app) await ensureRegistryLogin(app);
+}
+
 export function startTenant(appId: string, tenantId: string): Promise<void> {
   return withTenantLock(appId, tenantId, () => startTenantLocked(appId, tenantId));
 }
@@ -392,6 +399,7 @@ async function startTenantLocked(appId: string, tenantId: string): Promise<void>
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await reconcileTenantComposeLocked(appId, tenantId);
   await ensureExternalVolumes(composePath);
+  await loginBeforeUp(appId);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }
 
@@ -414,5 +422,6 @@ async function restartTenantLocked(appId: string, tenantId: string): Promise<voi
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await reconcileTenantComposeLocked(appId, tenantId);
   await ensureExternalVolumes(composePath);
+  await loginBeforeUp(appId);
   await runDocker('docker', ['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
 }
