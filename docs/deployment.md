@@ -37,7 +37,7 @@ networks:
     external: true
 ```
 
-> **Note:** The `/root/.docker` mount shares Docker registry credentials so Overwatch can pull tenant images. If your registry doesn't require authentication, you can omit it. When using Traefik, you don't need `ports:` — Traefik routes traffic via the shared Docker network.
+> **Note:** The `/root/.docker` mount shares the host's Docker registry credentials, but Overwatch can read it only when it runs as root (`OVERWATCH_UID=0`); with the default runtime user it is not used. For private registries, set the app's registry `token_env` so Overwatch logs in itself before each pull (see [configuration.md](configuration.md)). If your registry doesn't require authentication, you can omit the mount. When using Traefik, you don't need `ports:` — Traefik routes traffic via the shared Docker network.
 
 ## Network Requirements
 
@@ -71,7 +71,7 @@ When a peer other than the proxy sends `X-Forwarded-For`, Overwatch ignores the 
 | Mount | Description |
 |-------|-------------|
 | `/var/run/docker.sock` | Docker socket for container management |
-| `/root/.docker:ro` | Registry credentials for pulling tenant images (optional) |
+| `/root/.docker:ro` | Host registry credentials, read only when Overwatch runs as root (`OVERWATCH_UID=0`); optional |
 | `./overwatch.yaml` | Infrastructure configuration (mounted read-write so the UI/API can save Traefik changes) |
 | `./data` | Persistent data: `apps.d/`, `apps.runtime.json`, `admin-users.json`, env vars, logs |
 | `./apps` | Auto-managed tenant compose files and `.env` files |
@@ -83,7 +83,7 @@ When a peer other than the proxy sends `X-Forwarded-For`, Overwatch ignores the 
 - [ ] Add initial admin emails via `ALLOWED_ADMIN_EMAILS`
 - [ ] Configure database credentials
 - [ ] Connect to shared Docker network (same network as database)
-- [ ] Mount Docker credentials (`/root/.docker`) if using private registry
+- [ ] For a private registry, set the app's registry `token_env` (the `/root/.docker` mount is used only when running as root)
 - [ ] Configure reverse proxy (Traefik/nginx) for HTTPS
 - [ ] Check the startup log for `[proxy-trust]`: it should say `X-Forwarded-For trusted only from '<prefix>-traefik'`. If it warns instead, see [Client IPs behind the reverse proxy](#client-ips-behind-the-reverse-proxy)
 - [ ] Set appropriate file permissions on mounted volumes
