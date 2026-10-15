@@ -45,4 +45,37 @@ describe('G3 destructiveRateLimit — only gates destructive requests', () => {
   });
 });
 
+describe('destructiveRateLimit — restore, prune and process kill count as destructive', () => {
+  const req = (method: string, baseUrl: string, path: string) =>
+    ({ method, baseUrl, path, query: {}, body: {}, ip: '1.2.3.4', socket: { remoteAddress: '1.2.3.4' } }) as any;
+  const res = () => {
+    const r: any = { statusCode: 200 };
+    r.status = (s: number) => { r.statusCode = s; return r; };
+    r.set = () => r;
+    r.json = () => r;
+    return r;
+  };
+  const allowedOf = (make: () => any, n = 3) => {
+    const mw = destructiveRateLimit({ windowMs: 1_000, maxRequests: 1 });
+    let allowed = 0;
+    for (let i = 0; i < n; i++) mw(make(), res(), () => { allowed++; });
+    return allowed;
+  };
 
+  it.each([
+    ['backup restore', '/api/apps/app1/backups', '/abc123/restore'],
+    ['backup prune', '/api/apps/app1/backups', '/prune'],
+    ['database process kill', '/api/database', '/processes/42/kill'],
+  ])('limits %s', (_label, baseUrl, path) => {
+    expect(allowedOf(() => req('POST', baseUrl, path))).toBe(1);
+  });
+
+  it.each([
+    ['backup create', '/api/apps/app1/backups', '/'],
+    ['clone backup to a new tenant', '/api/apps/app1/backups', '/abc123/create-tenant'],
+    ['a tenant restart', '/api/apps/app1/tenants', '/t1/restart'],
+    ['a GET of the processes list', '/api/database', '/processes'],
+  ])('does not count %s', (_label, baseUrl, path) => {
+    expect(allowedOf(() => req('POST', baseUrl, path))).toBe(3);
+  });
+});

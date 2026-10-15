@@ -46,18 +46,31 @@ export function rateLimit(options: RateLimitOptions) {
   };
 }
 
+// POSTs that overwrite or discard data, or kill work in flight, without being a DELETE.
+const DESTRUCTIVE_POST_PATHS = [
+  /\/backups\/[^/]+\/restore\/?$/,
+  /\/backups\/prune\/?$/,
+  /\/database\/processes\/[^/]+\/kill\/?$/,
+];
+
+export function isDestructiveRequest(req: Request): boolean {
+  if (req.method === 'DELETE') return true;
+  if (req.query?.force === 'true') return true;
+  if (req.body && typeof req.body === 'object' && req.body.force === true) return true;
+  if (req.method !== 'POST') return false;
+  const fullPath = (req.baseUrl || '') + (req.path || '');
+  return DESTRUCTIVE_POST_PATHS.some(re => re.test(fullPath));
+}
+
 /**
- * Apply a tighter rate limiter only when the request is destructive (DELETE or ?force=true).
- * Non-destructive requests pass through without consuming from the destructive quota.
+ * Apply a tighter rate limiter only to destructive requests: DELETE, force, and
+ * the POSTs above (backup restore and prune, DB process kill). Other requests
+ * pass through without consuming from the destructive quota.
  */
 export function destructiveRateLimit(options: RateLimitOptions) {
   const limiter = rateLimit(options);
   return (req: Request, res: Response, next: NextFunction) => {
-    const isDestructive =
-      req.method === 'DELETE' ||
-      req.query?.force === 'true' ||
-      (req.body && typeof req.body === 'object' && req.body.force === true);
-    if (!isDestructive) return next();
+    if (!isDestructiveRequest(req)) return next();
     return limiter(req, res, next);
   };
 }

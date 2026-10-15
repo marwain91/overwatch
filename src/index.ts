@@ -140,8 +140,8 @@ async function start() {
   app.use('/api/admin-users', authMiddleware, apiLimiter, destructiveLimiter, auditLog, adminUsersRouter);
   app.use('/api/status', authMiddleware, apiLimiter, auditLog, statusRouter);
   app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
-  app.use('/api/monitoring', authMiddleware, apiLimiter, auditLog, monitoringRouter);
-  app.use('/api/database', authMiddleware, apiLimiter, auditLog, databaseRouter);
+  app.use('/api/monitoring', authMiddleware, apiLimiter, destructiveLimiter, auditLog, monitoringRouter);
+  app.use('/api/database', authMiddleware, apiLimiter, destructiveLimiter, auditLog, databaseRouter);
   app.use('/api/traefik', authMiddleware, apiLimiter, destructiveLimiter, auditLog, traefikRouter);
 
   // MCP server + OAuth endpoints — opt-in. Mounted before the SPA fallback so

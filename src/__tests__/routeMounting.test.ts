@@ -26,6 +26,12 @@ describe('src/index.ts route mounting', () => {
     }
   });
 
+  it('mounts the destructive limiter on /api/monitoring and /api/database', async () => {
+    const src = await fs.readFile(INDEX_PATH, 'utf-8');
+    expect(src).toMatch(/app\.use\('\/api\/monitoring',[^\n]*\bdestructiveLimiter\b/);
+    expect(src).toMatch(/app\.use\('\/api\/database',[^\n]*\bdestructiveLimiter\b/);
+  });
+
   it('audits /api/status mutations (container restart)', async () => {
     const src = await fs.readFile(INDEX_PATH, 'utf-8');
     expect(src).toMatch(/app\.use\('\/api\/status',[^\n]*\bauditLog\b/);
