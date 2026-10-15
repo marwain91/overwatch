@@ -9,6 +9,7 @@ import { loginToAllRegistries } from './adapters/registry';
 import { listApps, setAppsChangedHook } from './services/app';
 import { authMiddleware } from './middleware/auth';
 import { spaFallback } from './middleware/spaFallback';
+import { securityHeaders } from './middleware/securityHeaders';
 import { rateLimit, destructiveRateLimit } from './middleware/rateLimit';
 import { auditLog } from './middleware/audit';
 import { validateAppId } from './middleware/validators';
@@ -100,17 +101,8 @@ async function start() {
   // Middleware
   app.use(express.json({ limit: '1mb' }));
 
-  // CORS — restrict to same origin (SPA served from same host)
-  app.use((_req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    // script-src dropped 'unsafe-inline': a XSS sink in our React bundle or a dep
-    // must not be able to execute inline. Style still needs 'unsafe-inline' for
-    // Tailwind's runtime style injection; styles cannot exfiltrate tokens.
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://accounts.google.com wss:; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'");
-    next();
-  });
+  // CORS — restrict to same origin (SPA served from same host); CSP, HSTS, framing.
+  app.use(securityHeaders);
 
   const staticPath = path.join(__dirname, '../ui/dist');
   app.use(express.static(staticPath));
