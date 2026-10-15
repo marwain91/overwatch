@@ -11,6 +11,7 @@ import { jsonlLogFor } from '../utils/jsonlLog';
 import { readJsonStrict } from '../utils/atomicJson';
 import { withFileLock } from './fileLock';
 import { listApps } from './app';
+import { listTenantDirs } from './tenantStore';
 
 type AlertRule = NonNullable<OverwatchConfig['alert_rules']>[number];
 
@@ -189,14 +190,31 @@ function evictStaleContainers(rules: AlertRule[], now: number): void {
 
 const BACKUP_STALE_CHECK_MS = 5 * 60 * 1000;
 const DEFAULT_BACKUP_MAX_AGE_HOURS = 26;
-// appId -> last successful backup, or when the app was first seen with a
-// schedule (in memory: after a restart the age counts from the restart).
+// `appId/tenantId` -> time of the last successful backup. A tenant seen for
+// the first time starts from its newest snapshot in the repository (so a
+// restart does not reset the age), or from now when it has none.
 const lastBackupSuccess = new Map<string, number>();
 let backupStaleTimer: ReturnType<typeof setInterval> | undefined;
 
 /** Alert scope of a backup; the prefix keeps it apart from container names. */
 function backupScope(appId: string, tenantId?: string): string {
   return tenantId ? `backup:${appId}/${tenantId}` : `backup:${appId}`;
+}
+
+/** tenantId -> time of its newest snapshot. Best effort: an unreachable repository gives none. */
+async function newestSnapshotTimes(appId: string): Promise<Map<string, number>> {
+  const newest = new Map<string, number>();
+  try {
+    // Imported lazily: only backup_stale needs the backup service graph.
+    const { listSnapshotsCached } = await import('./backupCache');
+    for (const s of await listSnapshotsCached(appId)) {
+      const time = Date.parse(s.time);
+      if (s.tenantId && Number.isFinite(time)) newest.set(s.tenantId, Math.max(newest.get(s.tenantId) ?? 0, time));
+    }
+  } catch (err: any) {
+    console.error(`[AlertEngine] Backup staleness check could not list the snapshots of '${appId}': ${err?.message || err}`);
+  }
+  return newest;
 }
 
 async function checkBackupStaleness(rules: AlertRule[]): Promise<void> {
@@ -207,25 +225,42 @@ async function checkBackupStaleness(rules: AlertRule[]): Promise<void> {
     console.error(`[AlertEngine] Backup staleness check could not list apps: ${err?.message || err}`);
     return;
   }
-  const now = Date.now();
-  const scheduled = new Set(apps.filter(a => a.backup?.enabled && a.backup.schedule).map(a => a.id));
 
-  for (const appId of [...lastBackupSuccess.keys()]) {
-    if (scheduled.has(appId)) continue;
-    // Backups disabled or app removed: nothing is stale any more.
-    for (const rule of rules) resolveAlert(rule, backupScope(appId));
-    lastBackupSuccess.delete(appId);
-  }
-
-  for (const appId of scheduled) {
-    if (!lastBackupSuccess.has(appId)) lastBackupSuccess.set(appId, now);
-    const age = now - lastBackupSuccess.get(appId)!;
-    for (const rule of rules) {
-      const maxAgeHours = rule.condition.max_age_hours ?? DEFAULT_BACKUP_MAX_AGE_HOURS;
-      if (age > maxAgeHours * 3600 * 1000) {
-        fireAlert(rule, backupScope(appId), `No successful backup of app '${appId}' in the last ${maxAgeHours} h`);
+  const current = new Set<string>();
+  const unlisted = new Set<string>(); // apps whose tenants could not be listed: keep their state
+  for (const app of apps) {
+    if (!app.backup?.enabled || !app.backup.schedule) continue;
+    let tenantIds: string[];
+    try {
+      tenantIds = (await listTenantDirs(app.id)).map(t => t.tenantId);
+    } catch (err: any) {
+      // The scheduled run fails the same way and reports it (backup_failed).
+      console.error(`[AlertEngine] Backup staleness check could not list the tenants of '${app.id}': ${err?.message || err}`);
+      unlisted.add(app.id);
+      continue;
+    }
+    const newest = tenantIds.some(t => !lastBackupSuccess.has(`${app.id}/${t}`)) ? await newestSnapshotTimes(app.id) : null;
+    const now = Date.now();
+    for (const tenantId of tenantIds) {
+      const key = `${app.id}/${tenantId}`;
+      current.add(key);
+      if (!lastBackupSuccess.has(key)) lastBackupSuccess.set(key, Math.min(now, newest?.get(tenantId) ?? now));
+      const age = now - lastBackupSuccess.get(key)!;
+      for (const rule of rules) {
+        const maxAgeHours = rule.condition.max_age_hours ?? DEFAULT_BACKUP_MAX_AGE_HOURS;
+        if (age > maxAgeHours * 3600 * 1000) {
+          fireAlert(rule, backupScope(app.id, tenantId), `No successful backup of ${key} in the last ${maxAgeHours} h`, tenantId);
+        }
       }
     }
+  }
+
+  // Tenant deleted, or backups of its app disabled: nothing is stale any more.
+  for (const key of [...lastBackupSuccess.keys()]) {
+    const [appId, tenantId] = key.split('/');
+    if (current.has(key) || unlisted.has(appId)) continue;
+    for (const rule of rules) resolveAlert(rule, backupScope(appId, tenantId));
+    lastBackupSuccess.delete(key);
   }
 }
 
@@ -243,8 +278,11 @@ function startBackupRules(
   });
 
   subscribe('backup:completed', (e) => {
-    lastBackupSuccess.set(e.appId, Date.now());
-    for (const rule of staleRules) resolveAlert(rule, backupScope(e.appId));
+    if (e.tenantId) {
+      // Incomplete backups count: the database is in them (backup_failed reports the rest).
+      lastBackupSuccess.set(`${e.appId}/${e.tenantId}`, Date.now());
+      for (const rule of staleRules) resolveAlert(rule, backupScope(e.appId, e.tenantId));
+    }
 
     const scope = backupScope(e.appId, e.tenantId);
     for (const rule of failedRules) {

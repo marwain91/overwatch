@@ -142,7 +142,7 @@ Restore, create-tenant and delete only accept a snapshot tagged for the app (`ap
 }
 ```
 
-The tenant must be free within 10 s; a tenant busy with an update or restore is a `409`. A response with `"incomplete": true` lists in `missingPaths` (`service:/path`) the service paths that could not be copied; the snapshot has the database and the rest.
+The tenant must be free within 10 s; a tenant busy with an update or restore is a `409`. The tenant is locked while its data is captured, not during the upload. A response with `"incomplete": true` lists in `missingPaths` (`service:/path`) the service paths that could not be copied; the snapshot has the database and the rest.
 
 **Restore request** (`X-Confirm-Id: acme`, the target tenant):
 ```json
@@ -154,13 +154,13 @@ The tenant must be free within 10 s; a tenant busy with an update or restore is 
 
 The snapshot must have been taken of the target tenant (`tenant:<tenantId>` tag) unless `allowCrossTenant` is `true`. A restore:
 
-1. takes a safety snapshot of the tenant's current data, tagged `pre-restore` (if that fails or misses a path, the restore stops and nothing is changed);
-2. stops the tenant's containers if they are running (`docker compose stop`);
+1. stops the tenant's containers (`docker compose stop`; a running or restarting tenant is started again at the end);
+2. takes a safety snapshot of the tenant's current data, tagged `pre-restore` (if that fails or misses a path, the restore stops, the tenant is started again and nothing is changed; a tenant whose containers were removed must be started once first);
 3. empties and re-imports the database, then copies the backed-up paths;
-4. if the import or a copy fails, puts the safety snapshot back the same way;
-5. starts the containers again if they were running (`up -d --no-recreate`, so init containers run on the restored data).
+4. if the import or a copy fails, puts the safety snapshot back the same way, from the local copy it just made;
+5. starts the containers again if they were running (`up -d --no-recreate`, so init containers run on the restored data). The restore does not wait for the app's health checks.
 
-The response has `safetySnapshotId`. A failed restore answers `500` with an `error` that says what failed and, after the data was touched, `rolledBack` (`true`: the tenant is back on the safety snapshot; `false`: the tenant was left stopped, restore `safetySnapshotId` to recover). Paths are copied into stopped containers, so backed-up paths must be volume mount points or exist in the image.
+The response has `safetySnapshotId`. A failed restore answers `500` with an `error` that says what failed and, after the data was touched, `rolledBack` (`true`: the tenant is back on the safety snapshot; `false`: the tenant was left stopped, restore `safetySnapshotId` to recover). Paths are copied into stopped containers, so backed-up paths must be volume mount points or exist in the image. Files are copied over the existing ones: a file that exists only in the live volume is kept.
 
 When a tenant is created from a backup, its data is copied into the containers while they are stopped (before the app first starts); any snapshot of the app may be used. A path that cannot be copied is reported as a "not restored (copy failed)" warning.
 

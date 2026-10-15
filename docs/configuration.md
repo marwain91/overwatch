@@ -195,7 +195,7 @@ alert_rules:
 Backup rules cover manual and scheduled backups:
 
 - **`backup_failed`** fires when a tenant backup fails, including a tenant that stayed busy with another operation (update, restore) for the backup's 10 s lock wait, and when a backup is *incomplete* (some service paths could not be copied; the message lists them). It also fires, for the app, when a scheduled run cannot start at all (for example its tenant directories cannot be listed). It resolves on the next complete backup of the same tenant; the app-level alert resolves on the next successful backup of any of the app's tenants.
-- **`backup_stale`** fires for each app with a backup `schedule` that has had no successful backup within `max_age_hours`. It is checked every 5 minutes and resolves on the next successful backup. The age is tracked in memory: after an Overwatch restart it counts from the restart, so set `max_age_hours` comfortably above the schedule interval (the default 26 h suits a daily schedule).
+- **`backup_stale`** fires for each tenant of an app with a backup `schedule` that has had no successful backup within `max_age_hours` (an incomplete backup counts; `backup_failed` reports it). It is checked every 5 minutes and resolves on the tenant's next successful backup. After an Overwatch restart the age counts from the tenant's newest snapshot in the repository (or from the restart when there is none or the repository cannot be read). Set `max_age_hours` comfortably above the schedule interval; the default 26 h suits a daily schedule.
 
 ```yaml
 alert_rules:
@@ -528,7 +528,7 @@ Who may sign in, and what they may do, is stored in `data/admin-users.json` and 
 | `S3_SECRET_KEY` | S3 secret key |
 | `RESTIC_PASSWORD` | Restic encryption password |
 
-A tenant backup holds the tenant's database dump, its `.env` and the backed-up service paths, and is tagged `app:<appId>` and `tenant:<tenantId>`. MySQL/MariaDB dumps include triggers, stored routines and events (`--routines --events`, so the database root user needs the privileges to read them); Postgres dumps leave out owners and privileges, and a restore creates the objects as the tenant's role. Dump and restore clients run under `timeout` inside the database container and are stopped after 1 hour. Each tenant is backed up with its own app definition (the one frozen for the image it runs), so a tenant keeps using its backup repository until it is updated. Restore, retention (prune) and repository unlock are described in the [API reference](api.md#backups).
+A tenant backup holds the tenant's database dump, its `.env` and the backed-up service paths, and is tagged `app:<appId>` and `tenant:<tenantId>`. MySQL/MariaDB dumps include triggers, stored routines and events (`--routines --events`, so the database root user needs the privileges to read them); Postgres dumps leave out owners and privileges; a restore runs the dump as a temporary superuser role (created and dropped in the restore's transaction) and then hands everything it created to the tenant's role, so the database admin user must be a superuser. Dump and restore clients run under `timeout` inside the database container and are stopped after 1 hour. Each tenant is backed up with its own app definition (the one frozen for the image it runs), so a tenant keeps using its backup repository until it is updated. Restore, retention (prune) and repository unlock are described in the [API reference](api.md#backups).
 
 ### Admin Access (optional, from app config)
 

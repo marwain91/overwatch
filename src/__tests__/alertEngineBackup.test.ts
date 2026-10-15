@@ -5,10 +5,16 @@ import * as os from 'os';
 
 let dataDir: string;
 let apps: any[] = [];
+/** appId -> tenant ids (tenant directories). */
+let tenants: Record<string, string[]> = {};
+/** appId -> snapshots, newest first (as listSnapshotsCached returns them). */
+let snapshots: Record<string, Array<{ tenantId?: string; time: string }>> = {};
 
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-alert-backup-'));
   apps = [];
+  tenants = {};
+  snapshots = {};
 });
 
 afterEach(async () => {
@@ -17,7 +23,7 @@ afterEach(async () => {
   const { jsonlLogFor } = await import('../utils/jsonlLog');
   await jsonlLogFor(path.join(dataDir, 'alert-history.jsonl')).flush();
   vi.resetModules();
-  for (const m of ['../config', '../notifications/webhook', '../services/app']) vi.doUnmock(m);
+  for (const m of ['../config', '../notifications/webhook', '../services/app', '../services/tenantStore', '../services/backupCache']) vi.doUnmock(m);
   await fs.rm(dataDir, { recursive: true, force: true });
 });
 
@@ -26,6 +32,10 @@ async function loadEngine(rules: unknown[]) {
   vi.doMock('../config', () => ({ loadConfig: () => ({ alert_rules: rules }), getDataDir: () => dataDir }));
   vi.doMock('../notifications/webhook', () => ({ sendWebhook: vi.fn(async () => undefined) }));
   vi.doMock('../services/app', () => ({ listApps: vi.fn(async () => apps) }));
+  vi.doMock('../services/tenantStore', () => ({
+    listTenantDirs: vi.fn(async (appId: string) => (tenants[appId] ?? []).map(tenantId => ({ appId, tenantId, dir: `/x/${tenantId}` }))),
+  }));
+  vi.doMock('../services/backupCache', () => ({ listSnapshotsCached: vi.fn(async (appId: string) => snapshots[appId] ?? []) }));
   const { eventBus } = await import('../services/eventBus');
   const engine = await import('../services/alertEngine');
   const fired: any[] = [];
@@ -88,20 +98,23 @@ describe('backup_failed rule', () => {
 
 describe('backup_stale rule', () => {
   const app = (id: string, schedule?: string, enabled = true) => ({ id, backup: { enabled, ...(schedule ? { schedule } : {}) } });
+  const HOUR = 60 * 60 * 1000;
 
-  it('fires when a scheduled app has had no successful backup for max_age_hours, and resolves on the next one', async () => {
+  it('fires for a tenant with no successful backup for max_age_hours, and resolves on its next one', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
     apps = [app('shop', '0 2 * * *'), app('manual'), app('off', '0 2 * * *', false)];
+    tenants = { shop: ['t1'], manual: ['m1'], off: ['o1'] };
     const { eventBus, fired, resolved, startAlertEngine, stopAlertEngine } = await loadEngine([staleRule(2)]);
     startAlertEngine();
     try {
-      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(HOUR);
       eventBus.emit('backup:completed', { appId: 'shop', tenantId: 't1' });
       await vi.advanceTimersByTimeAsync(119 * 60 * 1000);
       expect(fired).toHaveLength(0);
       await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
-      expect(fired.map(a => a.message)).toEqual([expect.stringMatching(/shop.*2 h/)]);
+      expect(fired.map(a => a.message)).toEqual([expect.stringMatching(/shop\/t1.*2 h/)]);
+      expect(fired[0].tenantId).toBe('t1');
 
       eventBus.emit('backup:completed', { appId: 'shop', tenantId: 't1' });
       expect(resolved.map(r => r.ruleId)).toEqual(['bk-stale']);
@@ -110,17 +123,71 @@ describe('backup_stale rule', () => {
     }
   });
 
-  it('counts from engine start for an app that never had a backup, with a 26 h default', async () => {
+  it('does not let one healthy tenant hide another that is not backed up', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    apps = [app('shop', '0 * * * *')];
+    tenants = { shop: ['t1', 't2'] };
+    const { eventBus, fired, startAlertEngine, stopAlertEngine } = await loadEngine([staleRule(2)]);
+    startAlertEngine();
+    try {
+      for (let h = 0; h < 3; h++) {
+        await vi.advanceTimersByTimeAsync(HOUR);
+        eventBus.emit('backup:completed', { appId: 'shop', tenantId: 't1' });
+      }
+      expect(fired.map(a => a.tenantId)).toEqual(['t2']);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  // In memory only, every restart would start the clock again.
+  it('counts from the newest snapshot of the tenant, so a restart does not reset the age', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-03T00:00:00Z'));
     apps = [app('shop', '0 2 * * *')];
+    tenants = { shop: ['t1', 't2'] };
+    snapshots = { shop: [{ tenantId: 't2', time: '2026-01-02T20:00:00Z' }, { tenantId: 't1', time: '2026-01-01T20:00:00Z' }] };
     const { fired, startAlertEngine, stopAlertEngine } = await loadEngine([staleRule()]);
     startAlertEngine();
     try {
-      await vi.advanceTimersByTimeAsync(25 * 60 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      expect(fired.map(a => a.tenantId)).toEqual(['t1']);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('counts from engine start for a tenant that never had a backup, with a 26 h default', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    apps = [app('shop', '0 2 * * *')];
+    tenants = { shop: ['t1'] };
+    const { fired, startAlertEngine, stopAlertEngine } = await loadEngine([staleRule()]);
+    startAlertEngine();
+    try {
+      await vi.advanceTimersByTimeAsync(25 * HOUR);
       expect(fired).toHaveLength(0);
-      await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1000);
+      await vi.advanceTimersByTimeAsync(2 * HOUR);
       expect(fired).toHaveLength(1);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('resolves the alert of a tenant that was deleted', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    apps = [app('shop', '0 2 * * *')];
+    tenants = { shop: ['t1'] };
+    const { fired, resolved, startAlertEngine, stopAlertEngine } = await loadEngine([staleRule(1)]);
+    startAlertEngine();
+    try {
+      await vi.advanceTimersByTimeAsync(2 * HOUR);
+      expect(fired).toHaveLength(1);
+      tenants = { shop: [] };
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      expect(resolved).toHaveLength(1);
     } finally {
       stopAlertEngine();
     }
@@ -129,13 +196,14 @@ describe('backup_stale rule', () => {
   it('stops checking and drops its listeners when the engine stops', async () => {
     vi.useFakeTimers();
     apps = [app('shop', '0 2 * * *')];
+    tenants = { shop: ['t1'] };
     const { eventBus, fired, startAlertEngine, stopAlertEngine } = await loadEngine([staleRule(1), failedRule]);
     const before = ['backup:completed', 'backup:failed'].map(n => eventBus.listenerCount(n as any));
     startAlertEngine();
     stopAlertEngine();
     expect(['backup:completed', 'backup:failed'].map(n => eventBus.listenerCount(n as any))).toEqual(before);
     expect(vi.getTimerCount()).toBe(0);
-    await vi.advanceTimersByTimeAsync(3 * 60 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(3 * HOUR);
     expect(fired).toHaveLength(0);
   });
 });
