@@ -1,6 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
 import type { AuthUser } from './auth';
 import { writeAuditEntry } from '../services/auditLog';
+import {
+  maskCertResolverEnv,
+  redactAppDefinition,
+  redactAppTraefik,
+  redactMiddlewareCredentials,
+  redactRoutingCredentials,
+  redactTenantTraefik,
+  redactTraefikCredentials,
+} from '../services/traefikRedaction';
 
 function getUserFromResponse(res: Response): string {
   return (res.locals.user as AuthUser | undefined)?.email || 'anonymous';
@@ -89,6 +98,37 @@ function describeAction(
   return `${method} ${fullPath}`;
 }
 
+/**
+ * Bodies that carry Traefik credentials (htpasswd users, forwardAuth URLs, raw
+ * auth labels, DNS provider env) or static env values get the allowlist
+ * masking of the read APIs: the key-name denylist in auditLog does not know
+ * those fields, and audit.log is also copied into config snapshots.
+ */
+function redactSensitiveBody(fullPath: string, body: unknown): unknown {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  const seg = fullPath.split('/').filter(Boolean);
+  const b = body as any;
+  try {
+    if (seg[1] === 'traefik') {
+      if (!seg[2] || seg[2] === 'validate') {
+        const resolvers = Array.isArray(b.cert_resolvers) ? b.cert_resolvers.map((r: unknown) => maskCertResolverEnv(r, { all: true })) : b.cert_resolvers;
+        return redactTraefikCredentials({ ...b, cert_resolvers: resolvers });
+      }
+      if (seg[2] === 'middlewares') return redactMiddlewareCredentials({ m: b })!.m;
+      if (seg[2] === 'dashboard' || seg[2] === 'overwatch') return redactRoutingCredentials(b);
+      if (seg[2] === 'cert-resolvers') return maskCertResolverEnv(b, { all: true });
+      return body;
+    }
+    if (seg[1] === 'apps' && seg[3] === 'traefik') return redactAppTraefik(b);
+    if (seg[1] === 'apps' && seg[3] === 'tenants' && seg[5] === 'traefik') return redactTenantTraefik(b);
+    if (seg[1] === 'apps' && !seg[3]) return redactAppDefinition(b);
+  } catch {
+    // A body the masking cannot walk is invalid anyway; do not log it as is.
+    return { redacted: 'body could not be masked' };
+  }
+  return body;
+}
+
 export function auditLog(req: Request, res: Response, next: NextFunction) {
   // Only audit state-changing requests
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
@@ -104,7 +144,7 @@ export function auditLog(req: Request, res: Response, next: NextFunction) {
       method: req.method,
       path: fullPath,
       query: Object.keys(query || {}).length > 0 ? query : undefined,
-      body: req.body,
+      body: redactSensitiveBody(fullPath, req.body) as Record<string, unknown> | undefined,
       force,
       status: res.statusCode,
       ip: req.ip || req.socket.remoteAddress || 'unknown',

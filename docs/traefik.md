@@ -6,7 +6,7 @@ From v1.6 Overwatch ships a first-class Traefik configuration surface. Cert reso
 - **REST API** — `/api/traefik/*` and `/api/apps/:appId/traefik`, `/api/apps/:appId/tenants/:tenantId/traefik`.
 - **CLI** — `overwatch config traefik [view|resolver|migrate|reload|doctor]`.
 
-Cert-resolver env values are masked on read: every value for non-admins (DNS provider variable names do not reliably say which are secret), and for admins and the CLI those whose name ends in `_TOKEN`, `_KEY`, `_SECRET` or `_PASSWORD`. Saving a masked value back (for example from the Entrypoints or TLS termination editors, which send the whole config) keeps the stored value. The legacy `networking.cert_resolvers` field is shimmed automatically for backwards compatibility — operators upgrade with `overwatch config traefik migrate`.
+Cert-resolver env values are masked on read: every value for non-admins (DNS provider variable names do not reliably say which are secret), and for admins and the CLI those whose name ends in `_TOKEN`, `_KEY`, `_SECRET` or `_PASSWORD`. Saving a masked value back (for example from the Entrypoints or TLS termination editors, which send the whole config) keeps the stored value. The audit log records Traefik request bodies (global config, middlewares, cert resolvers, app and tenant overrides, app definitions) with the masking non-admins get, so htpasswd hashes, forwardAuth URL credentials and provider env values never reach `audit.log`. The legacy `networking.cert_resolvers` field is shimmed automatically for backwards compatibility — operators upgrade with `overwatch config traefik migrate`.
 
 ## Schema
 

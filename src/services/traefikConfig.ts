@@ -20,31 +20,23 @@ import { withFileLock } from './fileLock';
 import * as fs from 'fs/promises';
 import { assertTenantRawLabelsOwned, assertNoGlobalMiddlewareShadowing, globalDefaultMiddlewares } from './traefikLabels';
 import {
-  MASK,
+  maskCertResolverEnv,
   restoreCertResolverEnv,
   restoreMiddlewareCredentials,
   restoreRoutingCredentials,
   restoreTenantTraefik,
 } from './traefikRedaction';
 
-const SECRET_HINTS = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
-
 /**
  * Mask cert-resolver env values for read APIs. By default (admins, the CLI)
- * keys that look secret have their value replaced with bullets. `all` masks
- * every value, for non-admins: provider variable names do not reliably say
- * which values are secret (GCE_SERVICE_ACCOUNT, HURRICANE_TOKENS, EPIK_SIGNATURE).
+ * keys that look secret have their value replaced with bullets; `all` masks
+ * every value, for non-admins.
  */
 export function maskTraefikSecrets(t: TraefikGlobal | undefined, opts: { all?: boolean } = {}): TraefikGlobal | undefined {
   if (!t?.cert_resolvers) return t;
   const masked: TraefikGlobal = JSON.parse(JSON.stringify(t));
-  masked.cert_resolvers = masked.cert_resolvers!.map(r => maskResolverEnv(r, opts.all));
+  masked.cert_resolvers = masked.cert_resolvers!.map(r => maskCertResolverEnv(r, opts));
   return masked;
-}
-
-function maskResolverEnv(r: CertResolver, all = false): CertResolver {
-  if (r.challenge !== 'dns' || !r.env) return r;
-  return { ...r, env: Object.fromEntries(Object.entries(r.env).map(([k, v]) => [k, all || SECRET_HINTS.test(k) ? MASK : v])) };
 }
 
 // ─── Global Traefik config ──────────────────────────────────────────────────
@@ -97,7 +89,7 @@ export async function upsertCertResolver(name: string, body: unknown): Promise<C
     raw.traefik.cert_resolvers = list;
     return resolver;
   });
-  return maskResolverEnv(saved);
+  return maskCertResolverEnv(saved);
 }
 
 export async function deleteCertResolver(name: string): Promise<void> {

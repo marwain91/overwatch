@@ -298,6 +298,20 @@ export function restoreTenantTraefik<T extends TraefikTenant>(incoming: T, store
   };
 }
 
+const SECRET_ENV_NAME = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
+
+/**
+ * Copy of a cert resolver with its env values masked: those with a
+ * secret-looking name, or with `all` every one (provider variable names do not
+ * reliably say which are secret: GCE_SERVICE_ACCOUNT, HURRICANE_TOKENS).
+ */
+export function maskCertResolverEnv<T>(resolver: T, opts: { all?: boolean } = {}): T {
+  const env = (resolver as { env?: unknown } | null | undefined)?.env;
+  if (!env || typeof env !== 'object') return resolver;
+  const masked = Object.entries(env).map(([k, v]) => [k, opts.all || SECRET_ENV_NAME.test(k) ? MASK : v]);
+  return { ...resolver, env: Object.fromEntries(masked) };
+}
+
 /** Cert-resolver env: a masked value keeps the stored value of the same resolver and key. */
 export function restoreCertResolverEnv<T extends { name: string; challenge: string; env?: Record<string, string> }>(
   incoming: T,
