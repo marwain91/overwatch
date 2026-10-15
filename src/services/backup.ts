@@ -710,6 +710,25 @@ async function resolveRestoreSnapshot(
   return snapshot;
 }
 
+/**
+ * Throws unless `snapshotId` names one snapshot of the app: 404 for an unknown
+ * id or another app's snapshot, 400 for an untagged legacy one. Any tenant's
+ * snapshot of the app will do. Create-from-backup checks this before it
+ * creates the tenant, so a wrong id does not create and then delete one.
+ */
+export async function assertSnapshotOfApp(appId: string, snapshotId: string): Promise<void> {
+  const app = await getApp(appId);
+  if (!app) throw new NotFoundError(`App '${appId}' not found`);
+  const info = await getBackupInfoFor(app);
+  if (!info.configured || !info.initialized) throw new ValidationError('Backup not configured or initialized');
+  try {
+    await resolveRestoreSnapshot(app, snapshotId, '', { createNew: true });
+  } catch (error: any) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(500, formatError(error).error, { expose: true });
+  }
+}
+
 interface StagedSnapshot {
   /** The tenant's data inside the staging dir (database.sql, .env, path dirs). */
   tenantDir: string;

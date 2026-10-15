@@ -129,7 +129,7 @@ vi.mock('child_process', () => ({
   spawn: vi.fn(),
 }));
 
-import { restoreBackup, restoreBackupLocked } from '../services/backup';
+import { assertSnapshotOfApp, restoreBackup, restoreBackupLocked } from '../services/backup';
 
 const owned = (tags: string[] | undefined) => [{ id: SNAP_FULL, short_id: SNAP, ...(tags ? { tags } : {}) }];
 
@@ -307,5 +307,22 @@ describe('create-from-backup keeps its sequence', () => {
     const r = await restoreBackupLocked('gadgets', SNAP, 't1', { createNew: true, newDomain: 't1.example.com', containersStopped: true });
     expect(r.success).toBe(true);
     expect(log).toEqual(['restic-restore:snapshot', 'import:gadgets_t1:-- snapshot', 'cp:snapshot:gadgets-t1-web:/data/']);
+  });
+});
+
+describe('assertSnapshotOfApp (create-from-backup pre-check)', () => {
+  it("accepts any tenant's snapshot of the app", async () => {
+    world.snapshots[SNAP] = owned(['app:gadgets', 'tenant:src']);
+    await expect(assertSnapshotOfApp('gadgets', SNAP)).resolves.toBeUndefined();
+  });
+
+  it("refuses another app's snapshot, an unknown id and an untagged one", async () => {
+    world.snapshots[SNAP] = owned(['app:other', 'tenant:src']);
+    await expect(assertSnapshotOfApp('gadgets', SNAP)).rejects.toMatchObject({ status: 404 });
+    world.snapshots[SNAP] = [];
+    await expect(assertSnapshotOfApp('gadgets', SNAP)).rejects.toMatchObject({ status: 404 });
+    world.snapshots[SNAP] = owned(undefined);
+    await expect(assertSnapshotOfApp('gadgets', SNAP)).rejects.toMatchObject({ status: 400 });
+    expect(resticRestores).toEqual([]);
   });
 });
