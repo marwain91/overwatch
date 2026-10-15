@@ -109,7 +109,8 @@ describe('tenant update image cleanup', () => {
       getApp: vi.fn(async () => baseApp('customer-portal')),
       applyApp: vi.fn(async (def: any) => ({ result: 'noop', app: def, changedKeys: [] })),
     }));
-    vi.doMock('../services/envVars', () => ({
+    vi.doMock('../services/envVars', async () => ({
+      ...(await vi.importActual<object>('../services/envVars')),
       generateSharedEnvFile: vi.fn(async () => {
         await fs.writeFile(sharedEnvPath, 'SHARED=2\n', { mode: 0o600 });
       }),
@@ -205,7 +206,8 @@ describe('tenant update image cleanup', () => {
       getApp: vi.fn(async () => baseApp('customer-portal')),
       applyApp: vi.fn(async (def: any) => ({ result: 'noop', app: def, changedKeys: [] })),
     }));
-    vi.doMock('../services/envVars', () => ({
+    vi.doMock('../services/envVars', async () => ({
+      ...(await vi.importActual<object>('../services/envVars')),
       generateSharedEnvFile: vi.fn(async () => undefined),
       deleteTenantAllOverrides: vi.fn(),
     }));

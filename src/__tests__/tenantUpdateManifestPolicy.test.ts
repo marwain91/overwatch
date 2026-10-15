@@ -108,7 +108,8 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
     getApp: vi.fn(async (id: string) => id === 'shop' ? globalApp : null),
     applyApp,
   }));
-  vi.doMock('../services/envVars', () => ({
+  vi.doMock('../services/envVars', async () => ({
+    ...(await vi.importActual<object>('../services/envVars')),
     generateSharedEnvFile: vi.fn(async () => undefined),
     deleteTenantAllOverrides: vi.fn(),
   }));

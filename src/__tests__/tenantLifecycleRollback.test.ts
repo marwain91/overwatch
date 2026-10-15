@@ -159,7 +159,8 @@ describe('tenant lifecycle rollback', () => {
       getApp: vi.fn(async () => baseApp('customer-portal')),
       applyApp: vi.fn(),
     }));
-    vi.doMock('../services/envVars', () => ({
+    vi.doMock('../services/envVars', async () => ({
+      ...(await vi.importActual<object>('../services/envVars')),
       generateSharedEnvFile: vi.fn(async () => {
         await fs.writeFile(sharedEnvPath, 'NEW_SHARED=1\n', { mode: 0o600 });
       }),
@@ -252,7 +253,8 @@ describe('tenant lifecycle rollback', () => {
       getApp: vi.fn(async (id: string) => id === 'product' ? globalProduct : null),
       applyApp,
     }));
-    vi.doMock('../services/envVars', () => ({
+    vi.doMock('../services/envVars', async () => ({
+      ...(await vi.importActual<object>('../services/envVars')),
       generateSharedEnvFile: vi.fn(async () => {
         await fs.writeFile(sharedEnvPath, 'NEW_SHARED=1\n', { mode: 0o600 });
       }),

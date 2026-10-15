@@ -61,7 +61,9 @@ async function setup() {
   }));
   vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
   vi.doMock('../services/app', () => ({ getApp: vi.fn(async () => ({ ...globalStatic, ...TS })), applyApp }));
-  vi.doMock('../services/envVars', () => ({ generateSharedEnvFile: vi.fn(async () => undefined), deleteTenantAllOverrides: vi.fn() }));
+  vi.doMock('../services/envVars', async () => ({
+    ...(await vi.importActual<object>('../services/envVars')), generateSharedEnvFile: vi.fn(async () => undefined), deleteTenantAllOverrides: vi.fn(),
+  }));
   vi.doMock('../services/manifestExtractor', () => ({
     readManifestFromAppImage: vi.fn(async (_app: any, tag: string) => manifests[tag]),
     resolveManifestImageRef: vi.fn((_a: any, tag: string) => `ghcr.io/acme/shop/backend:${tag}`),

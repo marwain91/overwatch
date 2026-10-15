@@ -5,7 +5,7 @@ import { loadConfig, getDataDir } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
-import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue } from './envVars';
+import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue, formatEnvLine } from './envVars';
 import { getApp, applyApp } from './app';
 import { generateComposeFile, readComposeNames, protectUnownedVolumes } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
@@ -562,6 +562,16 @@ async function updateTenantLocked(
   // Read current .env
   const originalEnvContent = await fs.readFile(envPath, 'utf-8');
   const originalComposeContent = await fs.readFile(composePath, 'utf-8');
+  // Without the line the tag could not change, and the update would report a
+  // success that never happened.
+  const IMAGE_TAG_LINE = /^IMAGE_TAG=.*$/m;
+  if (!IMAGE_TAG_LINE.test(originalEnvContent)) {
+    throw new ConflictError(
+      `Tenant '${tenantId}' has no IMAGE_TAG line in its .env, so its image tag cannot be changed. ` +
+      'Add IMAGE_TAG=<current tag> to the tenant .env and retry.',
+    );
+  }
+  const originalEnv = parseTenantEnv(originalEnvContent);
 
   // Resolve the image refs the tenant is currently running so we can clean
   // them up after a successful update. Done before any mutation so env
@@ -614,8 +624,8 @@ async function updateTenantLocked(
     }
   };
 
-  // Update IMAGE_TAG in .env
-  const newEnvContent = originalEnvContent.replace(/^IMAGE_TAG=.*/m, `IMAGE_TAG=${newTag}`);
+  // Update IMAGE_TAG in .env (a function replacement: `$` in it stays literal).
+  const newEnvContent = originalEnvContent.replace(IMAGE_TAG_LINE, () => formatEnvLine('IMAGE_TAG', newTag));
   await writeSecretFile(envPath, newEnvContent);
 
   // Sync the app definition from the embedded manifest inside the new image,
@@ -678,8 +688,8 @@ async function updateTenantLocked(
   try {
     await generateSharedEnvFile(appId, tenantId, { alreadyLocked: true });
 
-    const domainMatch = originalEnvContent.match(/^TENANT_DOMAIN=(.*)$/m);
-    const domain = domainMatch ? domainMatch[1] : '';
+    // The value as compose reads it: quotes written by formatEnvValue removed.
+    const domain = originalEnv.TENANT_DOMAIN ?? '';
 
     try {
       const tenantTraefik = await readTenantTraefik(appId, tenantId);
