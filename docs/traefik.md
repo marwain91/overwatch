@@ -2,11 +2,11 @@
 
 From v1.6 Overwatch ships a first-class Traefik configuration surface. Cert resolvers, the global middleware library, the dashboard, Overwatch's own routing, and per-tenant overrides all live under one schema and are editable from three places:
 
-- **Web UI** — Sidebar → Traefik (admin only): Cert Resolvers, Middlewares, Entrypoints, Dashboard, Overwatch Server. Per-app middleware library is on the App Settings page; per-tenant overrides live behind the **Routing** action on each tenant row.
+- **Web UI** — Sidebar → Traefik (admin only): Cert Resolvers, Middlewares, Entrypoints, Dashboard, Overwatch Server. Per-app middleware library is on the App Settings page (admin only to edit, like the rest of the app definition: its `default_middlewares` attach to every tenant router); per-tenant overrides live behind the **Routing** action on each tenant row (editor and up).
 - **REST API** — `/api/traefik/*` and `/api/apps/:appId/traefik`, `/api/apps/:appId/tenants/:tenantId/traefik`.
 - **CLI** — `overwatch config traefik [view|resolver|migrate|reload|doctor]`.
 
-Sensitive cert-resolver env values are masked on read in all three surfaces. The legacy `networking.cert_resolvers` field is shimmed automatically for backwards compatibility — operators upgrade with `overwatch config traefik migrate`.
+Cert-resolver env values are masked on read: every value for non-admins (DNS provider variable names do not reliably say which are secret), and for admins and the CLI those whose name ends in `_TOKEN`, `_KEY`, `_SECRET` or `_PASSWORD`. Saving a masked value back (for example from the Entrypoints or TLS termination editors, which send the whole config) keeps the stored value. The audit log records Traefik request bodies (global config, middlewares, cert resolvers, app and tenant overrides, app definitions) with the masking non-admins get, so htpasswd hashes, forwardAuth URL credentials and provider env values never reach `audit.log`. The legacy `networking.cert_resolvers` field is shimmed automatically for backwards compatibility — operators upgrade with `overwatch config traefik migrate`.
 
 ## Schema
 
@@ -96,6 +96,15 @@ Everything under `traefik.tcp.` / `traefik.udp.` and every other `traefik.*` key
 
 Own middlewares are restricted to types that cannot address another service, a URL or a file: `headers`, `ratelimit` (not `ratelimit.redis`), `inflightreq`, `compress`, `retry`, `ipallowlist`/`ipwhitelist`, `redirectscheme`, `redirectregex`, `stripprefix`, `stripprefixregex`, `addprefix`, `replacepath`, `replacepathregex`, `buffering`, `contenttype`, `passtlsclientcert`, `grpcweb`, and `basicauth`/`digestauth` with `users`, `realm`, `removeheader` and `headerfield` only (not `usersfile`). `errors`, `forwardauth`, `chain`, `plugin` and anything else are denied; define those through typed middlewares at the app or global level. A router's `middlewares` raw label may only list the router's own middlewares (`@docker` optional) and the typed middlewares Overwatch generates for it; `@file`, `@internal` and other tenants' middlewares are rejected. `routers.<own>.tls.*` (for example `tls.options`) is denied.
 
+A tenant's own raw labels (editor-writable) are also checked by value, so a tenant cannot send its users, or their credentials, elsewhere:
+
+- `redirectregex.replacement` must be a path (`/...`, not `//...`) or an `http(s)` URL on one of the tenant's own hosts (its domain or a host alias). Traefik answers non-GET requests with 307/308, so a redirect to another host would make browsers re-send a login form's POST body there.
+- `headers.customrequestheaders` may not set request headers that apps and auth proxies commonly take as the user's identity or credentials: `Authorization`, `Proxy-Authorization`, `Cookie`, `X-Forwarded-User`/`-Email`/`-Groups`/`-Preferred-Username`/`-Access-Token`, `Remote-User`/`-Email`/`-Groups`/`-Name`, `X-Remote-*`, `X-Auth-*`, `X-Webauth-*`, `X-Authenticated-*`, `X-User` and `X-Email` (`_` counts as `-`).
+- `headers.customresponseheaders` may not remove (empty value) `Content-Security-Policy`, `Strict-Transport-Security` or `X-Frame-Options`.
+- `headers.accessControlAllowCredentials=true` is refused on a middleware whose origin list contains `*` or `null` or that uses `accessControlAllowOriginListRegex`; list the allowed origins explicitly.
+
+These are rejected with HTTP 400 on save and dropped with a warning at generation. App-level raw labels are admin-owned and not value-checked.
+
 Host alias checks fail closed: if the configuration, the app, the apps directory or another tenant's `.env`/`traefik.yaml` cannot be read (a genuinely missing file or directory counts as empty), saving an alias fails and generation drops all of the tenant's aliases with a warning.
 
 Stored data is not rejected on load: non-conforming labels already on disk are simply not emitted.
@@ -143,6 +152,8 @@ Define middlewares once on the app, then reference them from any service:
 
 The app definition rides in the app's frozen tenant snapshot (v1.5.5), so middleware library changes only affect a tenant on the next `tenant update`.
 
+An app middleware may not use a name that the global `traefik.middlewares` library also defines: saving one is refused with HTTP 400. Global names are what `traefik.default_middlewares` refers to, so an app library must not be able to redefine, say, the global auth gate. An app definition stored before this check keeps loading; when its labels are generated the global definition is used for that name, with an `ignored app middleware` warning, and `overwatch config traefik doctor` reports it.
+
 ## Per-tenant overrides
 
 ```yaml
@@ -151,7 +162,7 @@ cert_resolver: gandi-eu              # explicit override of the auto-pick
 host_aliases:
   - "legacy.acme.com"
 middleware_overrides:
-  web: ["strict-rl", "ip-allowlist-corp"]   # REPLACES the app's middleware list for this service
+  web: ["strict-rl", "ip-allowlist-corp"]   # REPLACES the app's middlewares for this service (global defaults stay)
 raw_labels:
   web:
     "traefik.http.routers.myapp-acme-web.observability.tracing": "true"
@@ -171,7 +182,9 @@ traefik:
     - partner.example.org   # also allows www.partner.example.org
 ```
 
-Override semantics: `middleware_overrides` is a full replacement, not a merge, so an editor can already replace the whole chain, including the global and app `default_middlewares`, for any service of a tenant. For the same reason a router's raw `middlewares` label (which may list the router's own typed middlewares) is not treated as a way around `default_middlewares`: it is no more powerful than `middleware_overrides`. `raw_labels` are merged on top of the generated and app-level labels (denylist enforced after merge).
+Override semantics: the global `traefik.default_middlewares` belong to the admin and always apply to every tenant router. `middleware_overrides` (editor-writable) replace only the app- and service-level part of a service's chain (the app's `default_middlewares` and the service's `routing.middlewares`), not merge with it; the router's chain is the global defaults followed by the override list. An empty list therefore leaves just the global defaults.
+
+`raw_labels` are merged on top of the generated and app-level labels (denylist enforced after merge). A tenant's own raw labels cannot get around the global defaults either: a router `middlewares` label must still list every global default middleware (`myapp-acme-web-<name>`, `@docker` optional), and a label that redefines a global default middleware, or a member of a global default chain (for example `traefik.http.middlewares.myapp-acme-web-auth.basicauth.users`), is refused. Both are rejected with HTTP 400 on save and dropped with a warning at generation. App-level raw labels are admin-owned and not subject to this rule.
 
 ## Operational notes
 
@@ -252,6 +265,7 @@ overwatch config traefik doctor
 Reports errors (exit 1) and warnings (exit 0) for:
 
 - Middleware references that don't resolve in any of `traefik.middlewares`, `app.traefik.middlewares` (per-app library), or tenant `middleware_overrides`.
+- App middlewares named like a global middleware (warning: the global definition is used).
 - Tenant `cert_resolver` overrides that point to a resolver name that isn't defined.
 - Cert-resolver `env: { KEY: ${VAR} }` entries where `VAR` is missing from the deploy `.env` and `process.env`.
 - `tls_termination: upstream` on the global config when the chosen `upstream_entrypoint` either isn't defined or has no `forwarded_headers.trusted_ips` configured.

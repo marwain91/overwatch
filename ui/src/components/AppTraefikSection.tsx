@@ -8,7 +8,8 @@ import { MiddlewareEditor } from './MiddlewareEditor';
 export function AppTraefikSection({ appId }: { appId: string }) {
   const { data, isLoading } = useAppTraefik(appId);
   const update = useUpdateAppTraefik(appId);
-  const canEdit = useCan('editor');
+  // PUT /api/apps/:id/traefik is admin-only; other roles get a read-only view.
+  const canEdit = useCan('admin');
   const [editing, setEditing] = useState<{ name: string; spec: MiddlewareSpec } | null>(null);
   const [adding, setAdding] = useState(false);
 

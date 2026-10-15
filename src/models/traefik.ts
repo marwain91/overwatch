@@ -164,6 +164,21 @@ export interface RawLabelOwner {
   isGeneratedMiddleware?: (name: string) => boolean;
   /** Operator-owned object (the Overwatch admin router): the tenant-facing field restrictions do not apply. */
   trusted?: boolean;
+  /** Set for a tenant's own raw labels (editor-writable); app-level labels are admin-owned. */
+  tenant?: TenantLabelScope;
+}
+
+/** What a tenant's own labels are checked against (see tenantLabelProblem). */
+export interface TenantLabelScope {
+  /** Hosts the tenant routes (primary domain and aliases): the only hosts a redirect may target. */
+  hosts: string[];
+  /**
+   * The global default_middlewares of this router (router-prefixed, lower-case),
+   * which its `middlewares` list must keep: they are the admin's.
+   */
+  requiredMiddlewares: string[];
+  /** Those plus their chain members, which no label may redefine. */
+  protectedMiddlewares: string[];
 }
 
 // Slugs may contain hyphens but never `_`, so a middleware named
@@ -254,6 +269,55 @@ function routerMiddlewaresProblem(value: string, owner?: RawLabelOwner): string 
   return undefined;
 }
 
+// Request headers that apps and auth proxies commonly take as the signed-in
+// user's identity. `_` is compared as `-`: CGI-style backends (PHP) map both to
+// the same HTTP_* variable.
+const IDENTITY_REQUEST_HEADER = /^(authorization|proxy-authorization|cookie|x-forwarded-(user|email|groups|preferred-username|access-token)|remote-(user|email|groups|name)|x-(remote|auth|webauth|authenticated)-.+|x-user|x-email)$/;
+const SECURITY_RESPONSE_HEADER = /^(content-security-policy|strict-transport-security|x-frame-options)$/;
+
+/**
+ * A redirect may stay on the tenant's own hosts only: Traefik answers non-GET
+ * requests with 307/308, so browsers re-send a login form's POST body to the
+ * target. Parsed as a browser parses a Location header.
+ */
+function redirectTargetProblem(value: string, hosts: string[]): string | undefined {
+  const target = value.replace(/[\t\n\r]/g, '').replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '');
+  if (/^\/(?![/\\])/.test(target)) return undefined;
+  try {
+    const url = new URL(target);
+    const host = url.hostname.replace(/\.$/, '');
+    if ((url.protocol === 'http:' || url.protocol === 'https:') && hosts.includes(host)) return undefined;
+  } catch {
+    // Neither a path nor an absolute URL.
+  }
+  return 'a redirect may only target a path (/...) or one of the tenant\'s own hosts';
+}
+
+function tenantLabelProblem(kind: string, name: string, field: string, value: string, scope: TenantLabelScope): string | undefined {
+  if (kind === 'middlewares' && scope.protectedMiddlewares.includes(name)) {
+    return `"${name}" is a global default middleware, which a tenant cannot change`;
+  }
+  if (kind === 'middlewares' && field === 'redirectregex.replacement') {
+    return redirectTargetProblem(value, scope.hosts.map(h => h.toLowerCase().replace(/\.$/, '')));
+  }
+  const header = /^headers\.(customrequestheaders|customresponseheaders)\.(.+)$/.exec(field);
+  if (kind === 'middlewares' && header) {
+    const headerName = header[2].replace(/_/g, '-');
+    if (header[1] === 'customrequestheaders' && IDENTITY_REQUEST_HEADER.test(headerName)) {
+      return `request header "${header[2]}" carries the user's identity or credentials and cannot be set by a tenant`;
+    }
+    if (header[1] === 'customresponseheaders' && SECURITY_RESPONSE_HEADER.test(headerName) && value.trim() === '') {
+      return `an empty value would remove the security response header "${header[2]}"`;
+    }
+  }
+  if (kind === 'routers' && field === 'middlewares') {
+    const listed = new Set(value.split(',').map(e => e.trim().toLowerCase().replace(/@docker$/, '')));
+    const missing = scope.requiredMiddlewares.filter(n => !listed.has(n));
+    if (missing.length > 0) return `the router's middlewares must keep the global default middlewares (missing ${missing.join(', ')})`;
+  }
+  return undefined;
+}
+
 /**
  * Why a raw label may not be emitted/stored, or undefined when it is fine.
  * Stricter than the schema check because the rules must see the key exactly as
@@ -266,6 +330,7 @@ function routerMiddlewaresProblem(value: string, owner?: RawLabelOwner): string 
  * - Only `traefik.http.{routers,services,middlewares}.<name>.*` for names the
  *   `owner` owns; tcp/udp and every other `traefik.*` key is refused. Without an
  *   `owner` the name check is skipped (the reserved-field rules still apply).
+ * - A tenant's own labels (`owner.tenant`) are also held to tenantLabelProblem.
  * Kept out of the schema refinement on purpose: that schema is parsed at
  * boot, so tightening it there would turn a stored key into a boot failure.
  */
@@ -291,6 +356,10 @@ export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwne
   }
   const field = rest.join('.').replace(/\[\d+\]/g, '');
   const trusted = owner?.trusted === true;
+  if (owner?.tenant && !trusted) {
+    const p = tenantLabelProblem(kind, name, field, value, owner.tenant);
+    if (p) return p;
+  }
   if (kind === 'middlewares' && !trusted) {
     const p = middlewareFieldProblem(field);
     if (p) return p;
@@ -321,6 +390,36 @@ export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwne
     }
   }
   return undefined;
+}
+
+const CORS_LABEL = /^traefik\.http\.middlewares\.([^.]+)\.headers\.(accesscontrolallowcredentials|accesscontrolalloworiginlist|accesscontrolalloworiginlistregex)(\[\d+\])?$/;
+
+/**
+ * Labels of middlewares that combine accessControlAllowCredentials=true with a
+ * `*`, `null` or regex origin: any site could then read responses made with
+ * the user's cookies. The two settings are separate labels, so this looks at a
+ * whole label set; returns key -> problem. Tenant labels only.
+ */
+export function credentialedAnyOriginProblems(labels: Record<string, string>): Map<string, string> {
+  const byMiddleware = new Map<string, { keys: string[]; credentials: boolean; anyOrigin: boolean }>();
+  for (const [key, value] of Object.entries(labels)) {
+    const m = CORS_LABEL.exec(key.toLowerCase());
+    if (!m) continue;
+    const entry = byMiddleware.get(m[1]) ?? { keys: [], credentials: false, anyOrigin: false };
+    entry.keys.push(key);
+    // Go's ParseBool spellings of true.
+    if (m[2] === 'accesscontrolallowcredentials') entry.credentials ||= /^(1|t|true)$/i.test(value.trim());
+    // A regex cannot be shown to exclude foreign origins; with credentials, list them explicitly.
+    else if (m[2] === 'accesscontrolalloworiginlistregex') entry.anyOrigin = true;
+    else entry.anyOrigin ||= value.split(',').some(o => ['*', 'null'].includes(o.trim().toLowerCase()));
+    byMiddleware.set(m[1], entry);
+  }
+  const out = new Map<string, string>();
+  for (const e of byMiddleware.values()) {
+    if (!e.credentials || !e.anyOrigin) continue;
+    for (const k of e.keys) out.set(k, 'accessControlAllowCredentials=true needs an explicit origin list (no *, null or regex origin)');
+  }
+  return out;
 }
 
 export function isBlockedRawLabelKey(key: string, owner?: RawLabelOwner, value = ''): boolean {
@@ -490,7 +589,7 @@ export type TraefikApp = z.infer<typeof TraefikAppSchema>;
 export const TraefikTenantSchema = z.object({
   cert_resolver: z.string().optional().describe('Explicit cert resolver name; overrides domain_pattern matching'),
   host_aliases: z.array(z.string()).optional().describe('Additional Host(...) matchers on the primary service'),
-  middleware_overrides: z.record(z.array(z.string())).optional().describe('serviceName → middleware names. REPLACES the app\'s middleware list for that service.'),
+  middleware_overrides: z.record(z.array(z.string())).optional().describe('serviceName → middleware names. REPLACES the app- and service-level middlewares for that service; the global default_middlewares always apply.'),
   raw_labels: PerServiceRawLabelsSchema.optional().describe('serviceName → label key/value map (escape hatch, denylist enforced)'),
   tls_termination: TlsTerminationSchema.optional().describe('Override TLS termination mode for this tenant'),
 });

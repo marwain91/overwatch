@@ -33,12 +33,22 @@ export function validateTraefik(ctx: DoctorContext): DoctorIssue[] {
   const issues: DoctorIssue[] = [];
   const traefik = ctx.config.traefik;
 
-  // Build the set of known middleware names per scope. App-scoped middlewares
-  // shadow global ones for that app (matches the runtime resolution order).
+  // Build the set of known middleware names per scope. A global middleware wins
+  // over an app middleware of the same name (matches the runtime resolution order).
   const globalMws = new Set(Object.keys(traefik?.middlewares ?? {}));
   const appMws = new Map<string, Set<string>>();
   for (const app of ctx.apps) {
     appMws.set(app.id, new Set(Object.keys(app.traefik?.middlewares ?? {})));
+    for (const name of appMws.get(app.id)!) {
+      if (globalMws.has(name)) {
+        issues.push({
+          severity: 'warning',
+          scope: `app:${app.id}.traefik.middlewares.${name}`,
+          message: `Has the same name as a global middleware, which is used instead.`,
+          hint: 'Rename the app middleware and the references to it.',
+        });
+      }
+    }
   }
   const known = (appId: string | null, name: string): boolean => {
     if (appId && appMws.get(appId)?.has(name)) return true;

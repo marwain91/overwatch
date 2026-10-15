@@ -182,13 +182,26 @@ export function redactAppTraefik(t: TraefikApp | undefined): TraefikApp | undefi
   return { ...t, middlewares: redactMiddlewareCredentials(t.middlewares) };
 }
 
-/** An app definition: its Traefik library and every service's raw labels. */
+type EnvMapping = Record<string, string | { static: string }>;
+const isStatic = (v: unknown): v is { static: string } =>
+  !!v && typeof v === 'object' && typeof (v as { static?: unknown }).static === 'string';
+
+/** `{ static }` env_mapping values are literal container env values (keys, passwords); source names stay readable. */
+function redactEnvMapping(mapping: EnvMapping): EnvMapping {
+  return Object.fromEntries(Object.entries(mapping).map(([k, v]) => [k, isStatic(v) ? { ...v, static: MASK } : v]));
+}
+
+/** An app definition: its Traefik library, every service's raw labels and static env values. */
 export function redactAppDefinition<T extends { traefik?: TraefikApp; services?: any[] }>(app: T): T {
   const out: any = { ...app };
   if (app.traefik) out.traefik = redactAppTraefik(app.traefik);
   if (Array.isArray(app.services)) {
-    out.services = app.services.map(svc =>
-      svc?.routing?.raw_labels ? { ...svc, routing: { ...svc.routing, raw_labels: redactRawLabels(svc.routing.raw_labels) } } : svc);
+    out.services = app.services.map(svc => {
+      let s = svc;
+      if (svc?.routing?.raw_labels) s = { ...s, routing: { ...svc.routing, raw_labels: redactRawLabels(svc.routing.raw_labels) } };
+      if (svc?.env_mapping && typeof svc.env_mapping === 'object') s = { ...s, env_mapping: redactEnvMapping(svc.env_mapping) };
+      return s;
+    });
   }
   return out;
 }
@@ -285,10 +298,67 @@ export function restoreTenantTraefik<T extends TraefikTenant>(incoming: T, store
   };
 }
 
+const SECRET_ENV_NAME = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
+
+/**
+ * Copy of a cert resolver with its env values masked: those with a
+ * secret-looking name, or with `all` every one (provider variable names do not
+ * reliably say which are secret: GCE_SERVICE_ACCOUNT, HURRICANE_TOKENS).
+ */
+export function maskCertResolverEnv<T>(resolver: T, opts: { all?: boolean } = {}): T {
+  const env = (resolver as { env?: unknown } | null | undefined)?.env;
+  if (!env || typeof env !== 'object') return resolver;
+  const masked = Object.entries(env).map(([k, v]) => [k, opts.all || SECRET_ENV_NAME.test(k) ? MASK : v]);
+  return { ...resolver, env: Object.fromEntries(masked) };
+}
+
+/** Cert-resolver env: a masked value keeps the stored value of the same resolver and key. */
+export function restoreCertResolverEnv<T extends { name: string; challenge: string; env?: Record<string, string> }>(
+  incoming: T,
+  stored: { env?: unknown } | undefined,
+): T {
+  if (!incoming.env) return incoming;
+  const old = stored?.env && typeof stored.env === 'object' ? stored.env as Record<string, unknown> : {};
+  const env = { ...incoming.env };
+  for (const [k, v] of Object.entries(env)) {
+    if (!carriesMask(v)) continue;
+    const kept = old[k];
+    if (v !== MASK || typeof kept !== 'string' || carriesMask(kept)) throw refuse(`cert_resolvers.${incoming.name}.env.${k}`);
+    env[k] = kept;
+  }
+  return { ...incoming, env };
+}
+
+function restoreEnvMapping<T extends EnvMapping | undefined>(incoming: T, stored: EnvMapping | undefined, where: string): T {
+  if (!incoming) return incoming;
+  const out: EnvMapping = { ...incoming };
+  for (const [k, v] of Object.entries(out)) {
+    if (!isStatic(v) || !carriesMask(v.static)) continue;
+    const kept = stored?.[k];
+    if (v.static !== MASK || !isStatic(kept) || carriesMask(kept.static)) throw refuse(`${where}.${k}`);
+    out[k] = { ...v, static: kept.static };
+  }
+  return out as T;
+}
+
+/** An app definition update: a masked static env value keeps the stored value of the same service and key. */
+export function restoreServiceEnvMappings<T extends { services?: any[] }>(incoming: T, stored: { services?: any[] } | null | undefined): T {
+  if (!Array.isArray(incoming.services)) return incoming;
+  return {
+    ...incoming,
+    services: incoming.services.map(svc => {
+      if (!svc?.env_mapping) return svc;
+      const old = stored?.services?.find(s => s?.name === svc.name);
+      return { ...svc, env_mapping: restoreEnvMapping(svc.env_mapping, old?.env_mapping, `services.${svc.name}.env_mapping`) };
+    }),
+  };
+}
+
 /** Refuse (no stored value to fall back on) any placeholder in an app definition. */
 export function assertNoMaskedCredentials(app: { traefik?: TraefikApp; services?: any[] }): void {
   restoreMiddlewareCredentials(app.traefik?.middlewares, undefined, 'traefik.middlewares');
   for (const svc of app.services ?? []) {
     restoreRawLabels(svc?.routing?.raw_labels, undefined, `services.${svc?.name}.routing.raw_labels`);
+    restoreEnvMapping(svc?.env_mapping, undefined, `services.${svc?.name}.env_mapping`);
   }
 }

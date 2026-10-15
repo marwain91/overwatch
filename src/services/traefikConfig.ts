@@ -15,41 +15,41 @@ import { TraefikAppSchema, TraefikTenantSchema, type TraefikApp } from '../model
 import { readTenantTraefik, writeTenantTraefik, loadAliasContext, assertHostAliasesAllowed } from './tenantTraefik';
 import type { TraefikTenant } from '../models/traefik';
 import { NotFoundError } from '../utils/httpErrors';
-import { tenantDir } from './tenantStore';
+import { tenantDir, readTenantEnv } from './tenantStore';
+import { withFileLock } from './fileLock';
 import * as fs from 'fs/promises';
-import { assertTenantRawLabelsOwned } from './traefikLabels';
+import { assertTenantRawLabelsOwned, assertNoGlobalMiddlewareShadowing, globalDefaultMiddlewares } from './traefikLabels';
 import {
+  maskCertResolverEnv,
+  restoreCertResolverEnv,
   restoreMiddlewareCredentials,
   restoreRoutingCredentials,
   restoreTenantTraefik,
 } from './traefikRedaction';
 
-const SECRET_HINTS = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
-
 /**
- * Mask sensitive cert-resolver env values for read APIs. Mirrors the masking
- * pattern used by EnvironmentPage: keys that look secret have their value
- * replaced with bullets in the response body.
+ * Mask cert-resolver env values for read APIs. By default (admins, the CLI)
+ * keys that look secret have their value replaced with bullets; `all` masks
+ * every value, for non-admins.
  */
-export function maskTraefikSecrets(t: TraefikGlobal | undefined): TraefikGlobal | undefined {
+export function maskTraefikSecrets(t: TraefikGlobal | undefined, opts: { all?: boolean } = {}): TraefikGlobal | undefined {
   if (!t?.cert_resolvers) return t;
   const masked: TraefikGlobal = JSON.parse(JSON.stringify(t));
-  for (const r of masked.cert_resolvers ?? []) {
-    if (r.challenge !== 'dns' || !r.env) continue;
-    for (const k of Object.keys(r.env)) {
-      if (SECRET_HINTS.test(k)) {
-        r.env[k] = '••••••••';
-      }
-    }
-  }
+  masked.cert_resolvers = masked.cert_resolvers!.map(r => maskCertResolverEnv(r, opts));
   return masked;
 }
 
 // ─── Global Traefik config ──────────────────────────────────────────────────
 
-export async function getTraefikConfig(opts: { unmask?: boolean } = {}): Promise<TraefikGlobal | undefined> {
+export async function getTraefikConfig(opts: { unmask?: boolean; maskAllEnv?: boolean } = {}): Promise<TraefikGlobal | undefined> {
   const cfg = loadConfig();
-  return opts.unmask ? cfg.traefik : maskTraefikSecrets(cfg.traefik);
+  return opts.unmask ? cfg.traefik : maskTraefikSecrets(cfg.traefik, { all: opts.maskAllEnv });
+}
+
+/** Restore masked env values against the stored (raw, uninterpolated) resolver of the same name. */
+function restoreResolvers(incoming: CertResolver[], stored: unknown): CertResolver[] {
+  const list = Array.isArray(stored) ? stored : [];
+  return incoming.map(r => restoreCertResolverEnv(r, list.find(s => s?.name === r.name)));
 }
 
 export async function updateTraefikConfig(patch: TraefikGlobal): Promise<TraefikGlobal> {
@@ -58,13 +58,16 @@ export async function updateTraefikConfig(patch: TraefikGlobal): Promise<Traefik
   if (validated.middlewares) validated.middlewares = restoreMiddlewareCredentials(validated.middlewares, stored?.middlewares);
   if (validated.overwatch) validated.overwatch = restoreRoutingCredentials(validated.overwatch, stored?.overwatch);
   if (validated.dashboard) validated.dashboard = restoreRoutingCredentials(validated.dashboard, stored?.dashboard);
-  await updateOverwatchConfig(raw => { raw.traefik = validated; });
-  return validated;
+  await updateOverwatchConfig(raw => {
+    if (validated.cert_resolvers) validated.cert_resolvers = restoreResolvers(validated.cert_resolvers, raw.traefik?.cert_resolvers);
+    raw.traefik = validated;
+  });
+  return maskTraefikSecrets(validated)!;
 }
 
 // ─── Cert resolvers ─────────────────────────────────────────────────────────
 
-export async function listCertResolvers(opts: { unmask?: boolean } = {}): Promise<CertResolver[]> {
+export async function listCertResolvers(opts: { unmask?: boolean; maskAllEnv?: boolean } = {}): Promise<CertResolver[]> {
   const t = await getTraefikConfig(opts);
   return t?.cert_resolvers ?? [];
 }
@@ -73,18 +76,20 @@ export async function upsertCertResolver(name: string, body: unknown): Promise<C
   // Force the URL-path name onto the body to avoid mismatches.
   const bodyWithName = { ...(body as Record<string, unknown>), name };
   const validated = CertResolverSchema.parse(bodyWithName);
-  await updateOverwatchConfig(raw => {
+  const saved = await updateOverwatchConfig(raw => {
     raw.traefik = raw.traefik ?? {};
     const list: CertResolver[] = raw.traefik.cert_resolvers ?? [];
+    const [resolver] = restoreResolvers([validated], list);
     const idx = list.findIndex(r => r.name === name);
     if (idx >= 0) {
-      list[idx] = validated;
+      list[idx] = resolver;
     } else {
-      list.push(validated);
+      list.push(resolver);
     }
     raw.traefik.cert_resolvers = list;
+    return resolver;
   });
-  return validated;
+  return maskCertResolverEnv(saved);
 }
 
 export async function deleteCertResolver(name: string): Promise<void> {
@@ -164,10 +169,11 @@ export async function updateAppTraefik(appId: string, body: unknown): Promise<Tr
   const parsed = TraefikAppSchema.parse(body);
   const app = await getApp(appId);
   if (!app) throw new NotFoundError(`App '${appId}' not found`);
+  assertNoGlobalMiddlewareShadowing(parsed, loadConfig().traefik);
   const { createdAt: _c, updatedAt: _u, ...staticPart } = app;
   void _c; void _u;
-  // A non-admin editor saves what the masked read returned; the stored hashes are
-  // restored inside applyApp's lock so a concurrent rotation is not reverted.
+  // A body built from a masked (non-admin) read carries the placeholder; the stored
+  // hashes are restored inside applyApp's lock so a concurrent rotation is not reverted.
   const { app: saved } = await applyApp({ ...staticPart, traefik: parsed }, 'api:traefik-update', {
     restore: (candidate, stored) => {
       const t = (candidate as { traefik: TraefikApp }).traefik;
@@ -198,14 +204,27 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
     throw err;
   }
   const incoming = TraefikTenantSchema.parse(body);
+  // The alias check reads every other tenant's domain and aliases, so the check
+  // and the write hold the lock tenant create takes for its domain check:
+  // otherwise two concurrent writes can both pass and claim the same host.
   // Restoring masked credentials reads the stored value, so it runs under the write lock.
-  await writeTenantTraefik(appId, tenantId, async (stored) => {
+  await withFileLock('tenant-domains', () => writeTenantTraefik(appId, tenantId, async (stored) => {
     const parsed = restoreTenantTraefik(incoming, stored);
-    assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);
     if (parsed.host_aliases && parsed.host_aliases.length > 0) {
       parsed.host_aliases = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
     }
+    if (parsed.raw_labels) {
+      // A tenant label may redirect only to the tenant's own hosts, aliases saved with it included.
+      const domain = await readTenantEnv(appId, tenantId).then(env => env.TENANT_DOMAIN, (err: any) => {
+        if (err?.code === 'ENOENT') return undefined;
+        throw err;
+      });
+      assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels, {
+        hosts: [...(domain ? [domain] : []), ...(parsed.host_aliases ?? [])],
+        globalDefaults: globalDefaultMiddlewares((await getApp(appId)) ?? undefined, loadConfig().traefik),
+      });
+    }
     return parsed;
-  });
+  }));
   return readTenantTraefik(appId, tenantId, { raw: true });
 }

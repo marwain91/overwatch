@@ -9,9 +9,10 @@ import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
 import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
-import { assertAppRawLabelsOwned } from '../services/traefikLabels';
-import { redactAppDefinition, redactAppTraefik, assertNoMaskedCredentials } from '../services/traefikRedaction';
+import { assertAppRawLabelsOwned, assertNoGlobalMiddlewareShadowing } from '../services/traefikLabels';
+import { redactAppDefinition, redactAppTraefik, assertNoMaskedCredentials, restoreServiceEnvMappings } from '../services/traefikRedaction';
 import { assertServiceNamesValid, assertHealthcheckDurationsValid } from '../utils/validators';
+import { loadConfig } from '../config';
 
 const router = Router();
 
@@ -32,8 +33,8 @@ function classifyTagError(error: any): string {
 }
 
 // Reads are open to every role, but inline Traefik credentials (basicAuth hashes,
-// auth raw labels) are for admins, the only role that can edit app definitions.
-// Explicit check: a missing role must not read as admin.
+// auth raw labels) and static env_mapping values are for admins, the only role
+// that can edit app definitions. Explicit check: a missing role must not read as admin.
 const isAdmin = (res: Response) => res.locals.user?.role === 'admin';
 
 // List all apps
@@ -62,6 +63,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   assertServiceNamesValid(parseResult.data.services);
   assertHealthcheckDurationsValid(parseResult.data.services);
   assertAppRawLabelsOwned(parseResult.data.id, parseResult.data.services);
+  assertNoGlobalMiddlewareShadowing(parseResult.data.traefik, loadConfig().traefik);
   assertNoMaskedCredentials(parseResult.data);
   const app = await createApp(parseResult.data);
   res.status(201).json(app);
@@ -90,8 +92,11 @@ router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (r
   assertServiceNamesValid(parseResult.data.services);
   assertHealthcheckDurationsValid(parseResult.data.services);
   assertAppRawLabelsOwned(appId, parseResult.data.services);
-  assertNoMaskedCredentials(parseResult.data);
-  const app = await updateApp(parseResult.data);
+  assertNoGlobalMiddlewareShadowing(parseResult.data.traefik, loadConfig().traefik);
+  // A copy of a non-admin read carries masked static env values; keep the stored ones.
+  const data = restoreServiceEnvMappings(parseResult.data, await getApp(appId));
+  assertNoMaskedCredentials(data);
+  const app = await updateApp(data);
   res.json(app);
 }));
 
@@ -151,15 +156,17 @@ router.post('/:appId/registry/test', validateAppId, requireRole('editor'), async
 }));
 
 // App-scoped Traefik config — middleware library + default_middlewares.
-// Editor+ matches the rest of the app/tenant editing surface.
+// Writes are admin-only like PUT /:appId: default_middlewares attach to every
+// tenant router, so a forwardAuth entry would hand every tenant user's Cookie
+// and Authorization headers to its address.
 router.get('/:appId/traefik', validateAppId, asyncHandler(async (req, res) => {
   const t = await getAppTraefik((req.params as Record<string, string>).appId);
   res.json((isAdmin(res) ? t : redactAppTraefik(t)) ?? null);
 }));
 
-router.put('/:appId/traefik', validateAppId, requireRole('editor'), asyncHandler(async (req, res) => {
+router.put('/:appId/traefik', validateAppId, requireRole('admin'), asyncHandler(async (req, res) => {
   const t = await updateAppTraefik((req.params as Record<string, string>).appId, req.body);
-  res.json(isAdmin(res) ? t : redactAppTraefik(t));
+  res.json(t);
 }));
 
 export default router;
