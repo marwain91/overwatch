@@ -747,7 +747,7 @@ async function stageSnapshot(app: AppDefinition, snapshotId: string, targetTenan
   );
 
   // Find the backup data
-  const { stdout: findOutput } = await execFileAsync('find', [restoreDir, '-name', 'metadata.json', '-type', 'f']);
+  const { stdout: findOutput } = await execFileAsync('find', [restoreDir, '-name', 'metadata.json', '-type', 'f'], { env: { PATH: process.env.PATH } });
   const metadataPath = findOutput.trim();
   if (!metadataPath) {
     throw new RestoreStepError('Invalid backup: metadata.json not found');
