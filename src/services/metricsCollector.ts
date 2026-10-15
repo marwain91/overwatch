@@ -2,6 +2,7 @@ import cron, { ScheduledTask } from 'node-cron';
 import { docker, extractContainerInfo, getManagedContainerNamePattern } from './docker';
 import { eventBus } from './eventBus';
 import { listApps } from './app';
+import { createLimiter } from '../utils/limiter';
 
 export interface ContainerMetrics {
   containerId: string;
@@ -61,6 +62,34 @@ const metricsHistory = new Map<string, RingBuffer<ContainerMetrics>>();
 let scheduledTask: ScheduledTask | null = null;
 let collecting = false;
 const STALE_CONTAINER_MS = 10 * 60 * 1000;
+// Each stats call keeps a dockerd request open for about a second; firing one
+// per container at once hammers dockerd on hosts with hundreds of containers.
+const MAX_CONCURRENT_STATS = 10;
+const STATS_TIMEOUT_MS = 10_000;
+
+/**
+ * One-shot stats with a deadline. A hung call would otherwise keep `collecting`
+ * set forever, freezing metrics, CPU/memory alerts and existence events until a
+ * restart. The abort destroys the request; the race covers a client that
+ * ignores the signal.
+ */
+async function fetchStats(id: string): Promise<any> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`stats for ${id.substring(0, 12)} timed out after ${STATS_TIMEOUT_MS}ms`));
+    }, STATS_TIMEOUT_MS);
+  });
+  // dockerode honours abortSignal on stats, but its typings omit it.
+  const opts = { stream: false as const, abortSignal: controller.signal };
+  try {
+    return await Promise.race([docker.getContainer(id).stats(opts), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function calculateCpuPercent(stats: any): number {
   const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - stats.precpu_stats.cpu_usage.total_usage;
@@ -107,10 +136,10 @@ async function collectMetrics(): Promise<void> {
       c.Names.some(n => pattern.test(n))
     );
 
+    const limit = createLimiter(MAX_CONCURRENT_STATS);
     const results = await Promise.allSettled(
-      managedContainers.map(async (c) => {
-        const container = docker.getContainer(c.Id);
-        const stats = await container.stats({ stream: false });
+      managedContainers.map(c => limit(async () => {
+        const stats = await fetchStats(c.Id);
         const name = c.Names[0].replace(/^\//, '');
         // Labels first, then known apps: the bare name split misreads
         // hyphenated app/tenant ids.
@@ -145,7 +174,7 @@ async function collectMetrics(): Promise<void> {
         metricsHistory.get(name)!.push(metrics);
 
         return metrics;
-      })
+      }))
     );
 
     const allMetrics: ContainerMetrics[] = results
