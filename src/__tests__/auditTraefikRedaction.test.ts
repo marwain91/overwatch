@@ -81,7 +81,8 @@ describe('Traefik bodies are masked before auditing', () => {
   it('keeps the non-secret shape readable', async () => {
     const { entry } = await audit('PUT', '/api/apps', '/demo/traefik', { middlewares: MIDDLEWARES, default_middlewares: ['gate'] });
     expect(entry.body.default_middlewares).toEqual(['gate']);
-    expect(entry.body.middlewares.gate.users).toEqual(['alice:••••••••']);
+    // The audit log's own key denylist then redacts `users` entirely.
+    expect(entry.body.middlewares.gate.users).toBe('[redacted]');
     expect(entry.body.middlewares.rl).toEqual({ type: 'rateLimit', average: 10 });
   });
 
