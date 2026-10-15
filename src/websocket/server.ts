@@ -1,4 +1,5 @@
-import { Server as HTTPServer } from 'http';
+import { Server as HTTPServer, IncomingMessage } from 'http';
+import type { Duplex } from 'stream';
 import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
 import { eventBus, type BroadcastEvent } from '../services/eventBus';
@@ -14,6 +15,11 @@ const MEMBERSHIP_RECHECK_INTERVAL = 60_000; // removed admins lose the socket wi
 const MEMBERSHIP_READ_TIMEOUT = 10_000; // a store read that never settles must not wedge the re-check loop
 // setTimeout overflows (and fires immediately) above 2^31-1 ms.
 const MAX_TIMER_MS = 2_147_483_647;
+// Upgrades bypass the Express rate limits, so the socket gets its own:
+// unauthenticated sockets per client IP and in total, and upgrades per IP.
+const MAX_PENDING_PER_IP = 10;
+const MAX_PENDING = 200;
+const UPGRADE_RATE = { windowMs: 60_000, max: 60 };
 
 // eventBus events relayed verbatim to every authenticated client.
 const BROADCAST_EVENTS: BroadcastEvent[] = [
@@ -31,6 +37,7 @@ let membershipTimer: ReturnType<typeof setInterval> | null = null;
 let eventUnsubscribers: Array<() => void> = [];
 const clients = new Set<WebSocket>();
 const connectionsByUser = new Map<string, number>();
+let upgradeSweepTimer: ReturnType<typeof setInterval> | null = null;
 
 interface SocketState {
   authenticated: boolean;
@@ -166,10 +173,57 @@ async function recheckAll(readTimeoutMs: number): Promise<void> {
   }
 }
 
-export function createWebSocketServer(server: HTTPServer, opts: { membershipRecheckMs?: number; membershipReadTimeoutMs?: number } = {}): WebSocketServer {
+// Answers a refused upgrade with a plain HTTP status, before any WebSocket handshake.
+function refuseUpgrade(socket: Duplex, status: 429 | 503): void {
+  const reason = status === 429 ? 'Too Many Requests' : 'Service Unavailable';
+  socket.once('finish', () => socket.destroy());
+  socket.end(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nRetry-After: 60\r\nContent-Length: 0\r\n\r\n`);
+}
+
+export interface WebSocketServerOptions {
+  membershipRecheckMs?: number;
+  membershipReadTimeoutMs?: number;
+  /** Client address of an upgrade request; index.ts resolves it exactly like Express's req.ip. */
+  clientIp?: (req: IncomingMessage) => string;
+  maxPendingPerIp?: number;
+  maxPending?: number;
+  upgradeRate?: { windowMs: number; max: number };
+}
+
+export function createWebSocketServer(server: HTTPServer, opts: WebSocketServerOptions = {}): WebSocketServer {
   wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
+  const clientIp = opts.clientIp ?? ((req: IncomingMessage) => req.socket.remoteAddress ?? 'unknown');
+  const maxPendingPerIp = opts.maxPendingPerIp ?? MAX_PENDING_PER_IP;
+  const maxPending = opts.maxPending ?? MAX_PENDING;
+  const upgradeRate = opts.upgradeRate ?? UPGRADE_RATE;
+  // Per server instance: a socket of a stopped server that closes late must
+  // not release a slot of its successor.
+  const pendingByIp = new Map<string, number>();
+  let pendingTotal = 0;
+  const upgradesByIp = new Map<string, { count: number; resetAt: number }>();
+
+  const upgradeAllowed = (ip: string): boolean => {
+    const now = Date.now();
+    const entry = upgradesByIp.get(ip);
+    if (!entry || now > entry.resetAt) {
+      upgradesByIp.set(ip, { count: 1, resetAt: now + upgradeRate.windowMs });
+      return true;
+    }
+    entry.count++;
+    return entry.count <= upgradeRate.max;
+  };
+
+  upgradeSweepTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of upgradesByIp) if (now > entry.resetAt) upgradesByIp.delete(ip);
+  }, 60_000);
+  upgradeSweepTimer.unref();
 
   server.on('upgrade', (request, socket, head) => {
+    // Node drops its own 'error' listener from an upgraded socket; a reset
+    // while we answer a refused upgrade must not become an uncaught error.
+    socket.on('error', () => {});
+
     // Only handle /ws path. The request target is client-controlled and may
     // not parse; a throw here is uncaught and would take the whole process
     // down, so an unparseable request is dropped. The Host header is not used
@@ -202,6 +256,41 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
         return;
       }
     }
+
+    let ip: string;
+    try {
+      ip = clientIp(request) || 'unknown';
+    } catch {
+      socket.destroy();
+      return;
+    }
+    if (!upgradeAllowed(ip)) {
+      refuseUpgrade(socket, 429);
+      return;
+    }
+    if ((pendingByIp.get(ip) ?? 0) >= maxPendingPerIp) {
+      refuseUpgrade(socket, 429);
+      return;
+    }
+    if (pendingTotal >= maxPending) {
+      refuseUpgrade(socket, 503);
+      return;
+    }
+
+    // Held from here until the socket authenticates or goes away, whichever is
+    // first (a failed handshake, a refused token and a timeout all close it).
+    pendingTotal++;
+    pendingByIp.set(ip, (pendingByIp.get(ip) ?? 0) + 1);
+    let pendingHeld = true;
+    const releasePending = () => {
+      if (!pendingHeld) return;
+      pendingHeld = false;
+      pendingTotal--;
+      const left = (pendingByIp.get(ip) ?? 1) - 1;
+      if (left <= 0) pendingByIp.delete(ip);
+      else pendingByIp.set(ip, left);
+    };
+    socket.once('close', releasePending);
 
     wss!.handleUpgrade(request, socket, head, (ws) => {
       // An 'error' with no listener is uncaught and kills the process, and an
@@ -236,6 +325,7 @@ export function createWebSocketServer(server: HTTPServer, opts: { membershipRech
           }
           state.authenticated = true;
           state.userEmail = result.email;
+          releasePending();
           // The session ends at token expiry; don't wait for the next re-check.
           state.expiryTimer = setTimeout(
             () => ws.close(4401, 'Session expired'),
@@ -303,6 +393,10 @@ export function stopWebSocketServer(): void {
   }
   for (const off of eventUnsubscribers) off();
   eventUnsubscribers = [];
+  if (upgradeSweepTimer) {
+    clearInterval(upgradeSweepTimer);
+    upgradeSweepTimer = null;
+  }
   for (const client of clients) {
     releaseConnection(client);
     client.terminate();

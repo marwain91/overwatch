@@ -41,7 +41,7 @@ import { startRetention, stopRetention } from './services/retention';
 import { isLegacyFormat, runMigration } from './services/migration';
 import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitialised } from './services/schemaVersions';
 import { createSnapshot, pruneOldSnapshots } from './services/configSnapshots';
-import { resolveTrustProxySetting, pinTrustToProxyHost } from './utils/proxyTrust';
+import { resolveTrustProxySetting, pinTrustToProxyHost, clientIpOf } from './utils/proxyTrust';
 import { installCrashHandlers } from './utils/crashHandlers';
 import cron from 'node-cron';
 
@@ -283,8 +283,8 @@ async function start() {
     console.log(`Database: ${config.database.type} @ ${config.database.host}`);
   });
 
-  // Start WebSocket server
-  createWebSocketServer(server);
+  // Start WebSocket server. Its per-IP limits key on the same client IP as req.ip.
+  createWebSocketServer(server, { clientIp: (req) => clientIpOf(req, app.get('trust proxy fn')) });
 
   // Start monitoring services if enabled
   const monitoringEnabled = config.monitoring?.enabled !== false;
