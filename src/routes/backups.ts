@@ -7,6 +7,8 @@ import {
   restoreBackup,
   deleteSnapshot,
   pruneBackups,
+  DEFAULT_RETENTION,
+  type RetentionPolicy,
 } from '../services/backup';
 import { getBackupInfoCached, listSnapshotsCached } from '../services/backupCache';
 import { getApp } from '../services/app';
@@ -218,18 +220,44 @@ router.delete('/:snapshotId', requireRole('admin'), requireConfirmId('snapshotId
   }
 }));
 
-// Prune old backups — admin (irreversibly drops snapshots).
+const RETENTION_MAX: RetentionPolicy = { keepDaily: 365, keepWeekly: 52, keepMonthly: 120 };
+
+/** Omitted means the default; 0 is a real value (keep none of that kind). */
+function parseRetentionPolicy(body: Record<string, unknown>): RetentionPolicy | string {
+  const policy = { ...DEFAULT_RETENTION };
+  for (const key of Object.keys(RETENTION_MAX) as Array<keyof RetentionPolicy>) {
+    const raw = body[key];
+    if (raw === undefined || raw === null) continue;
+    const value = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > RETENTION_MAX[key]) {
+      return `${key} must be an integer between 0 and ${RETENTION_MAX[key]}`;
+    }
+    policy[key] = value;
+  }
+  if (policy.keepDaily + policy.keepWeekly + policy.keepMonthly === 0) {
+    return 'Refusing a retention policy that keeps no snapshots';
+  }
+  return policy;
+}
+
+// Prune old backups — admin (irreversibly drops snapshots). `dryRun: true`
+// returns what the policy would forget without changing anything.
 router.post('/prune', requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId } = (req.params as Record<string, string>);
-  const keepDaily = Math.max(0, Math.min(Number(req.body.keepDaily) || 7, 365));
-  const keepWeekly = Math.max(0, Math.min(Number(req.body.keepWeekly) || 4, 52));
-  const keepMonthly = Math.max(0, Math.min(Number(req.body.keepMonthly) || 12, 120));
-  const result = await pruneBackups(appId, keepDaily, keepWeekly, keepMonthly);
+  const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+  const policy = parseRetentionPolicy(body);
+  if (typeof policy === 'string') {
+    return res.status(400).json({ error: policy });
+  }
+  const dryRun = body.dryRun === true;
+  const result = await pruneBackups(appId, policy, { dryRun });
 
-  if (result.success) {
-    res.json({ success: true, message: 'Old backups pruned' });
-  } else {
+  if (!result.success) {
     res.status(500).json({ error: result.error });
+  } else if (dryRun) {
+    res.json({ ...result, policy });
+  } else {
+    res.json({ success: true, message: 'Old backups pruned', policy });
   }
 }));
 

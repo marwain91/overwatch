@@ -658,22 +658,87 @@ export async function deleteSnapshot(appId: string, snapshotId: string): Promise
   }
 }
 
-export async function pruneBackups(appId: string, keepDaily: number = 7, keepWeekly: number = 4, keepMonthly: number = 12): Promise<{ success: boolean; error?: string }> {
+export interface RetentionPolicy {
+  keepDaily: number;
+  keepWeekly: number;
+  keepMonthly: number;
+}
+
+export const DEFAULT_RETENTION: RetentionPolicy = { keepDaily: 7, keepWeekly: 4, keepMonthly: 12 };
+
+export interface PruneSnapshotRef {
+  id: string;
+  shortId: string;
+  time: string;
+  tenantId?: string;
+  tags: string[];
+}
+
+export interface PruneResult {
+  success: boolean;
+  error?: string;
+  dryRun?: boolean;
+  /** Dry run only: the snapshots the policy would forget. */
+  remove?: PruneSnapshotRef[];
+  removeCount?: number;
+  keepCount?: number;
+}
+
+export async function pruneBackups(
+  appId: string,
+  policy: Partial<RetentionPolicy> = {},
+  options: { dryRun?: boolean } = {},
+): Promise<PruneResult> {
+  const { keepDaily, keepWeekly, keepMonthly } = { ...DEFAULT_RETENTION, ...policy };
+  if (keepDaily + keepWeekly + keepMonthly === 0) {
+    throw new ValidationError('Refusing a retention policy that keeps no snapshots');
+  }
+
   const app = await getApp(appId);
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
+  // Each snapshot path is a unique temp dir, so restic's default host+paths
+  // grouping puts every snapshot in its own group and forgets nothing. Group by
+  // the tag set (app:X + tenant:Y, plus e.g. pre-restore) instead, and filter on
+  // app:X: the repository may be shared with other apps, which this app's
+  // policy must never touch.
+  const args = [
+    'forget', '--tag', `app:${appId}`, '--group-by', 'tags',
+    '--keep-daily', String(keepDaily),
+    '--keep-weekly', String(keepWeekly),
+    '--keep-monthly', String(keepMonthly),
+    ...(options.dryRun ? ['--dry-run', '--json'] : ['--prune']),
+  ];
+
   try {
-    await execFileAsync('restic', [
-      'forget',
-      '--keep-daily', String(keepDaily),
-      '--keep-weekly', String(keepWeekly),
-      '--keep-monthly', String(keepMonthly),
-      '--prune',
-    ], { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS });
+    const { stdout } = await execFileAsync('restic', args, { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS });
+    if (options.dryRun) return { dryRun: true, ...summarizeForgetPlan(stdout) };
     invalidateBackupCache(appId);
     return { success: true };
   } catch (error: any) {
+    if (error instanceof HttpError) throw error;
     console.error('[Backup] Prune failed:', error.message);
     return { success: false, error: 'Prune operation failed. Check server logs.' };
   }
+}
+
+/** Parse `restic forget --json` output (one entry per group, each with keep/remove lists). */
+function summarizeForgetPlan(stdout: string): Required<Pick<PruneResult, 'success' | 'remove' | 'removeCount' | 'keepCount'>> {
+  const groups = JSON.parse(stdout || '[]') as Array<{ keep?: any[] | null; remove?: any[] | null }>;
+  const remove: PruneSnapshotRef[] = [];
+  let keepCount = 0;
+  for (const g of groups) {
+    keepCount += g.keep?.length ?? 0;
+    for (const s of g.remove ?? []) {
+      const tags: string[] = s.tags || [];
+      remove.push({
+        id: s.id,
+        shortId: s.short_id,
+        time: s.time,
+        tenantId: tags.find(t => t.startsWith('tenant:'))?.slice('tenant:'.length),
+        tags,
+      });
+    }
+  }
+  return { success: true, remove, removeCount: remove.length, keepCount };
 }
