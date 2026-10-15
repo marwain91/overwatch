@@ -125,3 +125,25 @@ describe('init output content', () => {
     expect(files['overwatch/docker-compose.yml']).toContain('POSTGRES_PASSWORD');
   });
 });
+
+describe('init and the admin-users seed', () => {
+  afterEach(() => {
+    delete process.env.ALLOWED_ADMIN_EMAILS;
+    vi.doUnmock('../config');
+  });
+
+  it('leaves admin-users.json to the store, so ALLOWED_ADMIN_EMAILS seeds the first login', async () => {
+    const { generateFiles } = await import('../cli/init');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await generateFiles(answers(deployDir));
+    const dataDir = path.join(deployDir, 'overwatch', 'data');
+    await expect(fs.access(path.join(dataDir, 'admin-users.json'))).rejects.toThrow();
+
+    // First server start: the store creates the file from the seed.
+    process.env.ALLOWED_ADMIN_EMAILS = 'a@example.com';
+    vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
+    vi.resetModules();
+    const { isAdminEmail } = await import('../services/users');
+    expect(await isAdminEmail('a@example.com')).toBe(true);
+  });
+});
