@@ -113,23 +113,56 @@ async function readAdminUsers(opts: { locked?: boolean } = {}): Promise<AdminUse
   return opts.locked ? seedAdminUsers() : withFileLock(ADMIN_USERS_LOCK, seedAdminUsers);
 }
 
+// Every authenticated request, WebSocket auth and MCP call resolves its caller
+// here. The CLI writes the file from another process, so the cache is checked
+// against the file's metadata on every call rather than trusted, and in-process
+// writes drop it (an atomic rename can reuse an inode).
+let usersCache: { signature: string; users: AdminUser[] } | null = null;
+let usersCacheGeneration = 0;
+
+/** Inode, size, mtime and ctime (ns) of the file; null when it is absent. */
+async function fileSignature(file: string): Promise<string | null> {
+  try {
+    const st = await fs.stat(file, { bigint: true });
+    return `${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function readAdminUsersCached(): Promise<AdminUser[]> {
+  const generation = usersCacheGeneration;
+  // Taken before reading, so a write racing the read invalidates the entry next time.
+  const signature = await fileSignature(getAdminUsersFile());
+  if (signature && usersCache?.signature === signature) return structuredClone(usersCache.users);
+  const users = await readAdminUsers();
+  if (signature && generation === usersCacheGeneration) usersCache = { signature, users: structuredClone(users) };
+  return users;
+}
+
 async function saveAdminUsers(users: AdminUser[]): Promise<void> {
-  await ensureDataDir();
-  await writeJsonAtomic(getAdminUsersFile(), users, { mode: 0o644 });
+  try {
+    await ensureDataDir();
+    await writeJsonAtomic(getAdminUsersFile(), users, { mode: 0o644 });
+  } finally {
+    usersCache = null;
+    usersCacheGeneration++;
+  }
 }
 
 export async function listAdminUsers(): Promise<AdminUser[]> {
-  return readAdminUsers();
+  return readAdminUsersCached();
 }
 
 export async function isAdminEmail(email: string): Promise<boolean> {
-  const users = await readAdminUsers();
+  const users = await readAdminUsersCached();
   return users.some(u => u.email.toLowerCase() === email.toLowerCase());
 }
 
 /** Look up the current role for an email. Returns undefined if email isn't an admin. */
 export async function getUserRole(email: string): Promise<AdminRole | undefined> {
-  const users = await readAdminUsers();
+  const users = await readAdminUsersCached();
   const u = users.find(u => u.email.toLowerCase() === email.toLowerCase());
   return u ? normaliseRole(u.role) : undefined;
 }
