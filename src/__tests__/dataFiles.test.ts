@@ -20,11 +20,10 @@ describe('data file registry', () => {
     ]);
   });
 
-  it('derives the snapshot list, now including notification channels and MCP OAuth state', () => {
+  it('derives the snapshot list: notification channels in, audit log and MCP OAuth state out', () => {
     expect([...snapshotDataFiles()].sort()).toEqual([
       '.schema-versions.json', 'admin-users.json', 'apps.runtime.json', 'apps.trashed.json',
-      'audit.log', 'env-vars.json', 'mcp-oauth.json', 'notification-channels.json',
-      'tenant-env-overrides.json',
+      'env-vars.json', 'notification-channels.json', 'tenant-env-overrides.json',
     ]);
   });
 
@@ -37,7 +36,7 @@ describe('data file registry', () => {
 describe('config snapshots use the registry', () => {
   afterEach(() => { vi.resetModules(); vi.doUnmock('../config'); });
 
-  it('captures notification-channels.json and mcp-oauth.json', async () => {
+  it('captures notification-channels.json but not mcp-oauth.json', async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-snap-'));
     try {
       await fs.writeFile(path.join(dataDir, 'notification-channels.json'), '[]', { mode: 0o600 });
@@ -45,7 +44,8 @@ describe('config snapshots use the registry', () => {
       vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
       const { createSnapshot } = await import('../services/configSnapshots');
       const snap = await createSnapshot('registry');
-      expect(snap.files).toEqual(expect.arrayContaining(['notification-channels.json', 'mcp-oauth.json']));
+      expect(snap.files).toContain('notification-channels.json');
+      expect(snap.files).not.toContain('mcp-oauth.json');
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true });
     }

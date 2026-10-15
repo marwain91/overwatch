@@ -40,7 +40,7 @@ import { startAlertEngine, stopAlertEngine } from './services/alertEngine';
 import { startRetention, stopRetention } from './services/retention';
 import { isLegacyFormat, runMigration } from './services/migration';
 import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitialised } from './services/schemaVersions';
-import { createSnapshot, pruneOldSnapshots } from './services/configSnapshots';
+import { createSnapshot, createBootSnapshot, pruneOldSnapshots } from './services/configSnapshots';
 import { resolveTrustProxySetting } from './utils/proxyTrust';
 import cron from 'node-cron';
 
@@ -255,10 +255,13 @@ async function start() {
   startSchedulerReconciler();
 
   // Daily config snapshot: protects against apps.d/, apps.runtime.json, env-vars.json loss.
-  // 03:17 UTC (off-peak). Also run one immediately on boot so we have a recent snapshot.
+  // 03:17 UTC (off-peak). Also one on boot, unless a snapshot is under 10 minutes
+  // old: boot snapshots have their own cap, so a crash loop cannot rotate out the dailies.
   await runStartupStep('initial config snapshot', async () => {
-    const info = await createSnapshot('boot');
-    console.log(`[snapshot] Created ${info.name} (${info.files.length} file(s))`);
+    const info = await createBootSnapshot();
+    console.log(info
+      ? `[snapshot] Created ${info.name} (${info.files.length} file(s))`
+      : '[snapshot] Boot snapshot skipped: the last one is under 10 minutes old');
   });
   cron.schedule('17 3 * * *', async () => {
     try {
