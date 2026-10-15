@@ -8,7 +8,12 @@ import { PassThrough } from 'stream';
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('child_process', async (orig) => {
   const actual = await orig<typeof import('child_process')>();
-  return { ...actual, spawn: spawnMock };
+  // execFile only runs the probe for `timeout` in the DB container: report none.
+  const execFile = (_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+    cb(Object.assign(new Error('not available in tests'), { code: 127 }), '', '');
+    return { on() {} };
+  };
+  return { ...actual, spawn: spawnMock, execFile };
 });
 
 const poolCtor = vi.hoisted(() => vi.fn());
@@ -51,6 +56,7 @@ let tmpDir: string;
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-hardening-'));
   spawnMock.mockReset();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
   spawnMock.mockImplementation(() => fakeProc());
   poolCtor.mockClear();
   mysqlCreatePool.mockClear();

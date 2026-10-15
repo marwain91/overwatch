@@ -1,8 +1,6 @@
 import mysql from 'mysql2/promise';
-import { spawn } from 'child_process';
-import { createReadStream, createWriteStream } from 'fs';
 import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
-import { BaseDatabaseAdapter, STDERR_TAIL_BYTES } from './base';
+import { BaseDatabaseAdapter } from './base';
 
 /**
  * A database name as a database-level GRANT/REVOKE pattern: `_` and `%` are
@@ -151,71 +149,26 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
 
   async dumpDatabase(tenantId: string, outputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
-    const containerName = this.getContainerName();
-
-    // Stream mysqldump's stdout directly to disk. Previously we buffered the
-    // entire dump in memory via execFile (with a 100 MB cap), which broke for
-    // any DB whose dump exceeded that — and crashed the Overwatch container
-    // for very large dumps even before the cap. spawn + pipe handles arbitrary
-    // sizes. MYSQL_PWD is named in argv but its value comes from the spawned
-    // process env, so the password never shows up in `ps` output.
-    return new Promise<void>((resolve, reject) => {
-      const proc = spawn('docker', [
-        'exec', '-e', 'MYSQL_PWD',
-        containerName, 'mysqldump', '-u', this.config.rootUser,
-        '--single-transaction', dbName,
-      ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
-
-      const out = createWriteStream(outputPath, { mode: 0o600 });
-      proc.stdout.pipe(out);
-
-      let stderr = '';
-      proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-      const fail = (err: Error) => { proc.kill(); out.destroy(); reject(err); };
-      proc.on('error', fail);
-      out.on('error', fail);
-      proc.on('close', (code) => {
-        if (code !== 0) {
-          out.end();
-          reject(new Error(`mysqldump exited ${code}: ${stderr.slice(0, 1000)}`));
-          return;
-        }
-        // Resolve only once the dump is on disk: a write that fails on the
-        // final flush must fail the backup, not archive a truncated dump.
-        if (out.writableFinished) resolve();
-        else { out.once('finish', () => resolve()); out.end(); }
-      });
-    });
+    // --routines/--events: stored procedures, functions and events are not
+    // dumped by default (triggers are). MYSQL_PWD is named in argv but its
+    // value comes from the spawned process env, so it never shows up in `ps`.
+    return this.runDumpToFile({
+      execOptions: ['-e', 'MYSQL_PWD'],
+      argv: ['mysqldump', '-u', this.config.rootUser, '--single-transaction', '--routines', '--events', dbName],
+      env: { MYSQL_PWD: this.config.rootPassword },
+      label: 'mysqldump',
+    }, outputPath);
   }
 
   async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
-    const containerName = this.getContainerName();
-
     // spawn (no shell) with stdin pipe; password goes via env, not argv
-    return new Promise<void>((resolve, reject) => {
-      const proc = spawn('docker', [
-        'exec', '-i', '-e', 'MYSQL_PWD',
-        containerName, 'mysql', '-u', this.config.rootUser, dbName,
-      ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
-
-      // Both streams need error listeners: an unhandled stream error is
-      // uncaught and kills the process. The client closes stdin early when it
-      // stops at a SQL error (EPIPE here; its exit code and stderr say why).
-      const input = createReadStream(inputPath);
-      input.on('error', (err) => { proc.kill(); reject(err); });
-      proc.stdin.on('error', () => {});
-      input.pipe(proc.stdin);
-
-      let stderr = '';
-      proc.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-STDERR_TAIL_BYTES); });
-      proc.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`mysql restore exited with code ${code}: ${stderr}`));
-      });
-      proc.on('error', reject);
-    });
+    return this.runRestoreFromFile({
+      execOptions: ['-e', 'MYSQL_PWD'],
+      argv: ['mysql', '-u', this.config.rootUser, dbName],
+      env: { MYSQL_PWD: this.config.rootPassword },
+      label: 'mysql restore',
+    }, inputPath);
   }
 
   async getServerInfo(): Promise<DatabaseServerInfo> {

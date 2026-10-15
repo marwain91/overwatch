@@ -8,7 +8,12 @@ import * as path from 'path';
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('child_process', async (orig) => {
   const actual = await orig<typeof import('child_process')>();
-  return { ...actual, spawn: spawnMock };
+  // execFile only runs the probe for `timeout` in the DB container: report none.
+  const execFile = (_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+    cb(Object.assign(new Error('not available in tests'), { code: 127 }), '', '');
+    return { on() {} };
+  };
+  return { ...actual, spawn: spawnMock, execFile };
 });
 vi.mock('pg', () => ({ Pool: class { on() {} end = vi.fn(async () => {}); } }));
 vi.mock('mysql2/promise', () => ({ default: { createPool: vi.fn(() => ({ end: vi.fn(async () => {}) })) } }));
@@ -39,6 +44,7 @@ beforeEach(async () => {
   sqlFile = path.join(tmpDir, 'in.sql');
   await fs.writeFile(sqlFile, 'select 1;');
   spawnMock.mockReset();
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
 afterEach(async () => {

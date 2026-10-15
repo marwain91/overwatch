@@ -1,8 +1,6 @@
 import { Pool } from 'pg';
-import { spawn } from 'child_process';
-import { createReadStream, createWriteStream } from 'fs';
 import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
-import { BaseDatabaseAdapter, STDERR_TAIL_BYTES } from './base';
+import { BaseDatabaseAdapter } from './base';
 
 /**
  * PostgreSQL database adapter
@@ -176,68 +174,38 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
 
   async dumpDatabase(tenantId: string, outputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
-    const containerName = this.getContainerName();
-
-    // Stream pg_dump's stdout directly to disk. See mysql.ts for the same fix —
-    // the previous execFile-with-stdout-buffer pattern broke for dumps larger
-    // than the 100 MB cap. PGPASSWORD is named in argv but its value comes from the spawned
-    // process env, so the password never shows up in `ps` output.
-    return new Promise<void>((resolve, reject) => {
-      const proc = spawn('docker', [
-        'exec', '-e', 'PGPASSWORD',
-        containerName, 'pg_dump', '-U', this.config.rootUser, '-d', dbName,
-      ], { env: { ...process.env, PGPASSWORD: this.config.rootPassword } });
-
-      const out = createWriteStream(outputPath, { mode: 0o600 });
-      proc.stdout.pipe(out);
-
-      let stderr = '';
-      proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-      const fail = (err: Error) => { proc.kill(); out.destroy(); reject(err); };
-      proc.on('error', fail);
-      out.on('error', fail);
-      proc.on('close', (code) => {
-        if (code !== 0) {
-          out.end();
-          reject(new Error(`pg_dump exited ${code}: ${stderr.slice(0, 1000)}`));
-          return;
-        }
-        // Resolve only once the dump is on disk: a write that fails on the
-        // final flush must fail the backup, not archive a truncated dump.
-        if (out.writableFinished) resolve();
-        else { out.once('finish', () => resolve()); out.end(); }
-      });
-    });
+    // --no-owner/--no-privileges: the dump must not name the source tenant's
+    // role, or a restore into another tenant hands that role the objects.
+    // PGPASSWORD is named in argv but its value comes from the spawned process
+    // env, so the password never shows up in `ps` output.
+    return this.runDumpToFile({
+      execOptions: ['-e', 'PGPASSWORD'],
+      argv: ['pg_dump', '-U', this.config.rootUser, '--no-owner', '--no-privileges', '-d', dbName],
+      env: { PGPASSWORD: this.config.rootPassword },
+      label: 'pg_dump',
+    }, outputPath);
   }
 
   async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
-    const containerName = this.getContainerName();
-
-    // spawn (no shell) with stdin pipe; password goes via env, not argv
-    return new Promise<void>((resolve, reject) => {
-      const proc = spawn('docker', [
-        'exec', '-i', '-e', 'PGPASSWORD',
-        containerName, 'psql', '-U', this.config.rootUser, '-d', dbName,
-      ], { env: { ...process.env, PGPASSWORD: this.config.rootPassword } });
-
-      // Both streams need error listeners: an unhandled stream error is
-      // uncaught and kills the process. The client closes stdin early when it
-      // stops at a SQL error (EPIPE here; its exit code and stderr say why).
-      const input = createReadStream(inputPath);
-      input.on('error', (err) => { proc.kill(); reject(err); });
-      proc.stdin.on('error', () => {});
-      input.pipe(proc.stdin);
-
-      let stderr = '';
-      proc.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-STDERR_TAIL_BYTES); });
-      proc.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`psql restore exited with code ${code}: ${stderr}`));
-      });
-      proc.on('error', reject);
-    });
+    const role = this.getUserName(tenantId);
+    this.validateIdentifiers(dbName, role);
+    // ON_ERROR_STOP + one transaction: without them psql reports success after
+    // SQL errors and leaves a half-applied dump. A --no-owner dump's objects
+    // belong to whoever creates them, so the dump runs as the tenant's role
+    // (SET ROLE inside the same transaction). Dumps from older versions carry
+    // OWNER TO statements naming the dumped tenant's role, which that same role
+    // may run on its own objects; one naming another tenant's role fails.
+    return this.runRestoreFromFile({
+      execOptions: ['-e', 'PGPASSWORD'],
+      argv: [
+        'psql', '-U', this.config.rootUser, '-d', dbName,
+        '-v', 'ON_ERROR_STOP=1', '--single-transaction',
+        '-c', `SET ROLE "${role}"`, '-f', '-',
+      ],
+      env: { PGPASSWORD: this.config.rootPassword },
+      label: 'psql restore',
+    }, inputPath);
   }
 
   async getServerInfo(): Promise<DatabaseServerInfo> {
