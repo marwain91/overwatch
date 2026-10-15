@@ -6,7 +6,8 @@
 - **Email Allowlist**: Only emails in the admin users list can access the panel
 - **JWT Sessions**: 24-hour expiring tokens for session management
 - **Self-removal protection**: Cannot remove yourself or the last admin
-- **Rate Limiting**: API rate limiting on authentication and admin endpoints
+- **Rate Limiting**: API rate limiting on authentication and admin endpoints, keyed by client IP
+- **Client IPs**: `X-Forwarded-For` is honoured only from the Traefik container (resolved by name), so a tenant on the shared Docker network cannot forge its client IP to dodge per-IP limits or fake audit IPs. See [Deployment: Client IPs behind the reverse proxy](deployment.md#client-ips-behind-the-reverse-proxy)
 
 ## Secrets Management
 

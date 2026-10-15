@@ -41,7 +41,7 @@ import { startRetention, stopRetention } from './services/retention';
 import { isLegacyFormat, runMigration } from './services/migration';
 import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitialised } from './services/schemaVersions';
 import { createSnapshot, pruneOldSnapshots } from './services/configSnapshots';
-import { resolveTrustProxySetting } from './utils/proxyTrust';
+import { resolveTrustProxySetting, pinTrustToProxyHost } from './utils/proxyTrust';
 import { installCrashHandlers } from './utils/crashHandlers';
 import cron from 'node-cron';
 
@@ -89,7 +89,13 @@ async function start() {
   const PORT = process.env.PORT || 3002;
 
   // Trust only configured proxy hops for correct req.ip in rate limiting/audit.
-  app.set('trust proxy', resolveTrustProxySetting());
+  // A hop count is pinned to the Traefik container: tenants share its network
+  // and could otherwise connect directly with a forged X-Forwarded-For.
+  const proxyTrust = await pinTrustToProxyHost(resolveTrustProxySetting(), {
+    host: process.env.OVERWATCH_TRUST_PROXY_HOST?.trim() || `${config.project.prefix}-traefik`,
+  });
+  app.set('trust proxy', proxyTrust.setting);
+  app.use(proxyTrust.flagUntrustedForwarding);
 
   // Middleware
   app.use(express.json({ limit: '1mb' }));
@@ -301,6 +307,7 @@ async function start() {
     console.log(`\n${signal} received — shutting down gracefully...`);
 
     stopRetention();
+    proxyTrust.stop();
     stopSchedulerReconciler();
     setAppsChangedHook(undefined);
     stopBackupScheduler();

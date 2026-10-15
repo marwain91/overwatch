@@ -48,6 +48,24 @@ Overwatch needs access to:
 3. **Apps directory** — mounted volume for tenant compose files
 4. **Reverse proxy** (Traefik, nginx, etc.) — shares the Docker network for routing
 
+## Client IPs behind the reverse proxy
+
+Per-IP rate limits and the audit log use the client address from `X-Forwarded-For`, which only the reverse proxy may set. Every tenant container shares the Docker network with Overwatch, so a compromised tenant could otherwise connect to `overwatch:3002` directly with a forged header, slip past the per-IP limits (including `/oauth/register`) and fake audit IPs.
+
+| `OVERWATCH_TRUST_PROXY` | Behaviour |
+|---|---|
+| unset or `1` (default) | One hop, **pinned to the Traefik container**: `X-Forwarded-For` is honoured only on connections whose peer address is what `OVERWATCH_TRUST_PROXY_HOST` resolves to (default `<project.prefix>-traefik`, the container name `overwatch infra deploy` gives Traefik). The name is re-resolved every 30 s, and at once when another peer sends the header, so a Traefik restart with a new address is followed. |
+| `2`, `3`, ... | Same, with that many hops; the first hop must still be Traefik (for a CDN or load balancer in front of Traefik). |
+| IP, CIDR or list (`172.18.0.0/16`, `10.0.0.5, loopback`) | Trusted exactly as given; nothing is resolved. |
+| `true` | Every hop from every peer is trusted. Avoid on a shared network. |
+| `false` / `0` | `X-Forwarded-For` is ignored; requests are keyed by the socket peer. |
+
+`OVERWATCH_TRUST_PROXY_HOST` names the proxy to resolve; `none` turns pinning off and trusts the hop from any peer (the behaviour before this change).
+
+If the proxy name cannot be resolved (for example Overwatch started before Traefik, or no Traefik container exists), Overwatch logs `[proxy-trust] WARNING: cannot resolve the reverse proxy ...` and falls back to the previous behaviour (trust the hop from any peer) until a later lookup succeeds. It never falls back to keying every request by the proxy's own address, which would put all admins in one rate-limit bucket.
+
+When a peer other than the proxy sends `X-Forwarded-For`, Overwatch ignores the header and logs `[proxy-trust] Ignoring X-Forwarded-For from <ip>` (at most once per 10 minutes per peer). If that peer is your real reverse proxy (nginx on the host, a second proxy, a renamed Traefik container), set `OVERWATCH_TRUST_PROXY` to its IP/CIDR or `OVERWATCH_TRUST_PROXY_HOST` to its DNS name; until then all requests through it share one rate-limit bucket.
+
 ## Volume Mounts
 
 | Mount | Description |
@@ -67,6 +85,7 @@ Overwatch needs access to:
 - [ ] Connect to shared Docker network (same network as database)
 - [ ] Mount Docker credentials (`/root/.docker`) if using private registry
 - [ ] Configure reverse proxy (Traefik/nginx) for HTTPS
+- [ ] Check the startup log for `[proxy-trust]`: it should say `X-Forwarded-For trusted only from '<prefix>-traefik'`. If it warns instead, see [Client IPs behind the reverse proxy](#client-ips-behind-the-reverse-proxy)
 - [ ] Set appropriate file permissions on mounted volumes
 - [ ] Set resource limits (`deploy.resources.limits`)
 - [ ] Verify healthcheck endpoint responds (`/health`)
