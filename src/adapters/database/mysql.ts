@@ -177,7 +177,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       await connection.query(`CREATE DATABASE \`${dbName}\` CHARACTER SET ${charset} COLLATE ${collation}`);
     } catch (error: any) {
       // MySQL drops table by table: once DROP was sent, the database may be changed.
-      if (!dropIssued) throw new DatabaseResetRefusedError(`Database ${dbName} was not reset: ${error?.message || error}`, { cause: error });
+      if (!dropIssued) throw new DatabaseResetRefusedError(`Database ${dbName} was not reset: ${error?.message || error}`);
       throw error;
     } finally {
       if (connection) {

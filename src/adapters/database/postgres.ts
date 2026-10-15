@@ -216,7 +216,7 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     const safeDb = dbName.replace(/"/g, '""');
     const safeUser = userName.replace(/"/g, '""');
     const literal = (v: string) => `'${String(v).replace(/'/g, "''")}'`;
-    const refused = (error: any) => new DatabaseResetRefusedError(`Database ${dbName} was not reset: ${error?.message || error}`, { cause: error });
+    const refused = (error: any) => new DatabaseResetRefusedError(`Database ${dbName} was not reset: ${error?.message || error}`);
 
     let client: PoolClient;
     try {

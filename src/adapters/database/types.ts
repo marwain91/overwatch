@@ -47,8 +47,8 @@ export interface CreateDatabaseResult {
  * the drop was refused): the database is exactly as it was.
  */
 export class DatabaseResetRefusedError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
+  constructor(message: string) {
+    super(message);
     this.name = 'DatabaseResetRefusedError';
   }
 }
