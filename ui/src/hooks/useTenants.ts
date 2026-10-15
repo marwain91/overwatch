@@ -94,7 +94,8 @@ export function useTenantBackups(appId: string, tenantId: string | null) {
 export function useCreateBackup(appId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (tenantId: string) => api.post(`/apps/${appId}/backups`, { tenantId }),
+    mutationFn: (tenantId: string) =>
+      api.post<{ success: boolean; snapshotId?: string; incomplete?: boolean; missingPaths?: string[] }>(`/apps/${appId}/backups`, { tenantId }),
     onSuccess: (_, tenantId) => {
       qc.invalidateQueries({ queryKey: ['backups', appId, tenantId] });
       qc.invalidateQueries({ queryKey: ['backups', appId], exact: true });

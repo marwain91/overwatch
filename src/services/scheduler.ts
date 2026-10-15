@@ -1,6 +1,6 @@
 import cron, { ScheduledTask } from 'node-cron';
 import * as path from 'path';
-import { backupAllTenants } from './backup';
+import { backupAllTenants, sweepStaleBackupTempDirs } from './backup';
 import { listApps } from './app';
 import { getDataDir } from '../config';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
@@ -62,8 +62,16 @@ async function markEnd(appId: string): Promise<void> {
 }
 
 /** On boot, report (don't automatically resume) any runs that were in-flight when
- * the previous process died. Operator can investigate and re-run manually. */
+ * the previous process died. Operator can investigate and re-run manually.
+ * Also removes the staging dirs such runs left behind (they hold tenant data). */
 export async function reportAbandonedRuns(): Promise<void> {
+  try {
+    const swept = await sweepStaleBackupTempDirs();
+    if (swept > 0) console.log(`[Scheduler] Removed ${swept} stale backup staging dir(s)`);
+  } catch (err: any) {
+    console.error(`[Scheduler] Could not sweep stale backup staging dirs: ${err?.message || err}`);
+  }
+
   const s = await loadState();
   if (s.inFlight.length === 0) return;
   for (const run of s.inFlight) {
@@ -109,7 +117,16 @@ export function startBackupScheduler(appId: string, schedule: string): void {
     await markStart(appId);
     try {
       const result = await backupAllTenants(appId);
-      console.log(
+      // Failures go to the error log: a scheduled run has no one watching it.
+      if (result.error) console.error(`[Scheduler] Backup run for app '${appId}' failed: ${result.error}`);
+      for (const r of result.results) {
+        if (!r.success) {
+          console.error(`[Scheduler] Backup of ${appId}/${r.tenantId} failed: ${r.error}`);
+        } else if (r.incomplete) {
+          console.error(`[Scheduler] Backup of ${appId}/${r.tenantId} is incomplete; not backed up: ${(r.missingPaths ?? []).join(', ')}`);
+        }
+      }
+      (result.success ? console.log : console.error)(
         `[Scheduler] Backup for app '${appId}' complete — success: ${result.successCount}, failed: ${result.failCount}`
       );
     } catch (error) {

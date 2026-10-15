@@ -1,4 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+
+let appsDir = '';
 
 const mockApp = {
   id: 'gadgets',
@@ -20,7 +25,7 @@ const mockDumpDatabase = vi.fn();
 
 vi.mock('../config', () => ({
   loadConfig: () => ({ project: { name: 'acme', prefix: 'acme', db_prefix: 'acme' } }),
-  getAppsDir: () => '/tmp/apps',
+  getAppsDir: () => appsDir,
   resolveEnvValue: (s: string) => s,
 }));
 
@@ -41,6 +46,10 @@ vi.mock('../services/docker', () => ({
   listTenants: vi.fn(async () => [{ appId: 'gadgets', tenantId: 'daktela' }]),
 }));
 
+vi.mock('../services/fileLock', () => ({
+  withTenantLock: (_a: string, _t: string, fn: () => Promise<unknown>) => fn(),
+}));
+
 vi.mock('child_process', () => ({
   execFile: (_cmd: string, _args: string[], _opts: any, cb: Function) => {
     // 'restic cat config' → succeeds (repo initialized); anything else also succeeds
@@ -52,13 +61,22 @@ vi.mock('child_process', () => ({
 import { createBackup, backupAllTenants } from '../services/backup';
 
 describe('Scheduler silent-failure regression', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    // backupAllTenants enumerates the tenant directories (with a .env).
+    appsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bksilent-'));
+    const dir = path.join(appsDir, 'gadgets', 'tenants', 'daktela');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, '.env'), 'IMAGE_TAG=1\n');
     process.env.RESTIC_PASSWORD = 'test';
     process.env.S3_ENDPOINT = 'http://s3';
     process.env.S3_BUCKET = 'bucket';
     process.env.S3_AK = 'ak';
     process.env.S3_SK = 'sk';
+  });
+
+  afterEach(async () => {
+    await fs.rm(appsDir, { recursive: true, force: true });
   });
 
   it('createBackup returns success:false when mysqldump throws Unknown database', async () => {

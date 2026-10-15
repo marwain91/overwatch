@@ -131,9 +131,14 @@ router.post('/', requireRole('editor'), asyncHandler(async (req, res) => {
   const result = await createBackup(appId, tenantId);
 
   if (result.success) {
-    res.json({ success: true, snapshotId: result.snapshotId });
+    res.json({
+      success: true,
+      snapshotId: result.snapshotId,
+      // Some service paths could not be copied: the snapshot is not a full backup.
+      ...(result.incomplete ? { incomplete: true, missingPaths: result.missingPaths } : {}),
+    });
   } else {
-    res.status(500).json({ error: result.error, isLocked: result.isLocked, lockInfo: result.lockInfo });
+    res.status(result.busy ? 409 : 500).json({ error: result.error, isLocked: result.isLocked, lockInfo: result.lockInfo });
   }
 }));
 

@@ -1,20 +1,22 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs/promises';
+import type { Dirent } from 'fs';
 import * as path from 'path';
 import { loadConfig } from '../config';
 import { getDatabaseAdapter } from '../adapters/database';
-import { getTenantInfo, listTenants } from './docker';
+import { getTenantInfo } from './docker';
 import { getApp } from './app';
 import { readTenantAppDef } from './tenantAppDef';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
-import { tenantDir } from './tenantStore';
+import { tenantDir, listTenantDirs } from './tenantStore';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { invalidateBackupCache } from './backupCache';
 import { resolveTenantDbId } from './tenantDb';
-import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
+import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 import { withTenantLock } from './fileLock';
+import { eventBus } from './eventBus';
 
 const rawExecFile = promisify(execFile);
 // Every restic/docker shell-out gets a timeout and a bounded buffer. Without
@@ -35,6 +37,13 @@ function isValidContainerPath(p: string): boolean {
 function getBackupTempDir(): string {
   const config = loadConfig();
   return `/tmp/${config.project.prefix}-backups`;
+}
+
+/** A fresh, private (0700) staging dir: mkdtemp names cannot collide like `backup-${Date.now()}` did. */
+async function makeStagingDir(kind: 'backup' | 'restore'): Promise<string> {
+  const root = getBackupTempDir();
+  await fs.mkdir(root, { recursive: true, mode: 0o700 });
+  return fs.mkdtemp(path.join(root, `${kind}-`));
 }
 
 /**
@@ -259,7 +268,58 @@ export async function listSnapshots(appId: string, tenantId?: string): Promise<B
   }
 }
 
-export async function createBackup(appId: string, tenantId: string): Promise<{ success: boolean; snapshotId?: string; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {
+export interface BackupResult {
+  success: boolean;
+  snapshotId?: string;
+  error?: string;
+  isLocked?: boolean;
+  lockInfo?: LockInfo;
+  /** The tenant was busy with another operation (update, restore, ...). */
+  busy?: boolean;
+  /** Some service paths could not be copied; the snapshot has the database and everything else. */
+  incomplete?: boolean;
+  /** `service:/container/path` of each path missing from the snapshot. */
+  missingPaths?: string[];
+}
+
+/**
+ * How long a backup waits for a tenant another operation holds. Short: a
+ * scheduled run must not stall behind a long update; it reports the tenant as
+ * busy (a failed backup) instead.
+ */
+const BACKUP_LOCK_WAIT_MS = 10_000;
+
+/**
+ * Back up one tenant under its tenant lock, so it cannot capture a database a
+ * restore or update is halfway through. Emits backup:completed/backup:failed.
+ */
+export async function createBackup(appId: string, tenantId: string): Promise<BackupResult> {
+  let result: BackupResult;
+  try {
+    result = await withTenantLock(appId, tenantId, () => createBackupLocked(appId, tenantId), { waitMs: BACKUP_LOCK_WAIT_MS, unref: true });
+  } catch (error: any) {
+    if (error instanceof ConflictError) {
+      result = { success: false, busy: true, error: error.message };
+    } else {
+      console.error(`[Backup] ${appId}/${tenantId}: could not take the tenant lock:`, error);
+      result = { success: false, error: 'Backup operation failed. Check server logs for details.' };
+    }
+  }
+
+  if (result.success) {
+    eventBus.emit('backup:completed', {
+      appId,
+      tenantId,
+      ...(result.incomplete ? { incomplete: true, missingPaths: result.missingPaths } : {}),
+    });
+  } else {
+    eventBus.emit('backup:failed', { appId, tenantId, reason: result.error || 'Backup failed' });
+  }
+  return result;
+}
+
+/** Caller must hold the tenant lock. `extraTags` are added to the snapshot (e.g. pre-restore). */
+async function createBackupLocked(appId: string, tenantId: string, options: { extraTags?: string[] } = {}): Promise<BackupResult> {
   // Read the tenant's frozen definition rather than the global apps.d/ one:
   // we want to back up exactly what THIS tenant actually runs, which may
   // differ from a sibling tenant on a different image version. Falls back
@@ -295,11 +355,10 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
       paths: s.backup!.paths!,
     }));
 
-  const timestamp = Date.now();
-  const backupDir = path.join(getBackupTempDir(), `backup-${timestamp}`);
+  let backupDir: string | undefined;
 
   try {
-    await fs.mkdir(backupDir, { recursive: true, mode: 0o700 });
+    backupDir = await makeStagingDir('backup');
 
     const tenant = await getTenantInfo(appId, tenantId);
     if (!tenant) {
@@ -323,8 +382,7 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     await fs.writeFile(path.join(tenantBackupDir, '.env'), envContent, { mode: 0o600 });
 
     // Copy paths from services that have backup enabled. Per-path failures are
-    // recorded in metadata so restore can flag incompleteness — they no longer
-    // silently disappear into console.error.
+    // recorded in metadata so restore can flag incompleteness, and in the result.
     const incompletePaths: Array<{ service: string; path: string; error: string }> = [];
     for (const service of backupServices) {
       const containerName = `${appId}-${tenant.tenantId}-${service.name}`;
@@ -378,8 +436,9 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     await writeJsonAtomic(path.join(backupDir, 'metadata.json'), metadata, { mode: 0o644 });
 
     // Run restic backup with app and tenant tags (execFile avoids shell injection)
+    const tags = [`app:${appId}`, `tenant:${tenantId}`, ...(options.extraTags ?? [])];
     const { stdout } = await execFileAsync(
-      'restic', ['backup', backupDir, '--tag', `app:${appId}`, '--tag', `tenant:${tenantId}`, '--json'],
+      'restic', ['backup', backupDir, ...tags.flatMap(t => ['--tag', t]), '--json'],
       { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS }
     );
 
@@ -393,42 +452,99 @@ export async function createBackup(appId: string, tenantId: string): Promise<{ s
     }
 
     invalidateBackupCache(appId);
+    if (incompletePaths.length > 0) {
+      return { success: true, snapshotId, incomplete: true, missingPaths: incompletePaths.map(p => `${p.service}:${p.path}`) };
+    }
     return { success: true, snapshotId };
   } catch (error: any) {
     console.error('Backup failed:', error);
     const formatted = formatError(error);
     return { success: false, ...formatted };
   } finally {
-    try {
-      await fs.rm(backupDir, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup errors
+    if (backupDir) {
+      try {
+        await fs.rm(backupDir, { recursive: true, force: true });
+      } catch {
+        // Ignore cleanup errors
+      }
     }
   }
 }
 
 export interface BackupAllResult {
   success: boolean;
-  results: Array<{ appId: string; tenantId: string; success: boolean; snapshotId?: string; error?: string }>;
+  /** Set when the run could not back up the app at all (e.g. its tenants could not be listed). */
+  error?: string;
+  results: Array<{
+    appId: string;
+    tenantId: string;
+    success: boolean;
+    snapshotId?: string;
+    error?: string;
+    busy?: boolean;
+    incomplete?: boolean;
+    missingPaths?: string[];
+  }>;
   successCount: number;
   failCount: number;
 }
 
-export async function backupAllTenants(appId?: string): Promise<BackupAllResult> {
-  const tenants = await listTenants();
-  const filtered = appId ? tenants.filter(t => t.appId === appId) : tenants;
+/**
+ * Tenants of one app to back up: every tenant directory with a `.env` (a
+ * directory without one is not a tenant, as in the tenant list). Unlike
+ * listTenants(), which returns [] on any error, an unreadable tenants
+ * directory throws: a run that cannot see its tenants has failed.
+ */
+async function listBackupTenantIds(appId: string): Promise<string[]> {
+  const ids: string[] = [];
+  for (const ref of await listTenantDirs(appId, { followSymlinks: true })) {
+    try {
+      await fs.access(path.join(ref.dir, '.env'));
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') continue;
+      // Unreadable for another reason: keep it, so its backup fails visibly.
+    }
+    ids.push(ref.tenantId);
+  }
+  return ids;
+}
+
+// One run at a time per process: each stages full tenant data in the temp dir,
+// so several apps' crons firing together must not stage all of theirs at once.
+let backupRunQueue: Promise<unknown> = Promise.resolve();
+
+/** Back up every tenant of an app. Runs are serialised across apps. */
+export function backupAllTenants(appId: string): Promise<BackupAllResult> {
+  const run = backupRunQueue.then(() => backupAllTenantsNow(appId));
+  backupRunQueue = run.catch(() => {});
+  return run;
+}
+
+async function backupAllTenantsNow(appId: string): Promise<BackupAllResult> {
+  let tenantIds: string[];
+  try {
+    tenantIds = await listBackupTenantIds(appId);
+  } catch (error: any) {
+    console.error(`[Backup] Could not list the tenants of app '${appId}':`, error);
+    const reason = `Could not list the tenants of app '${appId}'. Check server logs.`;
+    eventBus.emit('backup:failed', { appId, reason });
+    return { success: false, error: reason, results: [], successCount: 0, failCount: 0 };
+  }
+
   const results: BackupAllResult['results'] = [];
   let successCount = 0;
   let failCount = 0;
 
-  for (const tenant of filtered) {
-    const result = await createBackup(tenant.appId, tenant.tenantId);
+  for (const tenantId of tenantIds) {
+    const result = await createBackup(appId, tenantId);
     results.push({
-      appId: tenant.appId,
-      tenantId: tenant.tenantId,
+      appId,
+      tenantId,
       success: result.success,
       snapshotId: result.snapshotId,
       error: result.error,
+      ...(result.busy ? { busy: true } : {}),
+      ...(result.incomplete ? { incomplete: true, missingPaths: result.missingPaths } : {}),
     });
     if (result.success) {
       successCount++;
@@ -437,12 +553,43 @@ export async function backupAllTenants(appId?: string): Promise<BackupAllResult>
     }
   }
 
+  if (failCount === 0) eventBus.emit('backup:completed', { appId });
   return {
     success: failCount === 0,
     results,
     successCount,
     failCount,
   };
+}
+
+/**
+ * Remove staging dirs (`backup-*`, `restore-*`) older than `maxAgeMs` that a
+ * crashed or killed process left behind; they hold full tenant data. Run at
+ * startup, before any backup of this process can be staging.
+ */
+export async function sweepStaleBackupTempDirs(maxAgeMs: number = 3_600_000): Promise<number> {
+  const root = getBackupTempDir();
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return 0;
+    throw err;
+  }
+  let removed = 0;
+  for (const e of entries) {
+    if (!e.isDirectory() || !/^(backup|restore)-/.test(e.name)) continue;
+    const dir = path.join(root, e.name);
+    try {
+      const st = await fs.stat(dir);
+      if (Date.now() - st.mtimeMs < maxAgeMs) continue;
+      await fs.rm(dir, { recursive: true, force: true });
+      removed++;
+    } catch (err: any) {
+      console.error(`[Backup] Could not remove stale staging dir ${dir}: ${err?.message || err}`);
+    }
+  }
+  return removed;
 }
 
 export interface RestoreBackupOptions {
@@ -480,8 +627,7 @@ export async function restoreBackupLocked(
 
   const db = getDatabaseAdapter(app);
 
-  const timestamp = Date.now();
-  const restoreDir = path.join(getBackupTempDir(), `restore-${timestamp}`);
+  let restoreDir: string | undefined;
 
   try {
     // Inside the try: an invalid tenant snapshot is reported like any other restore failure.
@@ -496,7 +642,7 @@ export async function restoreBackupLocked(
       paths: s.backup!.paths!,
     }));
 
-    await fs.mkdir(restoreDir, { recursive: true, mode: 0o700 });
+    restoreDir = await makeStagingDir('restore');
 
     // Restore from restic (execFile avoids shell injection on snapshotId)
     await execFileAsync(
@@ -615,10 +761,12 @@ export async function restoreBackupLocked(
     const formatted = formatError(error);
     return { success: false, ...formatted };
   } finally {
-    try {
-      await fs.rm(restoreDir, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup errors
+    if (restoreDir) {
+      try {
+        await fs.rm(restoreDir, { recursive: true, force: true });
+      } catch {
+        // Ignore cleanup errors
+      }
     }
   }
 }

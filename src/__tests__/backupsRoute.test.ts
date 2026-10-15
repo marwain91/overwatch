@@ -86,3 +86,21 @@ describe('POST /backups/unlock', () => {
     expect(svc.unlockRepository).toHaveBeenLastCalledWith('shop', { force: true });
   });
 });
+
+describe('POST /backups (create)', () => {
+  const create = async () => request(await mount()).post('/api/apps/shop/backups').send({ tenantId: 't1' });
+
+  it('reports an incomplete backup and its missing paths', async () => {
+    svc.createBackup.mockResolvedValue({ success: true, snapshotId: 'abc', incomplete: true, missingPaths: ['web:/data'] });
+    const r = await create();
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ success: true, snapshotId: 'abc', incomplete: true, missingPaths: ['web:/data'] });
+  });
+
+  it('answers 409 when the tenant is busy', async () => {
+    svc.createBackup.mockResolvedValue({ success: false, busy: true, error: "Tenant 'shop/t1' is busy" });
+    const r = await create();
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/busy/);
+  });
+});

@@ -15,11 +15,17 @@ vi.mock('node-cron', () => ({
 let apps: any[] = [];
 let listAppsImpl: () => Promise<any[]> = async () => apps;
 vi.mock('../services/app', () => ({ listApps: () => listAppsImpl() }));
-vi.mock('../services/backup', () => ({ backupAllTenants: vi.fn() }));
+const backupMocks = vi.hoisted(() => ({ backupAllTenants: vi.fn(), sweepStaleBackupTempDirs: vi.fn(async () => 0) }));
+vi.mock('../services/backup', () => backupMocks);
+const dataDir = vi.hoisted(() => ({ path: '' }));
+vi.mock('../config', () => ({ getDataDir: () => dataDir.path }));
 
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import {
   reconcileBackupSchedulers, stopBackupScheduler, startAllBackupSchedulers,
-  startSchedulerReconciler, stopSchedulerReconciler,
+  startSchedulerReconciler, stopSchedulerReconciler, reportAbandonedRuns,
 } from '../services/scheduler';
 
 const app = (id: string, schedule?: string, enabled = true) => ({
@@ -28,6 +34,9 @@ const app = (id: string, schedule?: string, enabled = true) => ({
 const live = () => tasks.filter(t => !t.stop.mock.calls.length);
 
 beforeEach(async () => {
+  dataDir.path = await fs.mkdtemp(path.join(os.tmpdir(), 'sched-'));
+  backupMocks.backupAllTenants.mockReset();
+  backupMocks.sweepStaleBackupTempDirs.mockClear();
   stopBackupScheduler();
   stopSchedulerReconciler();
   tasks.length = 0;
@@ -38,8 +47,9 @@ beforeEach(async () => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  await fs.rm(dataDir.path, { recursive: true, force: true });
 });
 
 describe('reconcileBackupSchedulers', () => {
@@ -153,5 +163,47 @@ describe('start/stopSchedulerReconciler', () => {
     startSchedulerReconciler();
     reconcileTasks()[0].fn();
     await vi.waitFor(() => expect(console.error).toHaveBeenCalledWith('[Scheduler] reconcile failed:', 'tick boom'));
+  });
+});
+
+describe('scheduled backup run reporting', () => {
+  const errors = () => (console.error as any).mock.calls.map((c: any[]) => c.join(' ')).join('\n');
+
+  async function runOnce(result: unknown) {
+    backupMocks.backupAllTenants.mockResolvedValue(result);
+    apps = [app('a', '0 2 * * *')];
+    await reconcileBackupSchedulers();
+    await live()[0].fn();
+  }
+
+  it('logs each failed and each incomplete tenant as an error', async () => {
+    await runOnce({
+      success: false, successCount: 1, failCount: 1,
+      results: [
+        { appId: 'a', tenantId: 't1', success: false, error: 'Tenant is busy' },
+        { appId: 'a', tenantId: 't2', success: true, incomplete: true, missingPaths: ['web:/data'] },
+      ],
+    });
+    expect(errors()).toMatch(/a\/t1.*Tenant is busy/);
+    expect(errors()).toMatch(/a\/t2.*web:\/data/);
+    expect(errors()).toMatch(/failed: 1/);
+  });
+
+  it('logs a run that could not back up the app at all as an error', async () => {
+    await runOnce({ success: false, error: "Could not list the tenants of app 'a'.", results: [], successCount: 0, failCount: 0 });
+    expect(errors()).toMatch(/Could not list the tenants/);
+  });
+
+  it('keeps a clean run on the normal log', async () => {
+    await runOnce({ success: true, results: [{ appId: 'a', tenantId: 't1', success: true }], successCount: 1, failCount: 0 });
+    expect(console.error).not.toHaveBeenCalled();
+    expect((console.log as any).mock.calls.some((c: any[]) => /success: 1, failed: 0/.test(c.join(' ')))).toBe(true);
+  });
+});
+
+describe('reportAbandonedRuns', () => {
+  it('sweeps stale backup staging dirs at startup, also when no run was in flight', async () => {
+    await reportAbandonedRuns();
+    expect(backupMocks.sweepStaleBackupTempDirs).toHaveBeenCalledTimes(1);
   });
 });

@@ -47,6 +47,27 @@ export interface HealthChange {
   lastCheck: string;
 }
 
+/**
+ * A tenant backup (manual or scheduled) that reached the repository. Without
+ * `tenantId`: a scheduled/"all tenants" run of the app finished with no
+ * failures. `incomplete`: some service paths could not be copied
+ * (`missingPaths` as `service:/container/path`); the database is in it.
+ */
+export interface BackupCompletedEvent {
+  appId: string;
+  tenantId?: string;
+  incomplete?: boolean;
+  missingPaths?: string[];
+}
+
+/** A tenant backup that failed; without `tenantId`, a run that could not back up the app at all. */
+export interface BackupFailedEvent {
+  appId: string;
+  tenantId?: string;
+  /** Client-safe text (no stderr). */
+  reason: string;
+}
+
 export interface MetricsSnapshot {
   containers: ContainerMetrics[];
   tenants: TenantMetrics[];
@@ -65,10 +86,13 @@ export interface BroadcastEventMap {
 /**
  * Every bus event and its payload. `containers:existence` is internal (the
  * metrics collector tells the alert engine which containers exist; it names
- * every container on the host, so it is never broadcast).
+ * every container on the host, so it is never broadcast). The backup events
+ * feed the alert engine and are not broadcast either.
  */
 export interface EventMap extends BroadcastEventMap {
   'containers:existence': string[];
+  'backup:completed': BackupCompletedEvent;
+  'backup:failed': BackupFailedEvent;
 }
 
 export type BroadcastEvent = keyof BroadcastEventMap;

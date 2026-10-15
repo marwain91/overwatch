@@ -108,7 +108,10 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
           className="btn btn-primary btn-sm"
           disabled={createBackup.isPending}
           onClick={() => createBackup.mutate(tenantId, {
-            onSuccess: () => toast.success('Backup created'),
+            onSuccess: (res) => {
+              if (res?.incomplete) toast.warning(`Backup created, but incomplete. Not backed up: ${(res.missingPaths ?? []).join(', ')}`);
+              else toast.success('Backup created');
+            },
             onError: (err) => toast.error(err.message),
           })}
         >
