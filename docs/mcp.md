@@ -33,7 +33,10 @@ or `/oauth/*` routes are mounted.
 `appId` and `tenantId` must be lowercase slugs (`a-z`, `0-9`, `-`, up to 63 characters), the same rule the REST API enforces.
 
 Authorization reuses `admin-users.json`: only listed admins can sign in, and
-their role gates which tools they can call. Role and membership are re-checked
+their role gates which tools they can call. Every tool is registered with its
+minimum role and the check runs before the tool, so a call below that role
+returns a tool error and is written to the audit log with status 403, as a
+refused REST call is. Role and membership are re-checked
 on every request, so removing an admin revokes MCP access immediately.
 
 ## Connecting a client
@@ -43,8 +46,8 @@ on every request, so removing an admin revokes MCP access immediately.
    and `/.well-known/oauth-authorization-server`), dynamically registers
    (RFC 7591), and opens the authorize URL — sign in with your Google admin
    account.
-3. After sign-in Overwatch shows a consent page naming the client, the host it
-   will be redirected to, and the scope (`tenants`). Choose **Approve** or
+3. After sign-in Overwatch shows a consent page naming the client, the full
+   redirect URI it will be sent back to, and the scope (`tenants`). Choose **Approve** or
    **Deny**; no authorization code is issued until you approve.
 4. The client receives an access token (default 1h) + a rotating refresh token
    (default 30d) and calls tools. `update_tenant` streams progress notifications
@@ -58,7 +61,12 @@ on every request, so removing an admin revokes MCP access immediately.
   session token.
 - Auth codes are single-use, 60s-lived, and held in memory — Overwatch assumes a
   single-process deployment per host.
-- The OAuth endpoints are rate-limited per IP.
+- The OAuth endpoints are rate-limited per IP (20 requests a minute), and
+  dynamic client registration (`POST /oauth/register`) has its own, smaller
+  budget of 10 registrations per 10 minutes per IP.
+- **Audit log.** Consent approvals and denials, refused sign-ins, token
+  issuance at the code exchange, refreshes, revocations and refresh-token
+  reuse are written to `data/audit.log` (no token values).
 - **Consent.** The consent form carries a signed, single-use, 5-minute token that
   is only handed to the admin who just signed in with Google, so a forged
   cross-site request cannot approve a client. The page is not frameable
@@ -77,6 +85,15 @@ on every request, so removing an admin revokes MCP access immediately.
   issued to (a refresh token presented by another client is revoked). A
   `resource` parameter, if sent, must be `<public_url>/mcp`; anything else is
   rejected with `invalid_target`. `expires_in` reflects `access_token_ttl`.
+- **Refresh token rotation.** Every refresh returns a new refresh token and
+  retires the old one. All tokens descending from one sign-in form a family:
+  presenting a retired token again (more than 10 seconds after it was
+  rotated) is treated as theft, revokes the whole family and is written to the
+  audit log, so the client has to sign in again. A refresh is also refused when
+  the grant is older than the admin's current entry in `admin-users.json`, so
+  removing an admin and adding them back does not revive their old MCP grants.
+  Refresh tokens issued before this check existed are accepted once and then
+  rotate into a family.
 - **Store hygiene.** Expired auth codes and refresh tokens are swept every 10
   minutes from `data/mcp-oauth.json`.
 

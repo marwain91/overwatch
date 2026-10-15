@@ -7,7 +7,10 @@ interface AuthState {
   login: (token: string, user: AuthUser) => void;
   /** Replace the cached profile (e.g. with the fresh role from /auth/verify). */
   setUser: (user: AuthUser) => void;
+  /** Sign out: revoke the session on the server, then forget it locally. */
   logout: () => void;
+  /** Forget the session locally only (the server already rejected it). */
+  clearSession: () => void;
   isAuthenticated: () => boolean;
 }
 
@@ -35,6 +38,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: () => {
+    const { token } = get();
+    // Best effort: the local session is cleared either way. keepalive lets the
+    // request finish if the page unloads.
+    if (token) {
+      fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, keepalive: true })
+        .catch(() => {});
+    }
+    get().clearSession();
+  },
+
+  clearSession: () => {
     localStorage.removeItem('overwatch_admin_token');
     localStorage.removeItem('overwatch_admin_user');
     set({ token: null, user: null });

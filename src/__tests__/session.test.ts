@@ -19,6 +19,20 @@ describe('web session tokens', () => {
     expect(session.exp - claims.iat!).toBe(24 * 3600);
   });
 
+  it('gives every session a distinct jti so it can be revoked on logout', () => {
+    const a = verifySession(signSession('a@b.c'));
+    const b = verifySession(signSession('a@b.c'));
+    expect(a.jti).toMatch(/^[0-9a-f-]{36}$/);
+    expect(b.jti).not.toBe(a.jti);
+  });
+
+  it('still accepts a session issued before jti existed', () => {
+    const t = jwt.sign({ email: 'a@b.c' }, SECRET, { expiresIn: '1h', audience: SESSION_AUDIENCE, issuer: SESSION_ISSUER });
+    const s = verifySession(t);
+    expect(s.email).toBe('a@b.c');
+    expect(s.jti).toBeUndefined();
+  });
+
   it('reads JWT_SECRET lazily', () => {
     const token = signSession('a@b.c');
     process.env.JWT_SECRET = 'y'.repeat(40);

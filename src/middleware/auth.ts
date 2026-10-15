@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifySession, type Session } from '../auth/session';
 import { getUserRole, AdminRole } from '../services/users';
+import { isSessionRevoked } from '../auth/sessionRevocations';
 
 /** Authenticated caller, set on `res.locals.user` by authMiddleware. */
 export interface AuthUser {
@@ -32,6 +33,10 @@ export async function authMiddleware(req: Request, res: Response, next: NextFunc
 
   const email = session.email;
   try {
+    if (session.jti && (await isSessionRevoked(session.jti))) {
+      console.warn(`[Auth] Rejected logged-out session for ${email}`);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     const role = await getUserRole(email);
     if (!role) {
       // Fail closed: valid signature, but no longer an admin user.

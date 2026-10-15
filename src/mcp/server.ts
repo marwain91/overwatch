@@ -4,9 +4,12 @@ import type { Express, Request, Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import type { ZodRawShape } from 'zod';
 import { rateLimit } from '../middleware/rateLimit';
 import { createOAuthRouter, OAuthRouterOptions } from '../routes/oauth';
+import type { AdminRole } from '../services/users';
 import { createTokenVerifier, McpAuthExtra } from './auth';
+import { requireToolRole, ToolRoleError, writeMcpAudit } from './audit';
 import {
   listAppsInput, listAppsHandler,
   listTenantsInput, listTenantsHandler,
@@ -37,6 +40,53 @@ function makeNotifier(extra: any) {
   };
 }
 
+type ToolResult = { isError?: boolean; content: { type: 'text'; text: string }[]; structuredContent?: any };
+
+/** A tool and the minimum role allowed to call it. The role is not optional. */
+export interface McpToolSpec {
+  name: string;
+  description: string;
+  inputSchema: ZodRawShape;
+  minRole: AdminRole;
+  handler: (args: any, auth: McpAuthExtra, extra: any) => Promise<ToolResult>;
+}
+
+export const MCP_TOOLS: McpToolSpec[] = [
+  { name: 'list_apps', description: 'List managed apps', inputSchema: listAppsInput.shape, minRole: 'viewer',
+    handler: (args, auth) => listAppsHandler(args, auth) },
+  { name: 'list_tenants', description: 'List tenants (optionally for one app)', inputSchema: listTenantsInput.shape, minRole: 'viewer',
+    handler: (args, auth) => listTenantsHandler(args, auth) },
+  { name: 'get_tenant', description: 'Get a tenant\'s current image tag and details', inputSchema: getTenantInput.shape, minRole: 'viewer',
+    handler: (args, auth) => getTenantHandler(args, auth) },
+  { name: 'start_tenant', description: 'Start a tenant\'s containers', inputSchema: lifecycleInput.shape, minRole: 'editor',
+    handler: (args, auth) => startTenantHandler(args, auth) },
+  { name: 'stop_tenant', description: 'Stop a tenant\'s containers', inputSchema: lifecycleInput.shape, minRole: 'editor',
+    handler: (args, auth) => stopTenantHandler(args, auth) },
+  { name: 'restart_tenant', description: 'Restart a tenant\'s containers', inputSchema: lifecycleInput.shape, minRole: 'editor',
+    handler: (args, auth) => restartTenantHandler(args, auth) },
+  { name: 'update_tenant', description: 'Update a tenant to a new image tag (streams progress)', inputSchema: updateTenantInput.shape, minRole: 'editor',
+    handler: (args, auth, extra) => updateTenantHandler(args, auth, makeNotifier(extra)) },
+];
+
+/**
+ * The SDK callback for a tool: resolves the caller, enforces the tool's
+ * minimum role and audits a denial (as REST audits its 403s) before the
+ * handler runs, so no tool can forget the check.
+ */
+export function guardedTool(spec: McpToolSpec) {
+  return async (args: any, extra: any): Promise<ToolResult> => {
+    const auth = authFrom(extra);
+    try {
+      requireToolRole(auth.role, spec.minRole);
+    } catch (e) {
+      if (!(e instanceof ToolRoleError)) throw e;
+      writeMcpAudit({ email: auth.email, tool: spec.name, args, status: 403 });
+      return { isError: true, content: [{ type: 'text', text: e.message }] };
+    }
+    return spec.handler(args, auth, extra);
+  };
+}
+
 export function buildMcpServer(): McpServer {
   const server = new McpServer({ name: 'overwatch', version: '1' });
 
@@ -45,23 +95,9 @@ export function buildMcpServer(): McpServer {
   // the handler args type from the raw shape, which trips TS2589 (excessively deep)
   // on the multi-field schemas. The runtime values (shapes) are unchanged.
   const reg = server.registerTool.bind(server) as (name: string, cfg: any, cb: any) => void;
-
-  reg('list_apps', { description: 'List managed apps', inputSchema: listAppsInput.shape },
-    async (args: any, extra: any) => listAppsHandler(args, authFrom(extra)) as any);
-  reg('list_tenants', { description: 'List tenants (optionally for one app)', inputSchema: listTenantsInput.shape },
-    async (args: any, extra: any) => listTenantsHandler(args, authFrom(extra)) as any);
-  reg('get_tenant', { description: 'Get a tenant\'s current image tag and details', inputSchema: getTenantInput.shape },
-    async (args: any, extra: any) => getTenantHandler(args, authFrom(extra)) as any);
-
-  reg('start_tenant', { description: 'Start a tenant\'s containers', inputSchema: lifecycleInput.shape },
-    async (args: any, extra: any) => startTenantHandler(args, authFrom(extra)) as any);
-  reg('stop_tenant', { description: 'Stop a tenant\'s containers', inputSchema: lifecycleInput.shape },
-    async (args: any, extra: any) => stopTenantHandler(args, authFrom(extra)) as any);
-  reg('restart_tenant', { description: 'Restart a tenant\'s containers', inputSchema: lifecycleInput.shape },
-    async (args: any, extra: any) => restartTenantHandler(args, authFrom(extra)) as any);
-
-  reg('update_tenant', { description: 'Update a tenant to a new image tag (streams progress)', inputSchema: updateTenantInput.shape },
-    async (args: any, extra: any) => updateTenantHandler(args, authFrom(extra), makeNotifier(extra)) as any);
+  for (const spec of MCP_TOOLS) {
+    reg(spec.name, { description: spec.description, inputSchema: spec.inputSchema }, guardedTool(spec));
+  }
 
   return server;
 }
@@ -73,6 +109,10 @@ export function mountMcp(app: Express, opts: MountMcpOptions): void {
   // read admin-users) to blunt credential-stuffing / DoS.
   const oauthLimiter = rateLimit({ windowMs: 60_000, maxRequests: 20, message: 'Too many OAuth requests, slow down.' });
   app.use('/oauth', oauthLimiter);
+  // Registration is unauthenticated and persists a client, so it gets a much
+  // smaller budget; a real MCP client registers once per connection setup.
+  const registerLimiter = rateLimit({ windowMs: 10 * 60_000, maxRequests: 10, message: 'Too many client registrations, slow down.' });
+  app.post('/oauth/register', registerLimiter);
 
   // Even authenticated admins could flood /mcp; a modest limiter is cheap defense-in-depth.
   const mcpLimiter = rateLimit({ windowMs: 60_000, maxRequests: 60, message: 'Too many MCP requests, slow down.' });

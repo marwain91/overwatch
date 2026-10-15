@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { createHash } from 'crypto';
 
 let tmpDir: string;
 vi.mock('../config', async (orig) => {
@@ -9,11 +10,21 @@ vi.mock('../config', async (orig) => {
   return { ...actual, getDataDir: () => tmpDir };
 });
 
+const readJsonStrict = vi.hoisted(() => vi.fn());
+const writeJsonAtomic = vi.hoisted(() => vi.fn());
+vi.mock('../utils/atomicJson', async (orig) => {
+  const actual = await (orig as any)();
+  readJsonStrict.mockImplementation(actual.readJsonStrict);
+  writeJsonAtomic.mockImplementation(actual.writeJsonAtomic);
+  return { ...actual, readJsonStrict, writeJsonAtomic };
+});
+
 import {
   registerClient, getClient,
   putAuthCode, consumeAuthCode,
   saveRefreshToken, consumeRefreshToken,
   sweepOAuthStore, touchClient, UNUSED_CLIENT_TTL_MS, startOAuthSweeper, stopOAuthSweeper, MAX_CLIENTS, CLIENT_IDLE_MS, ClientLimitError,
+  redeemRefreshToken, REFRESH_REUSE_GRACE_MS,
 } from '../oauth/store';
 
 describe('oauth store', () => {
@@ -150,5 +161,101 @@ describe('oauth store', () => {
     }));
     await seed({ clients, refreshTokens: [] });
     await expect(registerClient({ client_name: 'new', redirect_uris: ['https://c/cb'] })).rejects.toBeInstanceOf(ClientLimitError);
+  });
+
+  describe('refresh token families', () => {
+    const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+    const live = (token: string, extra: object = {}) => ({
+      token_hash: sha(token), client_id: 'c1', email: 'a@b.c', expires_at: Date.now() + 60_000, ...extra,
+    });
+
+    it('a rotation carries the family and remembers the rotated-out token', async () => {
+      await saveRefreshToken('RT1', { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() + 60_000, family_id: 'F', granted_at: 1 });
+      const r = await redeemRefreshToken('RT1', 'c1');
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.record.family_id).toBe('F');
+      expect(r.record.granted_at).toBe(1);
+      expect(r.record.rotated?.map(x => x.token_hash)).toEqual([sha('RT1')]);
+    });
+
+    it('presenting an already-rotated token revokes the whole family', async () => {
+      await seed({ clients: [], refreshTokens: [
+        live('RT2', { family_id: 'F', granted_at: 1, rotated: [{ token_hash: sha('RT1'), at: Date.now() - REFRESH_REUSE_GRACE_MS - 1000 }] }),
+        live('OTHER', { family_id: 'G', granted_at: 1 }),
+      ] });
+      const r = await redeemRefreshToken('RT1', 'c1');
+      expect(r).toMatchObject({ ok: false, reason: 'reused', family_id: 'F', email: 'a@b.c', client_id: 'c1' });
+      expect(await consumeRefreshToken('RT2', 'c1')).toBeUndefined();
+      expect((await consumeRefreshToken('OTHER', 'c1'))?.family_id).toBe('G');
+    });
+
+    it('a replay right after the rotation (a client racing itself) is refused without revoking the family', async () => {
+      await seed({ clients: [], refreshTokens: [
+        live('RT2', { family_id: 'F', granted_at: 1, rotated: [{ token_hash: sha('RT1'), at: Date.now() }] }),
+      ] });
+      expect(await redeemRefreshToken('RT1', 'c1')).toMatchObject({ ok: false, reason: 'unknown' });
+      expect((await consumeRefreshToken('RT2', 'c1'))?.family_id).toBe('F');
+    });
+
+    it('a rotated token presented by another client does not revoke the family', async () => {
+      await seed({ clients: [], refreshTokens: [
+        live('RT2', { family_id: 'F', granted_at: 1, rotated: [{ token_hash: sha('RT1'), at: 0 }] }),
+      ] });
+      expect(await redeemRefreshToken('RT1', 'evil')).toMatchObject({ ok: false, reason: 'unknown' });
+      expect((await consumeRefreshToken('RT2', 'c1'))?.family_id).toBe('F');
+    });
+
+    it('keeps only the most recent rotated hashes per family', async () => {
+      let rotated: { token_hash: string; at: number }[] | undefined;
+      for (let i = 0; i < 8; i++) {
+        await saveRefreshToken(`R${i}`, { client_id: 'c1', email: 'a@b.c', expires_at: Date.now() + 60_000, family_id: 'F', granted_at: 1, rotated });
+        const r = await redeemRefreshToken(`R${i}`, 'c1');
+        if (!r.ok) throw new Error('expected ok');
+        rotated = r.record.rotated;
+      }
+      expect(rotated?.map(x => x.token_hash)).toEqual([3, 4, 5, 6, 7].map(i => sha(`R${i}`)));
+    });
+
+    it('a record from before families still works once', async () => {
+      await seed({ clients: [], refreshTokens: [live('LEGACY')] });
+      const r = await redeemRefreshToken('LEGACY', 'c1');
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.record.family_id).toBeUndefined();
+      expect(r.record.rotated?.map(x => x.token_hash)).toEqual([sha('LEGACY')]);
+      expect(await redeemRefreshToken('LEGACY', 'c1')).toMatchObject({ ok: false });
+    });
+  });
+
+  describe('parsed store cache', () => {
+    it('parses the file once while it is unchanged', async () => {
+      const c = await registerClient({ client_name: 'c', redirect_uris: ['https://c/cb'] });
+      readJsonStrict.mockClear();
+      for (let i = 0; i < 5; i++) expect((await getClient(c.client_id))?.client_name).toBe('c');
+      await touchClient(c.client_id); // first touch writes
+      await touchClient(c.client_id); // then a no-op
+      expect(readJsonStrict.mock.calls.length).toBeLessThanOrEqual(1);
+    });
+
+    it('sees a change made by another process', async () => {
+      const c = await registerClient({ client_name: 'before', redirect_uris: ['https://c/cb'] });
+      expect((await getClient(c.client_id))?.client_name).toBe('before');
+      const st = await read();
+      st.clients[0].client_name = 'after-but-same-size';
+      st.clients[0].client_name = 'afterX';
+      await fs.writeFile(path.join(tmpDir, 'mcp-oauth.json'), JSON.stringify(st));
+      expect((await getClient(c.client_id))?.client_name).toBe('afterX');
+    });
+
+    it('a failed write leaves the cached view unchanged', async () => {
+      const c = await registerClient({ client_name: 'c', redirect_uris: ['https://c/cb'] });
+      writeJsonAtomic.mockRejectedValueOnce(new Error('ENOSPC'));
+      await expect(saveRefreshToken('LOST', { client_id: c.client_id, email: 'a@b.c', expires_at: Date.now() + 60_000 })).rejects.toThrow('ENOSPC');
+      expect(await consumeRefreshToken('LOST')).toBeUndefined();
+      writeJsonAtomic.mockRejectedValueOnce(new Error('ENOSPC'));
+      await expect(touchClient(c.client_id)).rejects.toThrow('ENOSPC');
+      expect((await getClient(c.client_id))?.last_used_at).toBeUndefined();
+    });
   });
 });

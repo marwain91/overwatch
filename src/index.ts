@@ -9,6 +9,7 @@ import { loginToAllRegistries } from './adapters/registry';
 import { listApps, setAppsChangedHook } from './services/app';
 import { authMiddleware } from './middleware/auth';
 import { spaFallback } from './middleware/spaFallback';
+import { securityHeaders } from './middleware/securityHeaders';
 import { rateLimit, destructiveRateLimit } from './middleware/rateLimit';
 import { auditLog } from './middleware/audit';
 import { validateAppId } from './middleware/validators';
@@ -41,7 +42,8 @@ import { startRetention, stopRetention } from './services/retention';
 import { isLegacyFormat, runMigration } from './services/migration';
 import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitialised } from './services/schemaVersions';
 import { createSnapshot, pruneOldSnapshots } from './services/configSnapshots';
-import { resolveTrustProxySetting } from './utils/proxyTrust';
+import { resolveTrustProxySetting, pinTrustToProxyHost, clientIpOf } from './utils/proxyTrust';
+import { installCrashHandlers } from './utils/crashHandlers';
 import cron from 'node-cron';
 
 // Initialize and start server
@@ -88,22 +90,19 @@ async function start() {
   const PORT = process.env.PORT || 3002;
 
   // Trust only configured proxy hops for correct req.ip in rate limiting/audit.
-  app.set('trust proxy', resolveTrustProxySetting());
+  // A hop count is pinned to the Traefik container: tenants share its network
+  // and could otherwise connect directly with a forged X-Forwarded-For.
+  const proxyTrust = await pinTrustToProxyHost(resolveTrustProxySetting(), {
+    host: process.env.OVERWATCH_TRUST_PROXY_HOST?.trim() || `${config.project.prefix}-traefik`,
+  });
+  app.set('trust proxy', proxyTrust.setting);
+  app.use(proxyTrust.flagUntrustedForwarding);
 
   // Middleware
   app.use(express.json({ limit: '1mb' }));
 
-  // CORS — restrict to same origin (SPA served from same host)
-  app.use((_req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    // script-src dropped 'unsafe-inline': a XSS sink in our React bundle or a dep
-    // must not be able to execute inline. Style still needs 'unsafe-inline' for
-    // Tailwind's runtime style injection; styles cannot exfiltrate tokens.
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://accounts.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://accounts.google.com wss:; frame-src https://accounts.google.com; object-src 'none'; base-uri 'self'");
-    next();
-  });
+  // CORS — restrict to same origin (SPA served from same host); CSP, HSTS, framing.
+  app.use(securityHeaders);
 
   const staticPath = path.join(__dirname, '../ui/dist');
   app.use(express.static(staticPath));
@@ -139,8 +138,8 @@ async function start() {
   app.use('/api/admin-users', authMiddleware, apiLimiter, destructiveLimiter, auditLog, adminUsersRouter);
   app.use('/api/status', authMiddleware, apiLimiter, auditLog, statusRouter);
   app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
-  app.use('/api/monitoring', authMiddleware, apiLimiter, auditLog, monitoringRouter);
-  app.use('/api/database', authMiddleware, apiLimiter, auditLog, databaseRouter);
+  app.use('/api/monitoring', authMiddleware, apiLimiter, destructiveLimiter, auditLog, monitoringRouter);
+  app.use('/api/database', authMiddleware, apiLimiter, destructiveLimiter, auditLog, databaseRouter);
   app.use('/api/traefik', authMiddleware, apiLimiter, destructiveLimiter, auditLog, traefikRouter);
 
   // MCP server + OAuth endpoints — opt-in. Mounted before the SPA fallback so
@@ -276,8 +275,8 @@ async function start() {
     console.log(`Database: ${config.database.type} @ ${config.database.host}`);
   });
 
-  // Start WebSocket server
-  createWebSocketServer(server);
+  // Start WebSocket server. Its per-IP limits key on the same client IP as req.ip.
+  createWebSocketServer(server, { clientIp: (req) => clientIpOf(req, app.get('trust proxy fn')) });
 
   // Start monitoring services if enabled
   const monitoringEnabled = config.monitoring?.enabled !== false;
@@ -300,6 +299,7 @@ async function start() {
     console.log(`\n${signal} received — shutting down gracefully...`);
 
     stopRetention();
+    proxyTrust.stop();
     stopSchedulerReconciler();
     setAppsChangedHook(undefined);
     stopBackupScheduler();
@@ -331,4 +331,5 @@ async function start() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
+installCrashHandlers();
 start();

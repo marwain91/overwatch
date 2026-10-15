@@ -21,8 +21,8 @@ router.get('/containers', asyncHandler(async (_req, res) => {
   res.json(containers);
 }));
 
-// Get container logs
-router.get('/containers/:containerId/logs', asyncHandler(async (req, res) => {
+// Get container logs. Editor and up: tenant logs can carry PII and tokens.
+router.get('/containers/:containerId/logs', requireRole('editor'), asyncHandler(async (req, res) => {
   const { containerId } = (req.params as Record<string, string>);
   if (!isValidContainerId(containerId)) {
     return res.status(400).json({ error: 'Invalid container ID format' });

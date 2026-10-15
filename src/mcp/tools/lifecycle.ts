@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { startTenant, stopTenant, restartTenant } from '../../services/docker';
-import { requireToolRole, writeMcpAudit, ToolRoleError, toolErrorMessage } from '../audit';
+import { writeMcpAudit, toolErrorMessage } from '../audit';
 import { McpAuthExtra } from '../auth';
 import { slugInput } from './read';
 import { HttpError } from '../../utils/httpErrors';
@@ -10,13 +10,8 @@ type ToolResult = { isError?: boolean; content: { type: 'text'; text: string }[]
 export const lifecycleInput = z.object({ appId: slugInput, tenantId: slugInput });
 
 function makeLifecycleHandler(tool: string, fn: (appId: string, tenantId: string) => Promise<void>) {
+  // Role (editor) is enforced where the tool is registered (mcp/server.ts).
   return async (args: z.infer<typeof lifecycleInput>, auth: McpAuthExtra): Promise<ToolResult> => {
-    try {
-      requireToolRole(auth.role, 'editor');
-    } catch (e) {
-      if (e instanceof ToolRoleError) return { isError: true, content: [{ type: 'text', text: e.message }] };
-      throw e;
-    }
     try {
       await fn(args.appId, args.tenantId);
       writeMcpAudit({ email: auth.email, tool, args, status: 200 });

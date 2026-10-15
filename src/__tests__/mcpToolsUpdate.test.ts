@@ -18,6 +18,7 @@ vi.mock('../mcp/audit', async (orig) => {
 import { HttpError } from '../utils/httpErrors';
 import { eventBus } from '../services/eventBus';
 import { updateTenantHandler } from '../mcp/tools/update';
+import { MCP_TOOLS, guardedTool } from '../mcp/server';
 import { writeMcpAudit } from '../mcp/audit';
 
 const editor = { email: 'a@b.c', role: 'editor' as const };
@@ -56,8 +57,9 @@ describe('update_tenant tool', () => {
     expect(notes).toEqual([]);
   });
 
-  it('viewer is denied', async () => {
-    const r = await updateTenantHandler({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, viewer, { notify: async () => {} });
+  it('viewer is denied (gate applied at registration)', async () => {
+    const update = guardedTool(MCP_TOOLS.find(t => t.name === 'update_tenant')!);
+    const r = await update({ appId: 'app1', tenantId: 't1', imageTag: 'v2' }, { authInfo: { extra: viewer } });
     expect(r.isError).toBe(true);
     expect(updateTenant).not.toHaveBeenCalled();
   });

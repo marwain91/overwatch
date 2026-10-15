@@ -31,7 +31,8 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   });
 
   if (response.status === 401) {
-    useAuthStore.getState().logout();
+    // The server already rejected this session; nothing to revoke.
+    useAuthStore.getState().clearSession();
     throw new ApiError('Unauthorized', 401);
   }
 

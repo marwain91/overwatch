@@ -6,9 +6,10 @@ import { authorizationServerMetadata, protectedResourceMetadata } from '../oauth
 import {
   registerClient, getClient, touchClient, ClientLimitError, putAuthCode, consumeAuthCode,
   putConsentNonce, consumeConsentNonce, startOAuthSweeper,
-  saveRefreshToken, consumeRefreshToken, revokeRefreshToken,
+  saveRefreshToken, redeemRefreshToken, revokeRefreshToken,
 } from '../oauth/store';
-import { isAdminEmail, getUserRole, normaliseRole } from '../services/users';
+import { isAdminEmail, getUserRole, normaliseRole, listAdminUsers } from '../services/users';
+import { writeAuditEntry } from '../services/auditLog';
 import { resolveGoogleAdmin } from '../services/identity';
 import { issueAccessToken, generateRefreshToken, mcpResourceUrl } from '../oauth/tokens';
 import { verifyPkceS256 } from '../oauth/pkce';
@@ -71,6 +72,18 @@ function isInsecureRemote(redirectUri: string): boolean {
   } catch { return true; }
 }
 
+function auditOAuth(req: Request, entry: { user: string; action: string; status: number; details?: Record<string, unknown> }): void {
+  writeAuditEntry({
+    user: entry.user,
+    action: entry.action,
+    method: req.method,
+    path: req.baseUrl + req.path,
+    body: entry.details,
+    status: entry.status,
+    ip: req.ip || req.socket.remoteAddress || 'unknown',
+  });
+}
+
 function htmlEscape(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
@@ -95,7 +108,6 @@ function loginPage(requestToken: string, googleClientId: string): string {
 }
 
 function consentPage(opts: { consentToken: string; clientName?: string; redirectUri: string; scope?: string; email: string }): string {
-  const host = new URL(opts.redirectUri).host;
   const warn = isInsecureRemote(opts.redirectUri)
     ? '<p><strong>Warning:</strong> this client redirects over unencrypted HTTP.</p>' : '';
   const requested = opts.scope && opts.scope !== GRANTED_SCOPE
@@ -106,7 +118,7 @@ function consentPage(opts: { consentToken: string; clientName?: string; redirect
 <p>Signed in as <strong>${htmlEscape(opts.email)}</strong>.</p>
 <p>The application <strong>${htmlEscape(opts.clientName || '(unnamed client)')}</strong> wants to act on your behalf.</p>
 <ul>
-  <li>It will be sent back to: <code>${htmlEscape(host)}</code></li>
+  <li>It will be sent back to: <code>${htmlEscape(opts.redirectUri)}</code></li>
   <li>Scope: <code>${GRANTED_SCOPE}</code> (list, start, stop, restart and update tenants, within your role)</li>
 </ul>
 ${requested}${warn}
@@ -213,7 +225,10 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     const verified = await resolveGoogleAdmin(credential);
     if (!verified.ok) {
       if (verified.reason === 'invalid_credential') return res.status(401).json({ error: 'access_denied', error_description: 'invalid credential' });
-      if (verified.reason === 'not_admin') return res.status(403).send('<h1>Access denied</h1><p>This Google account is not an Overwatch admin.</p>');
+      if (verified.reason === 'not_admin') {
+        auditOAuth(req, { user: verified.email || 'anonymous', action: 'oauth login denied', status: 403, details: { client_id: params.client_id } });
+        return res.status(403).send('<h1>Access denied</h1><p>This Google account is not an Overwatch admin.</p>');
+      }
       if (verified.reason === 'not_configured') return res.status(500).json({ error: 'server_misconfiguration', error_description: 'Google OAuth not configured' });
       return res.status(401).json({ error: 'access_denied', error_description: 'email not verified' });
     }
@@ -250,7 +265,12 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     if (!consumeConsentNonce(claims.nonce)) return res.status(400).json({ error: 'invalid_request', error_description: 'consent already used or expired' });
 
     const location = new URL(claims.redirect_uri);
+    const decided = async (action: string, status: number) => auditOAuth(req, {
+      user: claims.email, action, status,
+      details: { client_id: claims.client_id, client_name: (await getClient(claims.client_id))?.client_name, redirect_uri: claims.redirect_uri },
+    });
     if (decision === 'deny') {
+      await decided('oauth consent denied', 302);
       location.searchParams.set('error', 'access_denied');
       if (claims.state) location.searchParams.set('state', claims.state);
       return res.redirect(302, location.toString());
@@ -269,6 +289,7 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
       code_challenge: claims.code_challenge, email: claims.email, role, resource: claims.resource,
       expires_at: Date.now() + 60_000,
     });
+    await decided('oauth consent approved', 302);
     location.searchParams.set('code', code);
     if (claims.state) location.searchParams.set('state', claims.state);
     res.redirect(302, location.toString());
@@ -301,8 +322,12 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
 
       const access_token = issueAccessToken({ email: rec.email, role: rec.role, issuer, ttl: accessTtl });
       const refresh_token = generateRefreshToken();
-      await saveRefreshToken(refresh_token, { client_id: rec.client_id, email: rec.email, expires_at: Date.now() + refreshTtlMs });
+      const now = Date.now();
+      await saveRefreshToken(refresh_token, {
+        client_id: rec.client_id, email: rec.email, expires_at: now + refreshTtlMs, family_id: randomUUID(), granted_at: now,
+      });
       await touchClient(rec.client_id);
+      auditOAuth(req, { user: rec.email, action: 'oauth token issued', status: 200, details: { client_id: rec.client_id } });
       return res.json(tokenResponse(access_token, refresh_token));
     }
 
@@ -311,14 +336,35 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
       if (!clientId) return res.status(400).json({ error: 'invalid_grant', error_description: 'client_id required' });
       const presented = req.body?.refresh_token;
       if (typeof presented !== 'string' || !presented) return res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token required' });
-      const rec = await consumeRefreshToken(presented, clientId);
-      if (!rec) return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown, expired or mismatched refresh token' });
-      if (!(await isAdminEmail(rec.email))) return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
-      const role = normaliseRole(await getUserRole(rec.email));
+      const redeemed = await redeemRefreshToken(presented, clientId);
+      if (!redeemed.ok) {
+        if (redeemed.reason === 'reused') {
+          console.warn(`[oauth] refresh token reuse for ${redeemed.email} (client ${redeemed.client_id}); grant revoked`);
+          auditOAuth(req, { user: redeemed.email, action: 'oauth refresh token reuse: grant revoked', status: 400, details: { client_id: redeemed.client_id } });
+        }
+        return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown, expired or mismatched refresh token' });
+      }
+      const rec = redeemed.record;
+      // One read for membership, role and addedAt.
+      const user = (await listAdminUsers()).find(u => u.email.toLowerCase() === rec.email.toLowerCase());
+      if (!user) return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
+      // Records from before families have no granted_at; their last rotation
+      // time is expires_at - TTL (exact unless the TTL has changed since).
+      const grantedAt = rec.granted_at ?? rec.expires_at - refreshTtlMs;
+      const addedAt = Date.parse(user.addedAt);
+      // A grant from before the admin's current membership must not survive a remove + re-add.
+      if (!Number.isNaN(addedAt) && grantedAt < addedAt) {
+        return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
+      }
+      const role = normaliseRole(user.role);
       const access_token = issueAccessToken({ email: rec.email, role, issuer, ttl: accessTtl });
       const refresh_token = generateRefreshToken(); // rotation
-      await saveRefreshToken(refresh_token, { client_id: rec.client_id, email: rec.email, expires_at: Date.now() + refreshTtlMs });
+      await saveRefreshToken(refresh_token, {
+        client_id: rec.client_id, email: rec.email, expires_at: Date.now() + refreshTtlMs,
+        family_id: rec.family_id ?? randomUUID(), granted_at: grantedAt, rotated: rec.rotated,
+      });
       await touchClient(rec.client_id);
+      auditOAuth(req, { user: rec.email, action: 'oauth token refreshed', status: 200, details: { client_id: rec.client_id } });
       return res.json(tokenResponse(access_token, refresh_token));
     }
 
@@ -326,7 +372,10 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
   }));
 
   router.post('/oauth/revoke', express.urlencoded({ extended: false }), asyncHandler(async (req: Request, res: Response) => {
-    if (typeof req.body?.token === 'string' && req.body.token) await revokeRefreshToken(req.body.token);
+    if (typeof req.body?.token === 'string' && req.body.token) {
+      const revoked = await revokeRefreshToken(req.body.token);
+      if (revoked) auditOAuth(req, { user: revoked.email, action: 'oauth token revoked', status: 200, details: { client_id: revoked.client_id } });
+    }
     res.status(200).json({}); // RFC 7009: always 200
   }));
 

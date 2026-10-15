@@ -24,3 +24,14 @@ describe('src/index.ts error handling wiring', () => {
     }
   });
 });
+
+describe('src/index.ts process-level crash handlers', () => {
+  it('installs the crash handlers before start() runs', async () => {
+    const src = await fs.readFile(INDEX_PATH, 'utf-8');
+    expect(src).toMatch(/import \{ installCrashHandlers \} from '\.\/utils\/crashHandlers';/);
+    const install = src.indexOf('\ninstallCrashHandlers();');
+    const start = src.lastIndexOf('\nstart();');
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(start);
+  });
+});

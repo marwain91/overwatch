@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { promises as fsp } from 'fs';
 import { getDataDir } from '../config';
 import { withFileLock } from '../services/fileLock';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
@@ -14,18 +15,45 @@ function storeFile(): string {
   return path.join(getDataDir(), 'mcp-oauth.json');
 }
 
+// The store is read on every authorize, token and refresh call. The parsed
+// file is cached under its stat signature; an atomic write renames a new
+// inode into place, so any write (ours or the CLI's) changes the signature.
+let cache: { file: string; sig: string; state: OAuthFile } | undefined;
+
+const signature = (st: { ino: number; size: number; mtimeMs: number }) => `${st.ino}:${st.size}:${st.mtimeMs}`;
+
+// Shared, read-only view. Callers that change the store use readMutableState.
 async function readFileState(): Promise<OAuthFile> {
+  const file = storeFile();
+  let sig: string;
   try {
-    const parsed = await readJsonStrict<Partial<OAuthFile>>(storeFile());
-    return { clients: parsed.clients ?? [], refreshTokens: parsed.refreshTokens ?? [] };
+    sig = signature(await fsp.stat(file));
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return { clients: [], refreshTokens: [] };
+    throw err;
+  }
+  if (cache?.file === file && cache.sig === sig) return cache.state;
+  try {
+    const parsed = await readJsonStrict<Partial<OAuthFile>>(file);
+    const state = { clients: parsed.clients ?? [], refreshTokens: parsed.refreshTokens ?? [] };
+    cache = { file, sig, state };
+    return state;
   } catch (err: any) {
     if (err.code === 'ENOENT') return { clients: [], refreshTokens: [] };
     throw err; // readJsonStrict already formats the JSON-parse error message
   }
 }
 
+// A private copy to modify under the 'mcp-oauth' lock: a failed write must not
+// leave the change in the cached view.
+async function readMutableState(): Promise<OAuthFile> {
+  return structuredClone(await readFileState());
+}
+
 async function writeFileState(state: OAuthFile): Promise<void> {
-  await writeJsonAtomic(storeFile(), state, { mode: 0o600 });
+  const file = storeFile();
+  await writeJsonAtomic(file, state, { mode: 0o600 });
+  cache = { file, sig: signature(await fsp.stat(file)), state: structuredClone(state) };
 }
 
 function sha256(s: string): string {
@@ -67,7 +95,7 @@ function pruneIdleClients(state: OAuthFile, now: number): number {
 
 export async function registerClient(input: { client_name?: string; redirect_uris: string[] }): Promise<RegisteredClient> {
   return withFileLock('mcp-oauth', async () => {
-    const state = await readFileState();
+    const state = await readMutableState();
     pruneIdleClients(state, Date.now());
     if (state.clients.length >= MAX_CLIENTS) {
       // Evict the oldest never-used client; refuse only when every client has been used.
@@ -92,19 +120,23 @@ export async function registerClient(input: { client_name?: string; redirect_uri
 }
 
 export async function getClient(clientId: string): Promise<RegisteredClient | undefined> {
-  const state = await readFileState();
-  return state.clients.find(c => c.client_id === clientId);
+  const found = (await readFileState()).clients.find(c => c.client_id === clientId);
+  return found && structuredClone(found); // never hand out the cached object
 }
+
+const touchDue = (c: RegisteredClient | undefined): c is RegisteredClient =>
+  !!c && !(c.last_used_at && Date.now() - lastActivityMs(c) < TOUCH_INTERVAL_MS);
 
 // Records that a client was used so active clients are not pruned.
 export async function touchClient(clientId: string): Promise<void> {
+  // Usually a no-op (at most one write a day): decide from the cached view
+  // before taking the lock.
+  if (!touchDue((await readFileState()).clients.find(x => x.client_id === clientId))) return;
   return withFileLock('mcp-oauth', async () => {
-    const state = await readFileState();
+    const state = await readMutableState();
     const c = state.clients.find(x => x.client_id === clientId);
-    if (!c) return;
-    const now = Date.now();
-    if (now - lastActivityMs(c) < TOUCH_INTERVAL_MS && c.last_used_at) return;
-    c.last_used_at = new Date(now).toISOString();
+    if (!touchDue(c)) return;
+    c.last_used_at = new Date().toISOString();
     await writeFileState(state);
   });
 }
@@ -140,35 +172,64 @@ export function consumeAuthCode(code: string): AuthCode | undefined {
 }
 
 // ---- Refresh tokens (persisted hashed, rotating) ----
-export async function saveRefreshToken(token: string, rec: Omit<RefreshTokenRecord, 'token_hash'>): Promise<void> {
+// A rotated-out token presented again means the family leaked; the whole
+// family is revoked. A replay within the grace window is a client racing
+// itself (parallel refreshes) and is only refused.
+export const REFRESH_REUSE_GRACE_MS = 10_000;
+const MAX_ROTATED_REMEMBERED = 5;
+
+export type RefreshGrant = Omit<RefreshTokenRecord, 'token_hash'>;
+export type RefreshRedemption =
+  | { ok: true; record: RefreshGrant }
+  | { ok: false; reason: 'unknown' | 'expired' }
+  | { ok: false; reason: 'reused'; family_id: string; client_id: string; email: string };
+
+export async function saveRefreshToken(token: string, rec: RefreshGrant): Promise<void> {
   return withFileLock('mcp-oauth', async () => {
-    const state = await readFileState();
+    const state = await readMutableState();
     state.refreshTokens.push({ token_hash: sha256(token), ...rec });
     await writeFileState(state);
   });
 }
 
-// Returns the record and removes it (rotation). Expired/unknown -> undefined.
-// With expectedClientId, a token owned by another client is left untouched (returns undefined)
-// so a third party can't revoke a session just by presenting its token.
-export async function consumeRefreshToken(token: string, expectedClientId?: string): Promise<Omit<RefreshTokenRecord, 'token_hash'> | undefined> {
+// Removes the record (rotation) and returns it with its own hash appended to
+// `rotated`, ready to be carried into the successor. With expectedClientId,
+// a token owned by another client is left untouched so a third party can't
+// revoke a session just by presenting its token.
+export async function redeemRefreshToken(token: string, expectedClientId?: string): Promise<RefreshRedemption> {
   return withFileLock('mcp-oauth', async () => {
-    const state = await readFileState();
+    const state = await readMutableState();
     const hash = sha256(token);
+    const now = Date.now();
     const idx = state.refreshTokens.findIndex(t => t.token_hash === hash);
-    if (idx === -1) return undefined;
-    if (expectedClientId !== undefined && state.refreshTokens[idx].client_id !== expectedClientId) return undefined;
+    if (idx === -1) {
+      const family = state.refreshTokens.find(t => t.family_id && t.rotated?.some(r => r.token_hash === hash));
+      if (!family || (expectedClientId !== undefined && family.client_id !== expectedClientId)) return { ok: false, reason: 'unknown' };
+      const rotatedAt = family.rotated!.find(r => r.token_hash === hash)!.at;
+      if (now - rotatedAt < REFRESH_REUSE_GRACE_MS) return { ok: false, reason: 'unknown' };
+      state.refreshTokens = state.refreshTokens.filter(t => t.family_id !== family.family_id);
+      await writeFileState(state);
+      return { ok: false, reason: 'reused', family_id: family.family_id!, client_id: family.client_id, email: family.email };
+    }
+    if (expectedClientId !== undefined && state.refreshTokens[idx].client_id !== expectedClientId) return { ok: false, reason: 'unknown' };
     // Splice + persist unconditionally so an expired token can't be replayed.
     const [rec] = state.refreshTokens.splice(idx, 1);
     await writeFileState(state);
-    if (rec.expires_at < Date.now()) return undefined; // consumed but expired
-    const { token_hash, ...rest } = rec;
-    return rest;
+    if (rec.expires_at < now) return { ok: false, reason: 'expired' };
+    const { token_hash, rotated, ...rest } = rec;
+    return { ok: true, record: { ...rest, rotated: [...(rotated ?? []), { token_hash, at: now }].slice(-MAX_ROTATED_REMEMBERED) } };
   });
 }
 
-export async function revokeRefreshToken(token: string): Promise<void> {
-  await consumeRefreshToken(token); // consuming = revoking
+// Returns the record and removes it (rotation). Expired/unknown/reused -> undefined.
+export async function consumeRefreshToken(token: string, expectedClientId?: string): Promise<RefreshGrant | undefined> {
+  const r = await redeemRefreshToken(token, expectedClientId);
+  return r.ok ? r.record : undefined;
+}
+
+// Consuming = revoking. Returns the revoked grant, if the token was live.
+export async function revokeRefreshToken(token: string): Promise<RefreshGrant | undefined> {
+  return consumeRefreshToken(token);
 }
 
 // ---- Periodic sweep ----
@@ -183,7 +244,7 @@ export async function sweepOAuthStore(): Promise<{ authCodes: number; refreshTok
   for (const [k, exp] of consentNonces) if (exp < now) consentNonces.delete(k);
 
   return withFileLock('mcp-oauth', async () => {
-    const state = await readFileState();
+    const state = await readMutableState();
     const tokensBefore = state.refreshTokens.length;
     state.refreshTokens = state.refreshTokens.filter(t => t.expires_at >= now);
     const clients = pruneIdleClients(state, now);
