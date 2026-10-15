@@ -49,4 +49,20 @@ describe('ensureExternalVolumes', () => {
     const created = runDockerMock.mock.calls.filter(c => c[1][1] === 'create').map(c => c[1][2]);
     expect(created).toEqual(['shared-data']);
   });
+
+  it('creates an external volume under its declared name, not its mapping key', async () => {
+    const p = await compose([
+      'services: {}',
+      'volumes:', '  uploads:', '    external: true', '    name: shop-uploads', '',
+    ].join('\n'));
+    runDockerMock.mockImplementation(async (_c: string, args: string[]) => {
+      if (args[1] === 'inspect') throw new Error('missing');
+      return { stdout: '', stderr: '' };
+    });
+    await ensureExternalVolumes(p);
+    expect(runDockerMock.mock.calls.map(c => c[1])).toEqual([
+      ['volume', 'inspect', 'shop-uploads'],
+      ['volume', 'create', 'shop-uploads'],
+    ]);
+  });
 });

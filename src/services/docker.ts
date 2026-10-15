@@ -1,13 +1,13 @@
 import Docker from 'dockerode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as yaml from 'js-yaml';
 import { listApps } from './app';
 import type { AppDefinition } from '../models/app';
 import { assertTenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { runDocker } from '../utils/runDocker';
 import { withTenantLock } from './fileLock';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
+import { readComposeNames } from './composeGenerator';
 const docker = new Docker({ socketPath: '/var/run/docker.sock' });
 export { docker };
 
@@ -299,19 +299,15 @@ export async function getTenantInfo(appId: string, tenantId: string): Promise<{ 
   }
 }
 
-/** Names of the top-level volumes a compose file declares `external: true`. */
-function externalVolumeNames(composeText: string): string[] {
-  const doc = yaml.load(composeText) as { volumes?: Record<string, { external?: unknown } | null> } | null;
-  const volumes = doc && typeof doc === 'object' ? doc.volumes : undefined;
-  if (!volumes || typeof volumes !== 'object') return [];
-  return Object.entries(volumes)
-    .filter(([, def]) => def && typeof def === 'object' && def.external === true)
-    .map(([name]) => name);
-}
-
+/**
+ * Create the external volumes a tenant compose file declares, under their
+ * Docker names. Compose refuses to start with a missing external volume and
+ * never creates or removes one itself.
+ */
 export async function ensureExternalVolumes(composePath: string): Promise<void> {
   const content = await fs.readFile(composePath, 'utf-8');
-  for (const volumeName of externalVolumeNames(content)) {
+  const external = readComposeNames(content).volumes.filter(v => v.external).map(v => v.name);
+  for (const volumeName of external) {
     try {
       await runDocker('docker', ['volume', 'inspect', volumeName], { timeoutMs: 15_000 });
     } catch {

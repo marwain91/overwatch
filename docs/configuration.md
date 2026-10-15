@@ -352,14 +352,32 @@ Each service in an app defines a container that gets deployed per tenant:
 | `routing.additional_path_prefixes` | No | Extra path prefixes combined with OR (e.g. `["/uploads"]`) |
 | `routing.priority` | No | Explicit Traefik router priority (set higher than frontend catch-all to ensure path-based routes win; omit to let Traefik auto-calculate from rule length) |
 | `routing.strip_prefix` | No | Add Traefik StripPrefix middleware for path_prefix routes (default: false) |
-| `volumes[].name` | No | Volume name |
+| `volumes[].name` | No | Volume name. Each tenant gets its own volume `<appId>-<tenantId>-<name>` (see [Volume names](#volume-names)) |
 | `volumes[].container_path` | No | Mount path inside container |
 | `volumes[].name_template` | No | Template for volume name with `${appId}` and `${tenantId}` substitution |
-| `volumes[].external` | No | Declare volume as external (default: false) |
+| `volumes[].external` | No | Declare volume as external (default: false): one volume, shared, created if missing and never removed by Overwatch |
 | `depends_on` | No | Other service names this service depends on. Must name services of the same app — an unknown name fails compose generation. See [Init containers and `depends_on`](#init-containers-and-depends_on) |
 | `networks` | No | Network list: `["external"]` (default), `["external", "internal"]`, or `["internal"]` |
 
 Health check durations (`interval`, `start_period`) must use Compose duration syntax such as `30s`, `1m30s` or `500ms`; the API and `overwatch apps apply` reject anything else. A stored definition that already holds an invalid value keeps loading: the generator logs a warning and falls back to the default (interval) or omits the field (start_period).
+
+### Volume names
+
+Every volume a tenant mounts gets a Docker volume name. For tenant `t1` of app `shop`:
+
+| Definition | Docker volume |
+|---|---|
+| `volumes[]` entry `{ "name": "uploads" }` | `shop-t1-uploads` |
+| `{ "name_template": "${appId}-${tenantId}-uploads" }` | `shop-t1-uploads` |
+| backup path `{ "local": "exports" }` of service `backend`, at a path the service does not mount itself | `shop-t1-backend-exports` |
+| `{ "name": "shared-cache", "external": true }` | `shared-cache`, shared by every tenant that mounts it |
+| `{ "name_template": "${tenantId}-media" }` (not both placeholders) | `t1-media`, declared external |
+
+A name that starts with `<appId>-<tenantId>-` belongs to the tenant: compose creates it, and deleting the tenant without **Keep data** removes it. Every other volume is declared `external: true` in the tenant's compose file, so Overwatch creates it when it is missing but never removes it together with one tenant.
+
+`name` and `name_template` must be plain Docker volume names: letters, digits, `_`, `.` and `-`, starting with a letter or digit. The API and `overwatch apps apply` reject anything else, such as `/var/run/docker.sock`, `./data`, a `:` or a `$`, because compose would mount a host path instead of a volume. A stored definition that already holds such a name keeps loading; the generator logs a warning and renders the name as before.
+
+Tenants created by Overwatch v1.8.2 or older keep the volume names their compose file already uses, so an upgrade never moves data. Some of those names are shared by every tenant; see [Shared legacy volumes](troubleshooting.md#shared-legacy-volumes).
 
 ### Init containers and `depends_on`
 

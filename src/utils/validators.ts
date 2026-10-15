@@ -38,6 +38,58 @@ export function assertServiceNamesValid(services: unknown): void {
   }
 }
 
+/**
+ * Docker's rule for a named volume. Compose reads anything else in a
+ * `source:target` mount as a host path (`/var/run/docker.sock`, `./data`,
+ * `~/x`), splits it at a `:`, or interpolates a `$`.
+ */
+export const VOLUME_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+export function isSafeVolumeName(name: string): boolean {
+  return VOLUME_NAME_RE.test(name);
+}
+
+export interface VolumeNameIssue {
+  /** Path below the services array, e.g. [0, 'volumes', 1, 'name']. */
+  path: Array<string | number>;
+  message: string;
+}
+
+/**
+ * Write-path problems with the volume names in an app definition. A
+ * `name_template` is checked with its `${appId}` / `${tenantId}` placeholders
+ * filled in. Stored definitions are not re-checked, so existing apps keep
+ * loading; the compose generator warns about them instead.
+ */
+export function volumeNameIssues(services: unknown): VolumeNameIssue[] {
+  const issues: VolumeNameIssue[] = [];
+  if (!Array.isArray(services)) return issues;
+  services.forEach((svc, i) => {
+    const volumes = svc?.volumes;
+    if (!Array.isArray(volumes)) return;
+    volumes.forEach((vol, j) => {
+      for (const field of ['name', 'name_template'] as const) {
+        const value = vol?.[field];
+        if (typeof value !== 'string') continue;
+        const filled = field === 'name_template' ? value.replace(/\$\{(appId|tenantId)\}/g, 'x') : value;
+        if (!isSafeVolumeName(filled)) {
+          issues.push({
+            path: [i, 'volumes', j, field],
+            message: `Invalid volume ${field} ${JSON.stringify(value)}: use letters, digits, "_", "." and "-", starting with a letter or digit (a path or a ":" would mount a host directory)`,
+          });
+        }
+      }
+    });
+  });
+  return issues;
+}
+
+/** `volumeNameIssues` for write paths that validate outside Zod (the CLI). */
+export function assertVolumeNamesValid(services: unknown): void {
+  const [first] = volumeNameIssues(services);
+  if (first) throw new ValidationError(`services.${first.path.join('.')}: ${first.message}`);
+}
+
 /** Compose healthcheck duration: one or more `<number><unit>` parts, e.g. `30s`, `1m30s`, `500ms`. */
 export const COMPOSE_DURATION_RE = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
 

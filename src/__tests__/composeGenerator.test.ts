@@ -54,13 +54,14 @@ function app(services: any[], traefik?: any): any {
   };
 }
 
-function render(services: any[], opts: { traefik?: any; tenantTraefik?: any } = {}): string {
+function render(services: any[], opts: { traefik?: any; tenantTraefik?: any; existingCompose?: string } = {}): string {
   return generateComposeFile({
     app: app(services, opts.traefik),
     tenantId: 't1',
     domain: 't1.shop.test',
     config: config(),
     tenantTraefik: opts.tenantTraefik,
+    existingCompose: opts.existingCompose,
   });
 }
 
@@ -200,7 +201,7 @@ describe('generateComposeFile structure', () => {
           SMTP_HOST: '${SMTP_HOST}',
           FEATURE_FLAG: 'true',
         },
-        volumes: ['shop-t1-uploads:/app/uploads', 'shared-cache:/cache', 'backend-exports:/app/exports'],
+        volumes: ['shop-t1-uploads:/app/uploads', 'shared-cache:/cache', 'shop-t1-backend-exports:/app/exports'],
         networks: ['test-network', 'test-t1-internal'],
         healthcheck: {
           test: ['CMD', 'curl', '-f', 'http://127.0.0.1:3001/api/health'],
@@ -264,7 +265,7 @@ describe('generateComposeFile structure', () => {
         container_name: 'shop-t1-redis',
         restart: 'unless-stopped',
         env_file: envFile,
-        volumes: ['redis-data:/data'],
+        volumes: ['shop-t1-redis-data:/data'],
         networks: ['test-t1-internal'],
         healthcheck: {
           test: ['CMD-SHELL', 'nc -z 127.0.0.1 6379'],
@@ -280,7 +281,7 @@ describe('generateComposeFile structure', () => {
         restart: 'unless-stopped',
         env_file: envFile,
         environment: { PORT: '${PORT}' },
-        volumes: ['redis-data:/data'],
+        volumes: ['shop-t1-redis-data:/data'],
         networks: ['test-network'],
         depends_on: { backend: { condition: 'service_started' } },
         labels: ownership('worker'),
@@ -300,11 +301,14 @@ describe('generateComposeFile structure', () => {
       'test-network': { external: true },
       'test-t1-internal': null,
     },
+    // A new tenant's volumes are all its own: names without the tenant in
+    // them were shared by every tenant of every app (they get an explicit
+    // `name:`, which compose does not prefix with the project).
     volumes: {
       'shop-t1-uploads': { name: 'shop-t1-uploads' },
       'shared-cache': { external: true },
-      'backend-exports': { name: 'backend-exports' },
-      'redis-data': { name: 'redis-data' },
+      'shop-t1-backend-exports': { name: 'shop-t1-backend-exports' },
+      'shop-t1-redis-data': { name: 'shop-t1-redis-data' },
     },
   };
 
@@ -389,6 +393,7 @@ describe('generateComposeFile treats every value as data', () => {
   });
 
   it('keeps volume names and paths with quotes or line breaks inside their entries', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     // The first path made the string-built service privileged.
     const cases = [
       { name: 'data', containerPath: '/data"\n    privileged: true' },
@@ -401,11 +406,12 @@ describe('generateComposeFile treats every value as data', () => {
         backup: { enabled: true, paths: [{ container: '/bk"\n    cap_add: [ALL]', local: 'bk' }] },
       }]));
 
+      const volumeName = name === 'data' ? 'shop-t1-data' : name;
       expect(doc.services.web.volumes).toEqual([
-        `${name}:${containerPath}`,
-        'web-bk:/bk"\n    cap_add: [ALL]',
+        `${volumeName}:${containerPath}`,
+        'shop-t1-web-bk:/bk"\n    cap_add: [ALL]',
       ]);
-      expect(Object.keys(doc.volumes)).toEqual([name, 'web-bk']);
+      expect(Object.keys(doc.volumes)).toEqual([volumeName, 'shop-t1-web-bk']);
       expect(allKeys(doc)).not.toContain('privileged');
       expect(allKeys(doc)).not.toContain('cap_add');
       expect(allKeys(doc)).not.toContain('driver');
@@ -522,5 +528,90 @@ describe('healthcheck durations on stored definitions', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('health_check.interval'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('health_check.start_period'));
     warn.mockRestore();
+  });
+});
+
+describe('tenant volume names', () => {
+  // What every compose file generated before tenant-scoped names looked like.
+  const legacyServices = [{
+    name: 'backend', required: true,
+    volumes: [{ name: 'uploads', container_path: '/app/uploads' }],
+    backup: { enabled: true, paths: [{ container: '/app/exports', local: 'exports' }] },
+  }];
+  const legacyCompose = [
+    'services:',
+    '  backend:',
+    '    image: x',
+    '    volumes:',
+    '      - uploads:/app/uploads',
+    '      - backend-exports:/app/exports',
+    'volumes:',
+    '  uploads:',
+    '    name: uploads',
+    '  backend-exports:',
+    '    name: backend-exports',
+    '',
+  ].join('\n');
+
+  it('gives a new tenant volume names scoped to its app and tenant', () => {
+    const doc = load(render(legacyServices));
+    expect(doc.services.backend.volumes).toEqual(['shop-t1-uploads:/app/uploads', 'shop-t1-backend-exports:/app/exports']);
+    expect(doc.volumes).toEqual({
+      'shop-t1-uploads': { name: 'shop-t1-uploads' },
+      'shop-t1-backend-exports': { name: 'shop-t1-backend-exports' },
+    });
+  });
+
+  it('keeps the unscoped names an existing tenant already uses, as external volumes, and warns', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const doc = load(render(legacyServices, { existingCompose: legacyCompose }));
+
+    expect(doc.services.backend.volumes).toEqual(['uploads:/app/uploads', 'backend-exports:/app/exports']);
+    // external: compose never creates or deletes them, so `down -v` on this
+    // tenant cannot remove data other tenants share.
+    expect(doc.volumes).toEqual({ uploads: { external: true }, 'backend-exports': { external: true } });
+    const warned = warn.mock.calls.map(c => String(c[0])).join('\n');
+    expect(warned).toMatch(/shop\/t1.*shared legacy volume 'uploads'/);
+    expect(warned).toMatch(/shared legacy volume 'backend-exports'/);
+  });
+
+  it('is stable: regenerating from its own output keeps every name', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fresh = render(legacyServices);
+    expect(load(render(legacyServices, { existingCompose: fresh }))).toEqual(load(fresh));
+    const legacy = render(legacyServices, { existingCompose: legacyCompose });
+    expect(load(render(legacyServices, { existingCompose: legacy }))).toEqual(load(legacy));
+  });
+
+  it('gives a volume added to an existing tenant a scoped name', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const services = [{ ...legacyServices[0], volumes: [...legacyServices[0].volumes, { name: 'media', container_path: '/media' }] }];
+    const doc = load(render(services, { existingCompose: legacyCompose }));
+    expect(doc.services.backend.volumes).toContain('shop-t1-media:/media');
+    expect(doc.volumes['shop-t1-media']).toEqual({ name: 'shop-t1-media' });
+  });
+
+  it('declares a name_template that does not scope to both app and tenant as external', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const doc = load(render([{
+      name: 'web', required: true,
+      volumes: [
+        { name: 'media', container_path: '/media', name_template: '${tenantId}-media' },
+        { name: 'own', container_path: '/own', name_template: '${appId}-${tenantId}-own' },
+      ],
+    }]));
+    expect(doc.volumes).toEqual({ 't1-media': { external: true }, 'shop-t1-own': { name: 'shop-t1-own' } });
+    expect(warn.mock.calls.map(c => String(c[0])).join('\n')).toMatch(/'t1-media'.*not scoped to this tenant/);
+  });
+
+  it('warns about a stored volume name Docker would mount as a host path, and leaves it as it was', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const doc = load(render([{ name: 'web', required: true, volumes: [{ name: '/var/run/docker.sock', container_path: '/sock' }] }]));
+    expect(doc.services.web.volumes).toEqual(['/var/run/docker.sock:/sock']);
+    expect(warn.mock.calls.map(c => String(c[0])).join('\n')).toMatch(/"\/var\/run\/docker\.sock".*host path/);
+  });
+
+  it('refuses to regenerate over a compose file it cannot read, instead of renaming volumes', () => {
+    expect(() => render(legacyServices, { existingCompose: 'services: [unclosed' })).toThrow(/existing docker-compose\.yml/);
   });
 });

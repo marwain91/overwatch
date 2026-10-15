@@ -81,8 +81,9 @@ describe('backup volumes', () => {
       { name: 'worker', required: false, is_init_container: false,
         backup: { enabled: true, paths: [{ local: 'data', container: '/data' }] } },
     ]);
-    expect(doc.services.worker.volumes).toEqual(['worker-data:/data']);
-    expect(Object.keys(doc.volumes)).toContain('worker-data');
+    // Tenant-scoped: an unscoped `worker-data` was shared by every tenant.
+    expect(doc.services.worker.volumes).toEqual(['shop-t1-worker-data:/data']);
+    expect(Object.keys(doc.volumes)).toContain('shop-t1-worker-data');
   });
 
   it('declares every named volume any service mounts', () => {

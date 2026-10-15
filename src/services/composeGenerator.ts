@@ -4,8 +4,8 @@ import { OverwatchConfig } from '../config/schema';
 import type { TraefikTenant } from '../models/traefik';
 import { resolveCertResolver } from '../config/loader';
 import { buildTraefikLabels } from './traefikLabels';
-import { isValidComposeDuration } from '../utils/validators';
-import { containerName } from './tenantIdentity';
+import { isValidComposeDuration, isSafeVolumeName } from '../utils/validators';
+import { containerName, tenantVolumeName, isTenantOwnedVolume } from './tenantIdentity';
 
 interface GenerateOptions {
   app: AppDefinition;
@@ -14,6 +14,11 @@ interface GenerateOptions {
   config: OverwatchConfig;
   /** Optional per-tenant Traefik overrides (host aliases, middleware overrides, raw labels). */
   tenantTraefik?: TraefikTenant;
+  /**
+   * The tenant's current docker-compose.yml, when it has one. Volume names it
+   * already declares are kept, so regenerating never moves a tenant's data.
+   */
+  existingCompose?: string;
 }
 
 type DependsOnCondition = 'service_completed_successfully' | 'service_started';
@@ -83,6 +88,7 @@ export function generateComposeFile(options: GenerateOptions): string {
   const needsInternalNetwork = app.services.some(s => s.networks?.includes('internal'));
   const imageRegistry = `${app.registry.url}/${app.registry.repository}`;
   const where = `${app.id}/${tenantId}`;
+  const volumeNamer = createVolumeNamer(app.id, tenantId, options.existingCompose, where);
 
   // Resolve depends_on names against the app's own services so an init
   // container dependency can be rendered with the right wait condition.
@@ -132,7 +138,7 @@ export function generateComposeFile(options: GenerateOptions): string {
       env_file: ['.env', 'shared.env'],
       command: service.command && service.command.length > 0 ? service.command : undefined,
       environment: buildEnvironment(service, { config, domain, service }, where),
-      volumes: buildServiceVolumes(service, app.id, tenantId),
+      volumes: buildServiceVolumes(service, volumeNamer),
       networks,
       healthcheck: buildHealthcheck(service),
       depends_on: buildDependsOn(service, app, servicesByName, where),
@@ -147,7 +153,7 @@ export function generateComposeFile(options: GenerateOptions): string {
     services: toMapping(services, 'service', where),
     networks: toMapping(networks, 'network', where),
   };
-  const volumes = buildVolumeDeclarations(app, tenantId);
+  const volumes = buildVolumeDeclarations(app, volumeNamer);
   if (volumes.length > 0) compose.volumes = toMapping(volumes, 'volume', where);
 
   // lineWidth -1 keeps every value (long Traefik rules included) on one line.
@@ -194,6 +200,23 @@ export function readComposeNames(composeText: string): { containerNames: string[
     }
   }
   return { containerNames, volumes: declared };
+}
+
+/**
+ * A tenant compose file for a destructive `down -v`: every declared volume the
+ * tenant does not own becomes external, so compose leaves it alone. Needed for
+ * compose files written before tenant-scoped names, whose unscoped volumes may
+ * hold other tenants' data. Returns null when nothing needs changing.
+ */
+export function protectUnownedVolumes(composeText: string, appId: string, tenantId: string): string | null {
+  const unowned = readComposeNames(composeText).volumes
+    .filter(v => !v.external && !isTenantOwnedVolume(v.name, appId, tenantId));
+  if (unowned.length === 0) return null;
+  const doc = yaml.load(composeText) as { volumes: Record<string, unknown> };
+  for (const v of unowned) {
+    Object.defineProperty(doc.volumes, v.key, { value: { external: true, name: v.name }, enumerable: true, writable: true, configurable: true });
+  }
+  return yaml.dump(doc, { lineWidth: -1, noRefs: true, quotingType: '"' });
 }
 
 /** `$` → `$$`: compose reads `$$` as a literal `$` and interpolates a bare `$`. */
@@ -251,24 +274,110 @@ function buildEnvironment(
   return toMapping(entries, 'environment variable', where);
 }
 
-function resolveVolumeName(vol: AppServiceVolume, appId: string, tenantId: string): string {
-  return vol.name_template
-    ? vol.name_template.replace(/\$\{appId\}/g, appId).replace(/\$\{tenantId\}/g, tenantId)
-    : vol.name;
+interface VolumeChoice {
+  name: string;
+  declaration: ComposeVolume;
+}
+
+interface VolumeNamer {
+  volume(vol: AppServiceVolume): VolumeChoice;
+  backup(serviceName: string, local: string): VolumeChoice;
+}
+
+/**
+ * Decide the Docker volume behind each mount. Compose does not prefix a volume
+ * declared with an explicit `name:` with the project, so a name without the
+ * tenant in it is one volume shared by every tenant that declares it.
+ *
+ * - Tenant-owned names (`<appId>-<tenantId>-…`) are left to compose, which
+ *   creates them and removes them on `down -v`.
+ * - A `volumes[]` entry without `name_template`, and a backup path the
+ *   service does not mount itself, get an owned name for a new tenant. An
+ *   existing tenant whose compose file already declares the old unscoped
+ *   name keeps it (its data lives there), declared external.
+ * - Any other name is shared on purpose (`external: true`, or a template
+ *   without both placeholders) and declared external, so compose never
+ *   creates or deletes it with one tenant (ensureExternalVolumes creates it).
+ */
+function createVolumeNamer(appId: string, tenantId: string, existingCompose: string | undefined, where: string): VolumeNamer {
+  let existing: Set<string> | undefined;
+  if (existingCompose !== undefined) {
+    try {
+      existing = new Set(readComposeNames(existingCompose).volumes.map(v => v.name));
+    } catch (err: any) {
+      throw new Error(
+        `The existing docker-compose.yml of ${where} could not be read (${err?.message || err}); ` +
+        'refusing to regenerate it, because its volume names could change.',
+      );
+    }
+  }
+  const warned = new Set<string>();
+  const warnOnce = (name: string, message: string) => {
+    if (warned.has(name)) return;
+    warned.add(name);
+    console.warn(message);
+  };
+  const external = (name: string): VolumeChoice => ({ name, declaration: { external: true } });
+
+  // Stored definitions may predate write-path validation. Such a name stays
+  // exactly as before (a scoped prefix would not make a path a volume).
+  const unsafe = (name: string): boolean => {
+    if (isSafeVolumeName(name)) return false;
+    warnOnce(name, `[compose] ${where}: volume name ${JSON.stringify(name)} is not a plain Docker volume name, so Docker mounts it as a host path or rejects it. Change it in the app definition.`);
+    return true;
+  };
+
+  const unscoped = (legacyName: string): VolumeChoice => {
+    if (unsafe(legacyName)) return { name: legacyName, declaration: { name: legacyName } };
+    if (existing?.has(legacyName)) {
+      warnOnce(legacyName,
+        `[compose] ${where} uses the shared legacy volume '${legacyName}': every tenant whose compose file declares it shares its files. ` +
+        'It is declared external, so Overwatch never creates or deletes it with this tenant. ' +
+        'See "Shared legacy volumes" in docs/troubleshooting.md to give the tenant its own volume.');
+      return external(legacyName);
+    }
+    const name = tenantVolumeName(appId, tenantId, legacyName);
+    return { name, declaration: { name } };
+  };
+
+  return {
+    volume(vol) {
+      if (vol.external === true) {
+        const name = vol.name_template ? fillTemplate(vol.name_template, appId, tenantId) : vol.name;
+        unsafe(name);
+        return external(name);
+      }
+      if (!vol.name_template) return unscoped(vol.name);
+      const name = fillTemplate(vol.name_template, appId, tenantId);
+      if (unsafe(name)) return { name, declaration: { name } };
+      if (isTenantOwnedVolume(name, appId, tenantId)) return { name, declaration: { name } };
+      warnOnce(name,
+        `[compose] ${where}: volume '${name}' (name_template ${JSON.stringify(vol.name_template)}) is not scoped to this tenant, so tenants share it; ` +
+        'it is declared external, so Overwatch never creates or deletes it with this tenant.');
+      return external(name);
+    },
+    backup(serviceName, local) {
+      return unscoped(`${serviceName}-${local}`);
+    },
+  };
+}
+
+function fillTemplate(template: string, appId: string, tenantId: string): string {
+  return template.replace(/\$\{appId\}/g, appId).replace(/\$\{tenantId\}/g, tenantId);
 }
 
 /** The service's `name:path` mounts: its volumes, then backup paths not already mounted. */
-function buildServiceVolumes(service: AppService, appId: string, tenantId: string): string[] | undefined {
+function buildServiceVolumes(service: AppService, namer: VolumeNamer): string[] | undefined {
   const volumes: string[] = [];
   const mountedPaths = new Set<string>();
   for (const vol of service.volumes ?? []) {
-    volumes.push(`${resolveVolumeName(vol, appId, tenantId)}:${vol.container_path}`);
+    volumes.push(`${namer.volume(vol).name}:${vol.container_path}`);
     mountedPaths.add(vol.container_path);
   }
   if (service.backup?.enabled && service.backup.paths) {
     for (const p of service.backup.paths) {
       if (mountedPaths.has(p.container)) continue;
-      volumes.push(`${service.name}-${p.local}:${p.container}`);
+      volumes.push(`${namer.backup(service.name, p.local).name}:${p.container}`);
       mountedPaths.add(p.container);
     }
   }
@@ -280,24 +389,22 @@ function buildServiceVolumes(service: AppService, appId: string, tenantId: strin
  * Backup volumes follow buildServiceVolumes: a service gets one for each backup
  * path it does not already mount itself, so each one it mounts is declared.
  */
-function buildVolumeDeclarations(app: AppDefinition, tenantId: string): Array<[string, ComposeVolume]> {
+function buildVolumeDeclarations(app: AppDefinition, namer: VolumeNamer): Array<[string, ComposeVolume]> {
   const declarations: Array<[string, ComposeVolume]> = [];
-  const isDeclared = (name: string) => declarations.some(([declared]) => declared === name);
+  const declare = ({ name, declaration }: VolumeChoice) => {
+    if (!declarations.some(([declared]) => declared === name)) declarations.push([name, declaration]);
+  };
   for (const service of app.services) {
     const mountedPaths = new Set<string>();
     for (const vol of service.volumes ?? []) {
-      const name = resolveVolumeName(vol, app.id, tenantId);
       mountedPaths.add(vol.container_path);
-      if (isDeclared(name)) continue;
-      declarations.push([name, vol.external === true ? { external: true } : { name }]);
+      declare(namer.volume(vol));
     }
     if (service.backup?.enabled && service.backup.paths) {
       for (const p of service.backup.paths) {
         if (mountedPaths.has(p.container)) continue;
         mountedPaths.add(p.container);
-        const name = `${service.name}-${p.local}`;
-        if (isDeclared(name)) continue;
-        declarations.push([name, { name }]);
+        declare(namer.backup(service.name, p.local));
       }
     }
   }

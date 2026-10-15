@@ -7,7 +7,7 @@ import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
 import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue } from './envVars';
 import { getApp, applyApp } from './app';
-import { generateComposeFile, readComposeNames } from './composeGenerator';
+import { generateComposeFile, readComposeNames, protectUnownedVolumes } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
 import { applyManifestPolicy, manifestPolicyBaseline } from './manifestPolicy';
@@ -331,15 +331,16 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
       COMPOSE_LONG_TIMEOUT_MS,
     );
   } catch (error) {
-    // Rollback in reverse order of creation. If compose was written and `up` was
-    // attempted, containers may exist even when the original command failed —
-    // always attempt `down -v` so we don't leak them.
-    // Gather init container evidence first: `down -v` deletes the containers
+    // Rollback in reverse order of creation. If `up` was attempted, containers
+    // may exist even when the original command failed — always attempt `down`
+    // so we don't leak them. Without -v: the tenant's volumes may predate this
+    // create (kept by an earlier "keep data" delete of the same tenant ID).
+    // Gather init container evidence first: `down` deletes the containers
     // whose logs explain a failed first migration.
     let initFailures = '';
     if (upAttempted) {
       initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
-      await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
+      await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down']).catch(() => {});
     }
     if (tenantDirCreated) {
       await fs.rm(tenantPath, { recursive: true, force: true }).catch(() => {});
@@ -382,6 +383,35 @@ export async function startCreatedTenantLocked(appId: string, tenantId: string):
   }
 }
 
+/**
+ * Before `down -v`: a compose file written before tenant-scoped volume names
+ * can declare unscoped volumes other tenants share. Rewrite them as external
+ * so compose removes only the tenant's own volumes.
+ */
+async function guardUnownedVolumes(composePath: string, appId: string, tenantId: string): Promise<void> {
+  let text: string;
+  try {
+    text = await fs.readFile(composePath, 'utf-8');
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+  let guarded: string | null;
+  try {
+    guarded = protectUnownedVolumes(text, appId, tenantId);
+  } catch (err: any) {
+    throw new HttpError(
+      500,
+      `Cannot read the docker-compose.yml of ${appId}/${tenantId} (${err?.message || err}), so its volumes cannot be told apart from shared ones. Refusing to delete them; fix the file and retry.`,
+      { expose: true },
+    );
+  }
+  if (guarded !== null) {
+    console.warn(`[deleteTenant] ${appId}/${tenantId}: keeping volumes the tenant does not own (shared legacy volumes)`);
+    await writeFileAtomic(composePath, guarded);
+  }
+}
+
 export function deleteTenant(appId: string, tenantId: string, keepData: boolean = false): Promise<void> {
   return withTenantLock(appId, tenantId, () => deleteTenantLocked(appId, tenantId, keepData));
 }
@@ -405,12 +435,15 @@ export async function deleteTenantLocked(appId: string, tenantId: string, keepDa
   // DB_NAME in the tenant .env may differ from the constructed name (migrated tenants)
   const dbTenantId = await resolveTenantDbId(appId, tenantId, app);
 
+  const composePath = path.join(tenantPath, 'docker-compose.yml');
+  await guardUnownedVolumes(composePath, appId, tenantId);
+
   // Stop containers. If this fails we refuse to drop the DB — orphaned
   // containers running against a gone DB are worse than an incomplete delete.
   // Caller can retry once the compose issue is resolved.
   let composeDownOk = true;
   try {
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', path.join(tenantPath, 'docker-compose.yml'), 'down', '-v']);
+    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']);
   } catch (err: any) {
     composeDownOk = false;
     if (!keepData) {
@@ -638,7 +671,7 @@ async function updateTenantLocked(
 
     try {
       const tenantTraefik = await readTenantTraefik(appId, tenantId);
-      const composeContent = generateComposeFile({ app, tenantId, domain, config, tenantTraefik });
+      const composeContent = generateComposeFile({ app, tenantId, domain, config, tenantTraefik, existingCompose: originalComposeContent });
       await writeFileAtomic(composePath, composeContent);
     } catch (err) {
       console.warn('Failed to regenerate docker-compose.yml:', err);
