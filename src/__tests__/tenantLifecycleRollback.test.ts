@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { tenantAppDefMock } from './tenantAppDefMock';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -169,7 +170,7 @@ describe('tenant lifecycle rollback', () => {
       resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/customer-portal/web-api:new'),
     }));
     vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
-    vi.doMock('../services/tenantAppDef', () => ({
+    vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
       readTenantAppDef: vi.fn(async () => baseApp('customer-portal')),
       writeTenantAppDef: vi.fn(async (_appId: string, _tenantId: string, appDef: any) => {
         await fs.writeFile(appDefPath, JSON.stringify(appDef, null, 2));
@@ -262,7 +263,7 @@ describe('tenant lifecycle rollback', () => {
       resolveManifestImageRef: vi.fn(() => 'ghcr.io/jerryminiapps/product/backend:1.2.26'),
     }));
     vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
-    vi.doMock('../services/tenantAppDef', () => ({
+    vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
       readTenantAppDef: vi.fn(async () => staleSnapshot),
       writeTenantAppDef,
     }));

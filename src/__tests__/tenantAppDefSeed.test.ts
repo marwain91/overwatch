@@ -91,3 +91,43 @@ describe('seedMissingTenantAppDefs', () => {
     await expect(fs.access(snapshot('shop', 't1'))).rejects.toThrow();
   });
 });
+
+describe('resolveTenantApp', () => {
+  async function writeSnapshot(app: string, tenant: string, def: Record<string, unknown>) {
+    await mkTenant(app, tenant);
+    const { createdAt: _c, updatedAt: _u, ...staticDef } = def;
+    void _c; void _u;
+    await fs.writeFile(snapshot(app, tenant), JSON.stringify(staticDef));
+  }
+
+  it('keeps the snapshot shape and takes registry, default tag and identity from the global definition', async () => {
+    await writeSnapshot('shop', 't1', appDef('old-shop', {
+      services: [{ name: 'legacy', image_suffix: 'legacy' }], db_prefix: 'frozen', default_image_tag: 'old',
+    }));
+    getApp.mockResolvedValue(appDef('shop', {
+      registry: { type: 'ghcr', url: 'ghcr.io', repository: 'o/new', auth: { type: 'token' } }, default_image_tag: 'new', db_prefix: 'global',
+    }));
+    const { resolveTenantApp } = await import('../services/tenantAppDef');
+    const app = await resolveTenantApp('shop', 't1');
+    expect(app).toMatchObject({
+      id: 'shop', name: 'shop', domain_template: '*.shop.example', default_image_tag: 'new',
+      registry: { repository: 'o/new' }, db_prefix: 'frozen', services: [{ name: 'legacy' }],
+    });
+  });
+
+  it('returns the snapshot of a tenant whose app is in the trash', async () => {
+    await writeSnapshot('shop', 't1', appDef('shop', { db_prefix: 'custom' }));
+    getApp.mockResolvedValue(null);
+    const { resolveTenantApp } = await import('../services/tenantAppDef');
+    expect(await resolveTenantApp('shop', 't1')).toMatchObject({ id: 'shop', db_prefix: 'custom' });
+  });
+
+  it('falls back to the global definition without a snapshot, and is null without either', async () => {
+    await mkTenant('shop', 't1');
+    getApp.mockResolvedValue(appDef('shop'));
+    const { resolveTenantApp } = await import('../services/tenantAppDef');
+    expect(await resolveTenantApp('shop', 't1')).toMatchObject({ id: 'shop' });
+    getApp.mockResolvedValue(null);
+    expect(await resolveTenantApp('shop', 't1')).toBeNull();
+  });
+});

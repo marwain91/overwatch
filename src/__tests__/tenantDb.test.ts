@@ -35,6 +35,11 @@ describe('resolveTenantDbId', () => {
     expect(await resolveTenantDbId('app', 'nope', undefined)).toBe('app_nope');
   });
 
+  it('throws instead of guessing when the .env exists but cannot be read', async () => {
+    await fs.mkdir(path.join(appsDir, 'app', 'tenants', 't1', '.env'), { recursive: true });
+    await expect(resolveTenantDbId('app', 't1', undefined)).rejects.toThrow();
+  });
+
   it('strips the effective prefix from a migrated DB_NAME', async () => {
     await writeEnv('app', 't1', 'DB_NAME=acme_proj_t1\n');
     expect(await resolveTenantDbId('app', 't1', undefined)).toBe('proj_t1');

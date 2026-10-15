@@ -11,7 +11,7 @@ import { generateComposeFile, readComposeNames, protectUnownedVolumes } from './
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
 import { applyManifestPolicy, manifestPolicyBaseline } from './manifestPolicy';
-import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
+import { writeTenantAppDef, resolveTenantApp, overlayGlobalApp } from './tenantAppDef';
 import { describeFailedInitContainers } from './initContainerDiagnostics';
 import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '../models/app';
 import { eventBus } from './eventBus';
@@ -20,7 +20,7 @@ import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { tenantDir, tenantsDir, assertTenantDir, listTenantDirs, parseTenantEnv } from './tenantStore';
 import { tenantIdentity, findIdentityConflict, assertTenantDbName, isTenantOwnedVolume, type TenantIdentity, type TenantNames } from './tenantIdentity';
 import { SLUG_RE } from '../utils/validators';
-import { resolveTenantDbId } from './tenantDb';
+import { resolveTenantDbName } from './tenantDb';
 import { runDocker } from '../utils/runDocker';
 import { writeFileAtomic } from '../utils/atomicJson';
 import { withFileLock, withTenantLock } from './fileLock';
@@ -122,23 +122,6 @@ export function overlayInfrastructure(snapshot: AppDefinition, global: AppDefini
     registry: global.registry,
     default_image_tag: global.default_image_tag,
   };
-}
-
-function overlayRuntimeIdentityAndInfrastructure<T extends AppDefinition | AppDefinitionStatic>(snapshot: T, global: AppDefinition | null): T {
-  if (!global) return snapshot;
-  return {
-    ...snapshot,
-    registry: global.registry,
-    default_image_tag: global.default_image_tag,
-    id: global.id,
-    name: global.name,
-    domain_template: global.domain_template,
-  } as T;
-}
-
-async function overlayInfrastructureFromGlobal(snapshot: AppDefinition, appId: string = snapshot.id): Promise<AppDefinition> {
-  const global = await getApp(appId);
-  return overlayRuntimeIdentityAndInfrastructure(snapshot, global);
 }
 
 function toStaticAppDefinition(app: AppDefinition): AppDefinitionStatic {
@@ -377,7 +360,7 @@ export async function startCreatedTenantLocked(appId: string, tenantId: string):
     await ensureExternalVolumes(composePath);
     await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--no-recreate'], COMPOSE_LONG_TIMEOUT_MS);
   } catch (error) {
-    const app = await readTenantAppDef(appId, tenantId).catch(() => null);
+    const app = await resolveTenantApp(appId, tenantId).catch(() => null);
     const initFailures = app ? await describeFailedInitContainers(app, tenantId).catch(() => '') : '';
     throw new HttpError(500, `${extractComposeErrorMessage(error)}${initFailures ? `\n\n${initFailures}` : ''}`, { expose: true });
   }
@@ -419,8 +402,6 @@ export function deleteTenant(appId: string, tenantId: string, keepData: boolean 
 /** Caller must hold the tenant lock. */
 export async function deleteTenantLocked(appId: string, tenantId: string, keepData: boolean): Promise<void> {
   const tenantPath = getTenantPath(appId, tenantId);
-  const app = await getApp(appId);
-  const db = getDatabaseAdapter(app ?? undefined);
 
   // Check if tenant exists
   try {
@@ -432,8 +413,11 @@ export async function deleteTenantLocked(appId: string, tenantId: string, keepDa
   // Verify path hasn't been manipulated via symlinks
   await assertTenantDir(appId, tenantId);
 
-  // DB_NAME in the tenant .env may differ from the constructed name (migrated tenants)
-  const dbTenantId = await resolveTenantDbId(appId, tenantId, app);
+  // The exact database, resolved before anything is stopped: the tenant's own
+  // definition (getApp() is null for a trashed app, whose db_prefix may differ
+  // from the project's) and its .env DB_NAME. Throws when it cannot be
+  // determined, so the delete fails closed instead of orphaning the database.
+  const dbName = keepData ? null : await resolveTenantDbName(appId, tenantId, await resolveTenantApp(appId, tenantId));
 
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   await guardUnownedVolumes(composePath, appId, tenantId);
@@ -457,10 +441,12 @@ export async function deleteTenantLocked(appId: string, tenantId: string, keepDa
     console.warn(`[deleteTenant] compose down failed: ${err?.message || err}. Continuing because keepData=true.`);
   }
 
-  // Drop database unless keeping data
-  if (!keepData && composeDownOk) {
+  // Drop database unless keeping data. dbName is the full name, so the
+  // adapter must not prepend a prefix.
+  if (dbName !== null && composeDownOk) {
+    const db = getDatabaseAdapter({ db_prefix: '' });
     await db.initialize();
-    await db.dropDatabase(dbTenantId);
+    await db.dropDatabase(dbName);
   }
 
   // Clean up tenant env var overrides only once teardown has succeeded: a
@@ -530,22 +516,12 @@ async function updateTenantLocked(
   // Verify path hasn't been manipulated via symlinks
   await assertTenantDir(appId, tenantId);
 
-  // Load this tenant's current app definition. Prefer the per-tenant
-  // snapshot; fall back to apps.d/<id>.json for legacy tenants without
-  // a snapshot (boot seeds these, but this keeps the path resilient).
-  let app = await readTenantAppDef(appId, tenantId);
+  // This tenant's effective app definition: its snapshot, with registry,
+  // default tag and identity from the global definition (see overlayGlobalApp).
+  let app = await resolveTenantApp(appId, tenantId);
   if (!app) {
     throw new NotFoundError(`App '${appId}' not found`);
   }
-  // Overlay infrastructure-level fields (`registry`, `default_image_tag`)
-  // from the global definition. The frozen snapshot owns service-level
-  // schema (services, backup, env_vars declarations, traefik library) so
-  // a tenant on v1.0 doesn't break when v2.0 changes the schema — but
-  // *registry* is a "where do we pull from" decision that should always
-  // reflect the current global config. Without this, an admin's "switch
-  // app to a new repo" edit silently fails to propagate to existing
-  // tenants until each is manually reseeded.
-  app = await overlayInfrastructureFromGlobal(app, appId);
 
   // Read current .env
   const originalEnvContent = await fs.readFile(envPath, 'utf-8');
@@ -619,7 +595,7 @@ async function updateTenantLocked(
         throw new HttpError(500, `Image manifest failed validation: ${errors}`, { expose: true });
       }
       const globalForManifest = await getApp(appId);
-      const normalizedManifest = overlayRuntimeIdentityAndInfrastructure(parsed.data, globalForManifest);
+      const normalizedManifest = overlayGlobalApp(parsed.data, globalForManifest);
       // The image may only change allowlisted fields; protected ones keep the
       // admin's value. The snapshot and the global definition get the same result.
       const { next: allowedManifest, ignored } = applyManifestPolicy(
@@ -642,13 +618,13 @@ async function updateTenantLocked(
       } else {
         emit('manifest', 'completed', `noop (manifest matches current definition)${ignoredNote}`);
       }
-      const reloaded = await readTenantAppDef(appId, tenantId);
       // Re-apply the overlay: manifest sync can overwrite the registry block
       // with whatever is in the image's embedded /overwatch/app.json, which
       // for older images may carry a stale repo. The global definition is
       // the source of truth for "where do we pull from"; manifest content
       // for that field is ignored.
-      if (reloaded) app = await overlayInfrastructureFromGlobal(reloaded, appId);
+      const reloaded = await resolveTenantApp(appId, tenantId);
+      if (reloaded) app = reloaded;
     } else {
       emit('manifest', 'skipped', 'image carries no /overwatch/app.json — keeping existing definition');
     }

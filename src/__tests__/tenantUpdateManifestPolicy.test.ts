@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { tenantAppDefMock } from './tenantAppDefMock';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -116,7 +117,7 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
     resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/shop/backend:1.2.0'),
   }));
   vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
-  vi.doMock('../services/tenantAppDef', () => ({
+  vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
     readTenantAppDef: vi.fn(async () => tenantSnapshot),
     writeTenantAppDef,
   }));
