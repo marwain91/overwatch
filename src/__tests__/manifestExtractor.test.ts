@@ -325,6 +325,15 @@ describe('extractFileFromImage — timeouts, env and cleanup', () => {
     expect(calls.find(c => c.args[0] === 'rm')!.args).toEqual(['rm', '-f', create[create.indexOf('--name') + 1]]);
   });
 
+  it('refuses a malformed image reference without running docker', async () => {
+    const calls: DockerCall[] = [];
+    mockExecFile(() => ({}), calls);
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('--help', '/overwatch/app.json')).rejects.toThrow(/malformed image reference/);
+    await expect(extractFileFromImage('ghcr.io/x y:1', '/overwatch/app.json')).rejects.toThrow(/malformed image reference/);
+    expect(calls).toEqual([]);
+  });
+
   it('does not start an hour-long pull when the docker daemon is unreachable', async () => {
     const calls: DockerCall[] = [];
     mockExecFile((args) => {

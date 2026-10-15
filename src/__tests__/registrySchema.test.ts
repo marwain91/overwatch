@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AppRegistryAuthSchema, AppRegistrySchema } from '../models/app';
+import { AppRegistryAuthSchema, AppRegistrySchema, registryFieldErrors } from '../models/app';
 
 describe('AppRegistryAuthSchema — supported types', () => {
   it('accepts type=token with token_env', () => {
@@ -88,11 +88,15 @@ describe('AppRegistrySchema — gitlab type', () => {
 });
 
 // url, repository and api_url reach `docker login/pull/create` as arguments and
-// image references, and the registry APIs as URL parts.
-describe('AppRegistrySchema — field formats', () => {
+// image references, and the registry APIs as URL parts. The schema only trims
+// them; registryFieldErrors holds the formats, checked on write and before use.
+describe('registryFieldErrors — field formats', () => {
   const auth = { type: 'token' as const, token_env: 'GHCR_TOKEN' };
   const registry = (over: Record<string, unknown>) => ({ type: 'ghcr', url: 'ghcr.io', repository: 'org/repo', auth, ...over });
-  const ok = (over: Record<string, unknown>) => AppRegistrySchema.safeParse(registry(over)).success;
+  const ok = (over: Record<string, unknown>) => {
+    const parsed = AppRegistrySchema.safeParse(registry(over));
+    return parsed.success && registryFieldErrors(parsed.data).length === 0;
+  };
 
   it.each([
     'ghcr.io', 'registry.gitlab.com', 'registry.acme.com:5050', 'docker.io', 'index.docker.io', 'quay.io',
@@ -157,11 +161,21 @@ describe('AppRegistrySchema — field formats', () => {
   });
 
   it('names the field and the expected shape in the error', () => {
-    const result = AppRegistrySchema.safeParse(registry({ url: '--config=/tmp/x' }));
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.errors[0].path).toEqual(['url']);
-      expect(result.error.errors[0].message).toMatch(/ghcr\.io/);
-    }
+    const errors = registryFieldErrors({ url: '--config=/tmp/x', repository: 'org/repo' });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/^registry\.url: .*ghcr\.io/);
+  });
+
+  it('checks only the requested fields', () => {
+    const bad = { url: '-H', repository: '-x', api_url: '-y' };
+    expect(registryFieldErrors(bad, ['url', 'repository'])).toHaveLength(2);
+    expect(registryFieldErrors(bad, ['api_url'])).toEqual([expect.stringMatching(/^registry\.api_url: /)]);
+  });
+
+  it('lets the schema load stored values written before the formats existed', () => {
+    const legacy = registry({ type: 'gitlab', url: '-H', repository: 'org repo', api_url: 'https://user:pw@gitlab.acme.com' });
+    const result = AppRegistrySchema.safeParse(legacy);
+    expect(result.success).toBe(true);
+    if (result.success) expect(registryFieldErrors(result.data)).toHaveLength(3);
   });
 });

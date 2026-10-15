@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 import { RegistryLoginTarget, holdRegistryLogin, runWithRegistryLogin } from './login';
+import { assertRegistryUsable } from './validation';
 import { GHCRAdapter } from './ghcr';
 import { GitLabAdapter } from './gitlab';
 import { DockerHubAdapter } from './dockerhub';
@@ -135,10 +136,12 @@ function pullLoginTarget(app: AppDefinition): RegistryLoginTarget | null {
  * when they start, so another app's different credential for the same host
  * waits REGISTRY_LOGIN_HOLD_MS for the caller's pull to start.
  *
- * Never fails the pull: a failed or impossible login is logged as a warning
- * and the pull runs with the existing docker credentials.
+ * A failed or impossible login does not fail the pull: it is logged as a
+ * warning and the pull runs with the existing docker credentials. Registry
+ * settings with an invalid url or repository refuse the pull.
  */
 export async function ensureRegistryLogin(app: AppDefinition): Promise<void> {
+  assertRegistryUsable(app, 'pull');
   const target = pullLoginTarget(app);
   if (target) await holdRegistryLogin(target);
 }
@@ -148,6 +151,7 @@ export async function ensureRegistryLogin(app: AppDefinition): Promise<void> {
  * until `fn` settles rather than for REGISTRY_LOGIN_HOLD_MS.
  */
 export async function withRegistryLogin<T>(app: AppDefinition, fn: () => Promise<T>): Promise<T> {
+  assertRegistryUsable(app, 'pull');
   const target = pullLoginTarget(app);
   return target ? runWithRegistryLogin(target, fn) : fn();
 }
@@ -156,6 +160,7 @@ export async function withRegistryLogin<T>(app: AppDefinition, fn: () => Promise
  * Login to registry for a specific app
  */
 export async function loginToRegistryForApp(app: AppDefinition): Promise<void> {
+  assertRegistryUsable(app, 'pull');
   const target = loginTargetForApp(app);
   if (!target) {
     console.log(`Registry credentials not configured for app '${app.id}', skipping registry login`);
@@ -182,6 +187,7 @@ export async function loginToAllRegistries(apps: AppDefinition[]): Promise<void>
  * Get available image tags for a specific app
  */
 export async function getImageTagsForApp(app: AppDefinition): Promise<string[]> {
+  assertRegistryUsable(app, 'list tags');
   const adapter = getRegistryAdapterForApp(app);
   return adapter.getImageTags();
 }

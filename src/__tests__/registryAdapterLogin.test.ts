@@ -96,6 +96,12 @@ describe('docker login goes through runDocker with a timeout and the secret on s
     await expect(adapter.login()).rejects.toBeInstanceOf(RegistryLoginUnavailableError);
   });
 
+  it('refuses to pass a malformed server address to docker login', async () => {
+    const adapter = new CustomRegistryAdapter({ type: 'custom', url: '--config=/tmp/x', repository: 'org/repo', username: 'bob', token: 'pw' });
+    await expect(adapter.login()).rejects.toThrow(/Refusing docker login: registry\.url/);
+    expect(runDockerMock).not.toHaveBeenCalled();
+  });
+
   it('propagates a rejected login', async () => {
     runDockerMock.mockRejectedValue(new DockerCommandError('docker login failed', 'unknown', {
       stderr: 'Error response from daemon: Get "https://ghcr.io/v2/": denied: denied\n',

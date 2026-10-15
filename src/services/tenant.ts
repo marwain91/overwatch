@@ -12,7 +12,7 @@ import { getApp, applyApp } from './app';
 import { generateComposeFile } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
-import { ensureRegistryLogin } from '../adapters/registry';
+import { ensureRegistryLogin, withRegistryLogin } from '../adapters/registry';
 import { applyManifestPolicy, manifestPolicyBaseline } from './manifestPolicy';
 import { readTenantAppDef, writeTenantAppDef } from './tenantAppDef';
 import { describeFailedInitContainers } from './initContainerDiagnostics';
@@ -605,8 +605,7 @@ async function updateTenantLocked(
   // not found') leaves the tenant exactly as it was.
   emit('pull', 'started');
   try {
-    await ensureRegistryLogin(app);
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull'], COMPOSE_LONG_TIMEOUT_MS);
+    await withRegistryLogin(app, () => execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull'], COMPOSE_LONG_TIMEOUT_MS));
     await ensureExternalVolumes(composePath);
     emit('pull', 'completed');
   } catch (error: any) {

@@ -456,7 +456,7 @@ environment:
 
 ### Registry field formats
 
-`url`, `repository` and `api_url` end up in `docker login` and `docker pull` arguments, image references and registry API URLs. Overwatch checks them whenever an app definition is created, edited, applied or loaded.
+`url`, `repository` and `api_url` end up in `docker login` and `docker pull` arguments, image references and registry API URLs, so they must have these formats:
 
 | Field | Format | Examples |
 |-------|--------|----------|
@@ -464,9 +464,15 @@ environment:
 | `repository` | Path of `/`-separated components | `org/app`, `group/sub/project` |
 | `api_url` (GitLab only) | `http(s)://` URL without credentials, query or fragment | `https://gitlab.acme.com` |
 
-Each host label and path component starts with a letter or digit and contains only letters, digits, `.`, `_` and `-`. Surrounding whitespace is trimmed. A value that starts with `-`, contains whitespace, or has an empty component is rejected. Docker also requires `repository` to be lowercase before it pulls.
+Each host label and path component starts with a letter or digit and contains only letters, digits, `.`, `_` and `-`. Surrounding whitespace is trimmed. A value that starts with `-`, contains whitespace, or has an empty component does not match. Docker also requires `repository` to be lowercase before it pulls.
 
-A stored definition that fails these checks stops Overwatch at boot with `<id>.json failed validation: registry.<field>: ...`. For `url` and `repository`, docker could never pull with such a value; `api_url` is only used to list tags. Fix the file in `data/apps.d/` and restart. The registry block that an image embeds in its `/overwatch/app.json` is replaced by the app's own before validation, so it cannot fail a manifest sync.
+The formats are checked in three places:
+
+- **On write** (`POST`/`PUT /api/apps`, the UI, `overwatch apps apply`, manifest sync): a new or changed value with the wrong format is refused with a 400, `Invalid app definition: registry.<field>: ...`. A field left at its stored value is not re-checked, so other edits to an older app still save.
+- **On load**: a stored definition keeps loading. For `data/apps.d/<id>.json` Overwatch logs `App '<id>' has an invalid registry.<field>: ...` once per field. A tenant's `app-definition.json` loads too; its registry block is replaced by the app's own whenever it is used.
+- **Before use**: a pull, registry login or manifest pull for such an app is refused with `Refusing to pull for app '<id>', its registry settings are invalid: ...` before docker runs; tag listing is refused the same way, and also checks `api_url`. An invalid `api_url` alone does not stop pulls. For `url` and `repository`, docker could never have pulled with such a value anyway.
+
+The registry block that an image embeds in its `/overwatch/app.json` is replaced by the app's own, so it cannot fail a manifest sync.
 
 ### Registry login
 

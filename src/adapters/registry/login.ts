@@ -1,4 +1,5 @@
 import { DockerCommandError, runDocker } from '../../utils/runDocker';
+import { registryFieldErrors } from '../../models/app';
 
 /** Bound on one `docker login`, and on each AWS CLI call ECR makes. */
 export const REGISTRY_LOGIN_TIMEOUT_MS = 60_000;
@@ -32,7 +33,11 @@ export class RegistryLoginUnavailableError extends Error {
  */
 export async function dockerLogin(server: string | undefined, username: string, secret: string): Promise<void> {
   const args = ['login', `--username=${username}`, '--password-stdin'];
-  if (server !== undefined) args.push('--', server);
+  if (server !== undefined) {
+    const [invalid] = registryFieldErrors({ url: server, repository: 'x' }, ['url']);
+    if (invalid) throw new Error(`Refusing docker login: ${invalid}`);
+    args.push('--', server);
+  }
   try {
     await runDocker('docker', args, { timeoutMs: REGISTRY_LOGIN_TIMEOUT_MS, input: secret });
   } catch (err) {

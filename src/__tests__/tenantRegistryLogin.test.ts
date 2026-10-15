@@ -10,6 +10,8 @@ let tmpRoot: string;
 let appsDir: string;
 const events: string[] = [];
 const ensureRegistryLogin = vi.fn();
+// Holds the registry host for the app's credential until the pull settles.
+const withRegistryLogin = vi.fn();
 const db = {
   initialize: vi.fn(async () => undefined),
   databaseExists: vi.fn(async () => false),
@@ -33,6 +35,13 @@ beforeEach(async () => {
   events.length = 0;
   ensureRegistryLogin.mockReset();
   ensureRegistryLogin.mockImplementation(async (a: any) => { events.push(`login:${a.id}`); });
+  withRegistryLogin.mockReset();
+  withRegistryLogin.mockImplementation(async (a: any, fn: () => Promise<unknown>) => {
+    await ensureRegistryLogin(a);
+    const result = await fn();
+    events.push(`release:${a.id}`);
+    return result;
+  });
   vi.doMock('../services/fileLock', () => ({
     withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(),
     withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn(),
@@ -50,7 +59,7 @@ beforeEach(async () => {
   }));
   vi.doMock('../config/loader', () => ({ resolveCertResolver: () => ({ name: 'web', resolver: null }) }));
   vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => db }));
-  vi.doMock('../adapters/registry', () => ({ ensureRegistryLogin }));
+  vi.doMock('../adapters/registry', () => ({ ensureRegistryLogin, withRegistryLogin }));
   vi.doMock('../services/app', () => ({
     getApp: vi.fn(async () => app()),
     applyApp: vi.fn(async (def: any) => ({ result: 'noop', app: def, changedKeys: [] })),
@@ -128,6 +137,8 @@ describe('tenant update', () => {
     await updateTenant('portal', 'one', 'v2');
     expect(events).toContain('login:portal');
     expect(events.indexOf('login:portal')).toBeLessThan(events.indexOf('docker:pull'));
+    // The host stays held for the app's credential until compose pull is done.
+    expect(events.indexOf('docker:pull')).toBeLessThan(events.indexOf('release:portal'));
   });
 
   it('restores the tenant and reports the pull step failed if the registry login step throws', async () => {

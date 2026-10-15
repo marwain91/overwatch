@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AppDefinition } from '../models/app';
 import { ensureRegistryLogin } from '../adapters/registry';
+import { assertRegistryUsable } from '../adapters/registry/validation';
 import { DockerCommandError, runDocker } from '../utils/runDocker';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 
@@ -32,6 +33,10 @@ export async function extractFileFromImage(
   pathInImage: string,
   app?: AppDefinition,
 ): Promise<string | null> {
+  // `--` already ends the options; this keeps a malformed reference from docker entirely.
+  if (/^-|[\u0000-\u0020\u007f]/.test(imageRef)) {
+    throw new Error(`Refusing to extract a manifest from malformed image reference ${JSON.stringify(imageRef)}`);
+  }
   try {
     await runDocker('docker', ['image', 'inspect', '--', imageRef], { timeoutMs: DOCKER_STEP_TIMEOUT_MS });
   } catch (err) {
@@ -127,6 +132,7 @@ export async function readManifestFromAppImage(
 ): Promise<unknown | null> {
   const imageRef = resolveManifestImageRef(app, imageTag);
   if (!imageRef) return null;
+  assertRegistryUsable(app, 'pull');
   const pathInImage = resolveManifestPathInImage(app);
   const raw = await extractFileFromImage(imageRef, pathInImage, app);
   if (raw === null) return null;

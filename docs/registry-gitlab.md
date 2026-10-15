@@ -63,7 +63,7 @@ To find these on a self-hosted instance:
 
 > **Note:** SaaS does not need an API URL. Overwatch derives `https://gitlab.com` automatically when `url` is `registry.gitlab.com`. Setting it explicitly is fine but unnecessary.
 
-`url` is the bare registry host, with an optional port and path but no `https://`. `repository` is the project path (`group/subgroup/project`). `api_url` is an `http(s)://` URL without credentials, query or fragment. Overwatch rejects values that start with `-` or contain whitespace (see [Registry field formats](./configuration.md#registry-field-formats)).
+`url` is the bare registry host, with an optional port and path but no `https://`. `repository` is the project path (`group/subgroup/project`). `api_url` is an `http(s)://` URL without credentials, query or fragment. Overwatch refuses new values that start with `-` or contain whitespace (see [Registry field formats](./configuration.md#registry-field-formats)).
 
 ---
 

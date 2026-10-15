@@ -14,6 +14,7 @@ import {
 } from '../models/app';
 import { withFileLock } from './fileLock';
 import { clearAdapterCache } from '../adapters/registry';
+import { assertRegistryWritable, warnInvalidStoredRegistry } from '../adapters/registry/validation';
 import { writeJsonAtomic, readJsonStrict } from '../utils/atomicJson';
 import { isReservedSecretEnv, loadConfigOrNull } from '../utils/reservedEnv';
 import { ConflictError, NotFoundError, ValidationError } from '../utils/httpErrors';
@@ -172,6 +173,7 @@ async function loadApps(files: string[]): Promise<{ apps: AppDefinition[]; runti
     }
     const staticDef = parsed.data;
     warnReservedSecretEnv(staticDef);
+    warnInvalidStoredRegistry(staticDef);
 
     // File-name sanity: filename id must match the in-file id. Prevents renames
     // from silently producing two copies or mis-keyed runtime entries.
@@ -289,6 +291,7 @@ export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`Invalid app definition: ${errors}`);
     }
+    assertRegistryWritable(parsed.data.registry, undefined, 'Invalid app definition');
 
     await writeStatic(parsed.data);
     await upsertRuntime(parsed.data.id, () => ({ createdAt: now, updatedAt: now }));
@@ -312,6 +315,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
       const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`Invalid app definition: ${errors}`);
     }
+    assertRegistryWritable(parsed.data.registry, apps[index].registry, 'Invalid app definition');
 
     await writeStatic(parsed.data);
     clearAdapterCache(parsed.data.id);
@@ -373,6 +377,7 @@ export async function applyApp(
           `inspect and repair the file before re-running: ${err?.message || err}`
         );
       }
+      assertRegistryWritable(next.registry, prev.registry, 'App definition failed validation');
       const changedKeys = diffKeys(prev, next);
       if (changedKeys.length === 0) {
         const runtime = await readRuntimeStore();
@@ -406,6 +411,7 @@ export async function applyApp(
       };
     }
 
+    assertRegistryWritable(next.registry, undefined, 'App definition failed validation');
     const now = new Date().toISOString();
     await writeJsonAtomic(currentFile, next, { mode: 0o644 });
     clearAdapterCache(next.id);
