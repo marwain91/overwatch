@@ -528,6 +528,8 @@ Who may sign in, and what they may do, is stored in `data/admin-users.json` and 
 | `S3_SECRET_KEY` | S3 secret key |
 | `RESTIC_PASSWORD` | Restic encryption password |
 
+A tenant backup holds the tenant's database dump, its `.env` and the backed-up service paths, and is tagged `app:<appId>` and `tenant:<tenantId>`. MySQL/MariaDB dumps include triggers, stored routines and events (`--routines --events`, so the database root user needs the privileges to read them); Postgres dumps leave out owners and privileges, and a restore creates the objects as the tenant's role. Dump and restore clients run under `timeout` inside the database container and are stopped after 1 hour. Each tenant is backed up with its own app definition (the one frozen for the image it runs), so a tenant keeps using its backup repository until it is updated. Restore, retention (prune) and repository unlock are described in the [API reference](api.md#backups).
+
 ### Admin Access (optional, from app config)
 
 | Variable | Description |

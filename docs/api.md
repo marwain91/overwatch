@@ -124,16 +124,16 @@ All backup endpoints are scoped to an app: `/api/apps/:appId/backups`.
 | `GET` | `/api/apps/:appId/backups/summary` | `auth` | Backup summary: status, schedule, last backup, snapshot count |
 | `GET` | `/api/apps/:appId/backups/status` | `auth` | Backup system status |
 | `POST` | `/api/apps/:appId/backups/init` | `admin` | Initialize backup repository |
-| `POST` | `/api/apps/:appId/backups/unlock` | `admin` | Unlock stale repository locks |
-| `GET` | `/api/apps/:appId/backups` | `auth` | List snapshots |
+| `POST` | `/api/apps/:appId/backups/unlock` | `admin` | Remove stale repository locks (`{"force": true}` also removes live ones) |
+| `GET` | `/api/apps/:appId/backups` | `auth` | List snapshots (`?tenantId=` for one tenant) |
 | `POST` | `/api/apps/:appId/backups` | `editor` | Create backup for a tenant |
 | `POST` | `/api/apps/:appId/backups/all` | `editor` | Backup all tenants in an app |
-| `POST` | `/api/apps/:appId/backups/:snapshotId/restore` | `admin` | Restore to an existing tenant |
+| `POST` | `/api/apps/:appId/backups/:snapshotId/restore` | `admin`, `confirm` (target tenant) | Restore into an existing tenant, replacing its data |
 | `POST` | `/api/apps/:appId/backups/:snapshotId/create-tenant` | `admin` | Create a new tenant from a backup (restored while the containers are stopped, then started) |
 | `DELETE` | `/api/apps/:appId/backups/:snapshotId` | `admin`, `confirm` | Delete a snapshot |
-| `POST` | `/api/apps/:appId/backups/prune` | `admin` | Prune old backups |
+| `POST` | `/api/apps/:appId/backups/prune` | `admin` | Forget snapshots outside the retention policy and prune the repository |
 
-When a tenant is created from a backup, its data is copied into the containers while they are stopped (before the app first starts). Backed-up paths must therefore be volume mount points or exist in the image; any other path is reported as a "not restored (copy failed)" warning.
+Restore, create-tenant and delete only accept a snapshot tagged for the app (`app:<appId>`): another app's snapshot or an unknown id is a 404, and an untagged legacy snapshot is refused with a 400. The tenant's own backup list, backups and restores use the tenant's app definition (its repository, database and backed-up paths), falling back to the app definition when the tenant has none.
 
 **Create backup request:**
 ```json
@@ -141,6 +141,40 @@ When a tenant is created from a backup, its data is copied into the containers w
   "tenantId": "acme"
 }
 ```
+
+The tenant must be free within 10 s; a tenant busy with an update or restore is a `409`. A response with `"incomplete": true` lists in `missingPaths` (`service:/path`) the service paths that could not be copied; the snapshot has the database and the rest.
+
+**Restore request** (`X-Confirm-Id: acme`, the target tenant):
+```json
+{
+  "tenantId": "acme",
+  "allowCrossTenant": false
+}
+```
+
+The snapshot must have been taken of the target tenant (`tenant:<tenantId>` tag) unless `allowCrossTenant` is `true`. A restore:
+
+1. takes a safety snapshot of the tenant's current data, tagged `pre-restore` (if that fails or misses a path, the restore stops and nothing is changed);
+2. stops the tenant's containers if they are running (`docker compose stop`);
+3. empties and re-imports the database, then copies the backed-up paths;
+4. if the import or a copy fails, puts the safety snapshot back the same way;
+5. starts the containers again if they were running (`up -d --no-recreate`, so init containers run on the restored data).
+
+The response has `safetySnapshotId`. A failed restore answers `500` with an `error` that says what failed and, after the data was touched, `rolledBack` (`true`: the tenant is back on the safety snapshot; `false`: the tenant was left stopped, restore `safetySnapshotId` to recover). Paths are copied into stopped containers, so backed-up paths must be volume mount points or exist in the image.
+
+When a tenant is created from a backup, its data is copied into the containers while they are stopped (before the app first starts); any snapshot of the app may be used. A path that cannot be copied is reported as a "not restored (copy failed)" warning.
+
+**Prune request:**
+```json
+{
+  "keepDaily": 7,
+  "keepWeekly": 4,
+  "keepMonthly": 12,
+  "dryRun": true
+}
+```
+
+Each value is an integer from 0 (daily up to 365, weekly up to 52, monthly up to 120); an omitted value uses the default shown, and a policy that keeps nothing is refused. Retention applies per tenant (snapshots are grouped by their tags, so `pre-restore` snapshots form their own group) and only to this app's snapshots, even when apps share a repository. `dryRun: true` changes nothing and returns `remove` (the snapshots the policy would forget), `removeCount` and `keepCount`. The first real prune after upgrading to this version forgets the whole backlog that earlier versions never pruned; run a dry run first.
 
 ## Environment Variables
 
