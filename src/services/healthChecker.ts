@@ -118,6 +118,7 @@ async function runHealthChecks(): Promise<void> {
       const consecutiveFailures = isHealthy ? 0 : (currentState?.consecutiveFailures || 0) + 1;
       const newState: HealthState['state'] = isHealthy ? 'healthy' : 'unhealthy';
 
+      const lastCheck = new Date().toISOString();
       healthStates.set(name, {
         containerName: name,
         appId,
@@ -125,22 +126,14 @@ async function runHealthChecks(): Promise<void> {
         service: serviceName,
         state: newState,
         consecutiveFailures,
-        lastCheck: new Date().toISOString(),
+        lastCheck,
       });
 
-      // Emit state transition
-      if (previousState !== newState) {
-        eventBus.emit('health:change', {
-          containerName: name,
-          appId,
-          tenantId,
-          service: serviceName,
-          previousState,
-          newState,
-          consecutiveFailures,
-          lastCheck: new Date().toISOString(),
-        });
-      }
+      const event = { containerName: name, appId, tenantId, service: serviceName, previousState, newState, consecutiveFailures, lastCheck };
+      // Transitions only: relayed to the UI.
+      if (previousState !== newState) eventBus.emit('health:change', event);
+      // Every probe: the alert engine needs the count as it reaches the rule's threshold.
+      eventBus.emit('health:probe', event);
     });
 
     // Containers no longer checked go back to unknown (transition emitted);

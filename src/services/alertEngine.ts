@@ -290,15 +290,18 @@ export function startAlertEngine(): void {
     }
   });
 
-  // Subscribe to health changes for health_check_failed alerts
-  subscribe('health:change', (data) => {
-    // 'unknown' is the health checker evicting the container; don't resurrect its state.
-    if (data.newState !== 'unknown') lastSeen.set(data.containerName, Date.now());
+  // health_check_failed works off every probe result: `health:change` only
+  // reports the transition, whose failure count is always 1, so a threshold
+  // above 1 was never reached.
+  subscribe('health:probe', (data) => {
+    lastSeen.set(data.containerName, Date.now());
     for (const rule of rules) {
       if (rule.condition.type === 'health_check_failed') {
         const maxFailures = rule.condition.consecutive_failures || 3;
 
         if (data.newState === 'unhealthy' && data.consecutiveFailures >= maxFailures) {
+          // Once per outage: the probes that follow must not re-fire it each time the cooldown passes.
+          if (activeAlerts.has(`${rule.id}:${data.containerName}`)) continue;
           fireAlert(rule, data.containerName, `Health check failed ${data.consecutiveFailures} times for ${data.containerName}`, data.tenantId, data.containerName);
         } else if (data.newState === 'healthy') {
           resolveAlert(rule, data.containerName);

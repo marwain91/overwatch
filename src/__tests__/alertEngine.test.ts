@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { EventEmitter } from 'events';
 import { containerEvent, metricsSnapshot } from './eventFixtures';
 
 let dataDir: string;
@@ -127,10 +128,11 @@ describe('alert engine lifecycle', () => {
   it('removes its eventBus listeners on stop and restarts cleanly without double firing', async () => {
     vi.useFakeTimers();
     const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
-    const before = ['metrics:snapshot', 'containers:existence', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n));
+    const events = ['metrics:snapshot', 'containers:existence', 'container:event', 'health:change', 'health:probe'] as const;
+    const before = events.map(n => eventBus.listenerCount(n));
     startAlertEngine();
     stopAlertEngine();
-    expect(['metrics:snapshot', 'containers:existence', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n))).toEqual(before);
+    expect(events.map(n => eventBus.listenerCount(n))).toEqual(before);
 
     const fired: any[] = [];
     eventBus.on('alert:fired', (a) => fired.push(a));
@@ -277,6 +279,110 @@ describe('alert notification channels', () => {
         expect(errSpy.mock.calls.some(c => String(c.join(' ')).includes('Webhook returned 503'))).toBe(true);
       });
     } finally {
+      stopAlertEngine();
+    }
+  });
+});
+
+describe('alert engine health_check_failed', () => {
+  afterEach(() => {
+    for (const m of ['dockerode', 'net', 'node-cron', '../services/app']) vi.doUnmock(m);
+  });
+
+  // Drives the real health checker, so the test covers what it emits and when.
+  async function withHealthChecker(rules: unknown[]) {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const world = { healthy: false };
+    vi.doMock('node-cron', () => ({
+      default: { validate: () => true, schedule: (_e: string, fn: () => void) => { (globalThis as any).__hcTick = fn; return { stop: () => {} }; } },
+    }));
+    vi.doMock('dockerode', () => ({
+      default: class {
+        async listContainers() {
+          return [{
+            Id: 'abcdef123456', Names: ['/app-t1-web'],
+            Labels: { 'com.overwatch.managed': 'true', 'com.overwatch.app-id': 'app', 'com.overwatch.tenant-id': 't1', 'com.overwatch.service': 'web' },
+          }];
+        }
+      },
+    }));
+    vi.doMock('net', () => {
+      const createConnection = (_o: unknown, onConnect: () => void) => {
+        const socket = Object.assign(new EventEmitter(), { destroy: () => {} });
+        Promise.resolve().then(() => (world.healthy ? onConnect() : socket.emit('error', new Error('refused'))));
+        return socket;
+      };
+      return { default: { createConnection }, createConnection };
+    });
+    vi.doMock('../services/app', () => ({
+      listApps: vi.fn(async () => [{ id: 'app', services: [{ name: 'web', ports: { internal: 80 }, health_check: { type: 'tcp', port: 80 } }] }]),
+    }));
+    const loaded = await loadEngine(rules);
+    const fired: any[] = [];
+    const resolved: any[] = [];
+    const changes: any[] = [];
+    loaded.eventBus.on('alert:fired', (a) => fired.push(a));
+    loaded.eventBus.on('alert:resolved', (a) => resolved.push(a));
+    loaded.eventBus.on('health:change', (c) => changes.push(c));
+    loaded.startAlertEngine();
+    const hc = await import('../services/healthChecker');
+    hc.startHealthChecker();
+    await vi.advanceTimersByTimeAsync(0);
+    // Each probe is 10s apart and past the 1s cooldown, so only the engine's own logic limits firing.
+    const probe = async () => {
+      vi.setSystemTime(Date.now() + 10_000);
+      await (globalThis as any).__hcTick();
+    };
+    return { ...loaded, hc, world, fired, resolved, changes, probe };
+  }
+
+  const healthRule = (extra: Record<string, unknown> = {}) => ({
+    id: 'hc', name: 'Health', condition: { type: 'health_check_failed', ...extra }, cooldown: '1s', severity: 'critical',
+  });
+
+  it('fires once the failure count reaches the default threshold of 3, once per outage, and resolves on recovery', async () => {
+    const { hc, world, fired, resolved, changes, probe, stopAlertEngine } = await withHealthChecker([healthRule()]);
+    try {
+      expect(fired).toHaveLength(0); // failure 1
+      await probe(); // 2
+      expect(fired).toHaveLength(0);
+      await probe(); // 3
+      expect(fired).toHaveLength(1);
+      expect(fired[0]).toMatchObject({ ruleId: 'hc', containerName: 'app-t1-web', tenantId: 't1' });
+      expect(fired[0].message).toContain('3 times');
+
+      for (let i = 0; i < 4; i++) await probe(); // still failing: no repeat per probe
+      expect(fired).toHaveLength(1);
+      expect(resolved).toHaveLength(0);
+
+      world.healthy = true;
+      await probe();
+      expect(resolved.map(r => r.ruleId)).toEqual(['hc']);
+      await probe();
+      expect(resolved).toHaveLength(1);
+
+      world.healthy = false;
+      for (let i = 0; i < 3; i++) await probe();
+      expect(fired).toHaveLength(2); // a new outage alerts again
+
+      // The UI-facing transition event is unchanged: transitions only.
+      expect(changes.map(c => c.newState)).toEqual(['unhealthy', 'healthy', 'unhealthy']);
+    } finally {
+      hc.stopHealthChecker();
+      stopAlertEngine();
+    }
+  });
+
+  it('honours a custom consecutive_failures', async () => {
+    const { hc, fired, probe, stopAlertEngine } = await withHealthChecker([healthRule({ consecutive_failures: 5 })]);
+    try {
+      for (let i = 0; i < 3; i++) await probe(); // failures 2..4
+      expect(fired).toHaveLength(0);
+      await probe(); // 5
+      expect(fired).toHaveLength(1);
+    } finally {
+      hc.stopHealthChecker();
       stopAlertEngine();
     }
   });
