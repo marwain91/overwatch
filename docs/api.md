@@ -162,7 +162,7 @@ The snapshot must have been taken of the target tenant (`tenant:<tenantId>` tag)
 
 The response has `safetySnapshotId`. A failed restore answers `500` with an `error` that says what failed and, after the data was touched, `rolledBack` (`true`: the tenant is back on the safety snapshot; `false`: the tenant was left stopped, restore `safetySnapshotId` to recover). Paths are copied into stopped containers, so backed-up paths must be volume mount points or exist in the image. Files are copied over the existing ones: a file that exists only in the live volume is kept.
 
-When a tenant is created from a backup, its data is copied into the containers while they are stopped (before the app first starts); any snapshot of the app may be used. A path that cannot be copied is reported as a "not restored (copy failed)" warning.
+When a tenant is created from a backup, its data is copied into the containers while they are stopped (before the app first starts); any snapshot of the app may be used. A path that cannot be copied is reported as a "not restored (copy failed)" warning. The database dump is loaded under the new tenant's own database role (Postgres `SET ROLE`), so a backup never runs with more than the tenant's own privileges; a dump that needs a superuser-only Postgres extension must have that extension installed on the server first.
 
 **Prune request:**
 ```json

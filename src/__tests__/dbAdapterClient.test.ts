@@ -167,38 +167,80 @@ describe('client arguments', () => {
     expect(argsOf(0)).toEqual(expect.arrayContaining(['pg_dump', '--no-owner', '--no-privileges', '-d', 'p_t1']));
   });
 
-  // Without ON_ERROR_STOP psql reports success after SQL errors. A --no-owner
-  // dump's objects belong to whoever creates them: the dump runs as a
-  // temporary superuser role (so it can still create superuser-only
-  // extensions), whose objects are then handed to the tenant role, all in the
-  // one transaction (a failure leaves neither the objects nor the role).
-  it('psql stops at the first error, in one transaction, and hands the objects to the tenant role', async () => {
+  // Without ON_ERROR_STOP psql reports success after SQL errors. The dump must
+  // run as the tenant role, not a superuser: a --no-owner dump's objects then
+  // belong to (and its index/CHECK code runs as) the tenant, so tenant content
+  // cannot execute with superuser rights.
+  it('psql stops at the first error, in one transaction, and runs the dump as the tenant role', async () => {
     await new PostgresAdapter(cfg('postgres')).restoreDatabase('t1', sqlFile);
     const args = argsOf(0);
     expect(args).toEqual(expect.arrayContaining(['psql', '-v', 'ON_ERROR_STOP=1', '--single-transaction', '-d', 'p_t1']));
     const commands = args.flatMap((a, i) => (args[i - 1] === '-c' ? [a] : a === '-f' ? ['<dump>'] : []));
-    const role = /^CREATE ROLE "(ow_restore_[0-9a-f]{12})" SUPERUSER NOLOGIN$/.exec(commands[0])?.[1];
-    expect(role).toBeDefined();
-    expect(commands.slice(0, 7)).toEqual([
-      `CREATE ROLE "${role}" SUPERUSER NOLOGIN`,
-      `SET ROLE "${role}"`,
-      '<dump>',
-      'RESET ROLE',
-      `REASSIGN OWNED BY "${role}" TO "p_t1"`,
-      `DROP OWNED BY "${role}"`,
-      `DROP ROLE "${role}"`,
-    ]);
-    // Dumps from older versions name an owner; one naming another tenant's role is refused.
-    expect(commands[7]).toMatch(/^DO \$ow\$[\s\S]*relowner <> 'p_t1'::regrole[\s\S]*RAISE EXCEPTION 'restored objects are owned by/);
-    expect(commands).toHaveLength(8);
+    expect(commands).toEqual(['SET ROLE "p_t1"', '<dump>']);
+    // No superuser role is created, anywhere in the argv.
+    expect(args.join(' ')).not.toMatch(/SUPERUSER|CREATE ROLE/i);
     expect(args[args.indexOf('-f') + 1]).toBe('-');
   });
 
-  it('uses a new temporary role for every restore', async () => {
-    const a = new PostgresAdapter(cfg('postgres'));
-    await a.restoreDatabase('t1', sqlFile);
-    await a.restoreDatabase('t1', sqlFile);
-    const roleOf = (call: number) => argsOf(call)[argsOf(call).indexOf('-c') + 1];
-    expect(roleOf(0)).not.toBe(roleOf(1));
+});
+
+describe('Postgres restore strips OWNER TO lines from old dumps', () => {
+  /** A client that reads all of stdin, then exits 0; resolves with what it read. */
+  function collectingProc(): { proc: any; stdin: Promise<string> } {
+    const proc: any = new EventEmitter();
+    proc.stdout = new PassThrough();
+    proc.stderr = new PassThrough();
+    proc.stdin = new PassThrough();
+    proc.kill = vi.fn();
+    const stdin = new Promise<string>((resolve) => {
+      let data = '';
+      proc.stdin.on('data', (d: Buffer) => { data += d.toString(); });
+      proc.stdin.on('finish', () => { proc.stdout.end(); setImmediate(() => proc.emit('close', 0)); resolve(data); });
+    });
+    return { proc, stdin };
+  }
+
+  async function restoreOf(dump: string): Promise<string> {
+    const file = path.join(tmpDir, 'dump.sql');
+    await fs.writeFile(file, dump);
+    const { proc, stdin } = collectingProc();
+    spawnMock.mockImplementation(() => proc);
+    await new PostgresAdapter(cfg('postgres')).restoreDatabase('t1', file);
+    return stdin;
+  }
+
+  it('drops top-level ALTER ... OWNER TO lines, keeps the rest', async () => {
+    const out = await restoreOf([
+      'CREATE TABLE public.items (id integer);',
+      'ALTER TABLE public.items OWNER TO alice;',
+      'ALTER SEQUENCE public.items_id_seq OWNER TO alice;',
+      'ALTER FUNCTION public.f() OWNER TO alice;',
+      'ALTER SCHEMA app OWNER TO alice;',
+      'INSERT INTO public.items VALUES (1);',
+    ].join('\n') + '\n');
+    expect(out).not.toMatch(/OWNER TO/);
+    expect(out).toContain('CREATE TABLE public.items (id integer);');
+    expect(out).toContain('INSERT INTO public.items VALUES (1);');
+  });
+
+  it('never touches an OWNER TO inside a dollar-quoted function body', async () => {
+    const body = [
+      "CREATE FUNCTION public.note() RETURNS text LANGUAGE plpgsql AS $body$",
+      'BEGIN',
+      "  -- this comment says ALTER TABLE x OWNER TO mallory; and is just text",
+      "  RETURN 'ALTER TABLE y OWNER TO mallory;';",
+      'END',
+      '$body$;',
+    ].join('\n');
+    const out = await restoreOf(`${body}\nALTER FUNCTION public.note() OWNER TO alice;\n`);
+    expect(out).toContain('ALTER TABLE x OWNER TO mallory;');
+    expect(out).toContain("RETURN 'ALTER TABLE y OWNER TO mallory;';");
+    // The real ownership statement after the body is still dropped.
+    expect(out).not.toMatch(/ALTER FUNCTION public\.note\(\) OWNER TO alice;/);
+  });
+
+  it('a --no-owner dump (no OWNER TO lines) passes through unchanged', async () => {
+    const dump = 'CREATE TABLE t (id int);\nINSERT INTO t VALUES (1);\n';
+    expect(await restoreOf(dump)).toBe(dump);
   });
 });

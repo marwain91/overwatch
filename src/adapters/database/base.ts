@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import type { Duplex } from 'stream';
 import { createReadStream, createWriteStream } from 'fs';
 import { DatabaseAdapter, DatabaseAdapterConfig, DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
 import { assertSafeIdentifier } from '../../utils/security';
@@ -28,6 +29,8 @@ export interface DbClientRun {
   env: Record<string, string>;
   /** Name used in error messages, e.g. 'mysqldump'. */
   label: string;
+  /** Restore only: a stream to pass the dump through before the client reads it. */
+  transformInput?: () => Duplex;
 }
 
 /**
@@ -190,24 +193,29 @@ export abstract class BaseDatabaseAdapter implements DatabaseAdapter {
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', args, { env: this.clientEnv(run) });
       const input = createReadStream(inputPath);
+      const filter = run.transformInput?.();
+      const source = filter ? input.pipe(filter) : input;
 
       let settled = false;
       const done = (err?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        // A client that stopped early leaves the dump half read: close the file.
+        // A client that stopped early leaves the dump half read: close the file
+        // (and the filter) so no descriptor leaks.
         input.destroy();
+        filter?.destroy();
         if (err) reject(err); else resolve();
       };
       const timer = this.armLocalTimeout(proc, run, done);
 
-      // Both streams need error listeners: an unhandled stream error is
+      // Every stream needs an error listener: an unhandled stream error is
       // uncaught and kills the process. The client closes stdin early when it
       // stops at a SQL error (EPIPE here; its exit code and stderr say why).
       input.on('error', (err) => { proc.kill(); done(err); });
+      filter?.on('error', (err) => { proc.kill(); done(err); });
       proc.stdin!.on('error', () => {});
-      input.pipe(proc.stdin!);
+      source.pipe(proc.stdin!);
 
       let stderr = '';
       proc.stderr!.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-STDERR_TAIL_BYTES); });

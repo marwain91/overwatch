@@ -870,10 +870,10 @@ interface RestoreTarget {
 /** Client-safe text for a failed database import (the client error itself carries stderr). */
 function describeImportError(error: any): string {
   const msg = String(error?.message || error);
-  if (/restored objects are owned by role|must be (able to SET ROLE|member of role)|role "[^"]+" does not exist/.test(msg)) {
-    return "database import failed: the dump gives its objects to another tenant's database role. "
-      + 'It is a Postgres dump made by an older Overwatch version; restore it into the tenant it was taken from, '
-      + 'or back that tenant up again with this version and use the new snapshot';
+  if (/must be superuser to create this extension|permission denied to create extension/i.test(msg)) {
+    return 'database import failed: the dump installs a Postgres extension that only a superuser can create. '
+      + 'Overwatch restores under the tenant role (not as superuser), so install that extension on the database '
+      + 'server out of band, then retry';
   }
   return 'database import failed (see server logs)';
 }

@@ -1,30 +1,62 @@
 import { Pool, type PoolClient } from 'pg';
-import { randomBytes } from 'crypto';
+import { Transform } from 'stream';
+import { StringDecoder } from 'string_decoder';
 import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult, DatabaseResetRefusedError } from './types';
 import { BaseDatabaseAdapter } from './base';
 
+/** A single pg_dump ownership statement, e.g. `ALTER TABLE public.t OWNER TO alice;`. */
+const OWNER_STATEMENT = /^\s*ALTER\s+[A-Z][A-Z ]*\s+.*\sOWNER\s+TO\s+\S.*;\s*$/i;
+/** A dollar-quote delimiter, e.g. `$$` or `$body$` (what pg_dump wraps function bodies in). */
+const DOLLAR_TAG = /\$([A-Za-z_][A-Za-z0-9_]*)?\$/g;
+
 /**
- * Fails the restore transaction when a restored table, view or sequence is not
- * owned by `role`. Dumps from older versions carry OWNER TO statements naming
- * the dumped tenant's role: into that tenant they are fine, but into another
- * tenant they would leave its tables owned by (and only usable by) the first
- * tenant's role. `role` is a validated identifier.
+ * A stream that drops pg_dump's top-level `ALTER ... OWNER TO <role>;` lines.
+ * Dumps from before this change were taken with owners, and those lines would
+ * fail (or reassign to the wrong tenant) when the dump runs as the target
+ * tenant role. The restore runs under `SET ROLE <tenant>`, so everything it
+ * creates is owned by the tenant already; the OWNER TO lines are redundant.
+ *
+ * Dollar-quoted function bodies are tracked across lines, so a body that merely
+ * contains the text `OWNER TO` is never touched. Streams line by line; the
+ * whole dump is never held in memory.
  */
-function ownedByTenantCheck(role: string): string {
-  return `DO $ow$ DECLARE owners text; BEGIN
-  SELECT string_agg(DISTINCT pg_get_userbyid(c.relowner), ', ') INTO owners
-  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-  WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
-    AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_toast%'
-    AND c.relowner <> '${role}'::regrole
-    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e');
-  IF owners IS NOT NULL THEN
-    RAISE EXCEPTION 'restored objects are owned by role(s) % instead of ${role}', owners;
-  END IF;
-END $ow$`;
+function stripOwnerStatements(): Transform {
+  const decoder = new StringDecoder('utf8');
+  let buf = '';
+  let openTag: string | null = null;
+
+  const emitLine = (line: string, push: (chunk: string) => void): void => {
+    // Only a real top-level statement is dropped: not a line inside a dollar
+    // body, and never one that itself contains a dollar delimiter.
+    if (openTag === null && !line.includes('$') && OWNER_STATEMENT.test(line)) return;
+    DOLLAR_TAG.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = DOLLAR_TAG.exec(line)) !== null) {
+      if (openTag === null) openTag = m[0];
+      else if (m[0] === openTag) openTag = null;
+    }
+    push(line + '\n');
+  };
+
+  return new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      buf += decoder.write(chunk);
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) emitLine(line, (c) => this.push(c));
+      cb();
+    },
+    flush(cb) {
+      buf += decoder.end();
+      if (buf.length > 0) emitLine(buf, (c) => this.push(c));
+      cb();
+    },
+  });
 }
 
 /**
+ * PostgreSQL database adapter
+ *//**
  * PostgreSQL database adapter
  */
 export class PostgresAdapter extends BaseDatabaseAdapter {
@@ -293,30 +325,27 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const role = this.getUserName(tenantId);
     this.validateIdentifiers(dbName, role);
-    // A --no-owner dump's objects belong to whoever creates them. The dump runs
-    // as a temporary superuser role, so it can create what the old root restore
-    // could (superuser-only extensions among them); everything that role
-    // created then goes to the tenant role and the role is dropped again.
-    // REASSIGN OWNED is safe here because the role is new and owns nothing
-    // else. ON_ERROR_STOP + one transaction: psql no longer reports success
-    // after SQL errors, and a failure leaves neither objects nor the role.
-    const tmpRole = `ow_restore_${randomBytes(6).toString('hex')}`;
+    // Run the dump as the tenant role, NOT as a superuser: the dump is the
+    // tenant's own data and can carry index expressions and CHECK constraints
+    // that call the tenant's functions, which Postgres runs as the object's
+    // owner while the data is loaded and indexes are built. The database was
+    // reset owned by the tenant role, so a --no-owner dump's objects are owned
+    // by, and its code runs as, that tenant role. ON_ERROR_STOP + one
+    // transaction: psql no longer reports success after SQL errors, and a
+    // failure leaves nothing behind. Superuser-only (untrusted) extensions can
+    // no longer be created by the restore and must be installed out of band;
+    // trusted extensions (pgcrypto, uuid-ossp, …) still work.
     return this.runRestoreFromFile({
       execOptions: ['-e', 'PGPASSWORD'],
       argv: [
         'psql', '-U', this.config.rootUser, '-d', dbName,
         '-v', 'ON_ERROR_STOP=1', '--single-transaction',
-        '-c', `CREATE ROLE "${tmpRole}" SUPERUSER NOLOGIN`,
-        '-c', `SET ROLE "${tmpRole}"`,
-        '-f', '-',
-        '-c', 'RESET ROLE',
-        '-c', `REASSIGN OWNED BY "${tmpRole}" TO "${role}"`,
-        '-c', `DROP OWNED BY "${tmpRole}"`,
-        '-c', `DROP ROLE "${tmpRole}"`,
-        '-c', ownedByTenantCheck(role),
+        '-c', `SET ROLE "${role}"`, '-f', '-',
       ],
       env: { PGPASSWORD: this.config.rootPassword },
       label: 'psql restore',
+      // Old dumps carry `ALTER ... OWNER TO <role>` lines that fail under SET ROLE.
+      transformInput: stripOwnerStatements,
     }, inputPath);
   }
 

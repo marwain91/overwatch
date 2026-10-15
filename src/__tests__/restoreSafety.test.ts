@@ -345,13 +345,14 @@ describe('in-place restore safety sequence', () => {
     expect(log.at(-1)).toBe('up:up -d --no-recreate');
   });
 
-  it('explains a Postgres dump that gives its tables to another tenant role', async () => {
+  it('explains a dump that needs a superuser-only extension (restore runs as the tenant role)', async () => {
     db.restoreDatabase.mockImplementationOnce(async () => {
-      throw new Error('psql restore exited with code 3: ERROR:  restored objects are owned by role(s) acme_gadgets_src instead of acme_gadgets_t1');
+      throw new Error('psql restore exited with code 3: ERROR:  permission denied to create extension "postgis"\nHINT:  Must be superuser to create this extension.');
     });
     const r = await restoreBackupLocked('gadgets', SNAP, 't1', { createNew: true, newDomain: 'x.example.com', containersStopped: true });
     expect(r.success).toBe(false);
-    expect(r.error).toMatch(/older Overwatch version/);
+    expect(r.error).toMatch(/only a superuser can create/);
+    expect(r.error).not.toMatch(/postgis/); // stderr stays server-side
   });
 });
 
