@@ -48,6 +48,11 @@ updates:
       interval: weekly
       day: monday
 
+  # The Dockerfile pins node:24-alpine by digest (tag@sha256:...); this bumps
+  # the digest of all three FROM lines whenever the tag is rebuilt.
+  # The generated infrastructure templates (traefik:v3.6, mariadb:10.11,
+  # postgres:16) are not digest-pinned on purpose: their minor-line tags keep
+  # delivering security patches to hosts whenever the images are pulled.
   - package-ecosystem: docker
     directory: "/"
     schedule:

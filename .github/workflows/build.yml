@@ -30,6 +30,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Build-provenance attestation: OIDC token for the Sigstore signing
+      # certificate, and the right to store the attestation.
+      id-token: write
+      attestations: write
 
     steps:
       # Reject anything that isn't a vX.Y.Z tag before it reaches `ref:`.
@@ -93,6 +97,7 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
+        id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -103,10 +108,24 @@ jobs:
             BUILD_TIME=${{ steps.build_time.outputs.value }}
             BUILD_COMMIT=${{ steps.build_time.outputs.sha }}
 
+      # Signed SLSA provenance for the pushed image (by digest), stored with the
+      # repository's attestations and in the registry next to the image.
+      # Verify with `gh attestation verify oci://ghcr.io/<repo>:<version> --repo <repo>`.
+      - name: Attest image build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          # Storage records exist only for organization-owned repositories.
+          create-storage-record: false
+
   cli:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Validate tag input
@@ -149,6 +168,15 @@ jobs:
           cd dist/bin
           sha256sum overwatch-linux-x64 > overwatch-linux-x64.sha256
           sha256sum overwatch-linux-arm64 > overwatch-linux-arm64.sha256
+
+      # Signed SLSA provenance for both binaries, before they are published.
+      # Verify with `gh attestation verify overwatch-linux-x64 --repo <repo>`.
+      - name: Attest CLI binary build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/bin/overwatch-linux-x64
+            dist/bin/overwatch-linux-arm64
 
       - name: Upload binaries to release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
