@@ -7,7 +7,7 @@ import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
 import { getDatabaseAdapter } from '../adapters/database';
 import { generateSharedEnvFile, deleteTenantAllOverrides, formatEnvValue } from './envVars';
 import { getApp, applyApp } from './app';
-import { generateComposeFile } from './composeGenerator';
+import { generateComposeFile, readComposeNames } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
 import { applyManifestPolicy, manifestPolicyBaseline } from './manifestPolicy';
@@ -17,7 +17,8 @@ import { AppDefinition, AppDefinitionStatic, AppDefinitionStaticSchema } from '.
 import { eventBus } from './eventBus';
 import type { TenantUpdateProgress, TenantUpdateStep, TenantUpdateStatus } from './eventBus';
 import { assertWithinDir, writeSecretFile } from '../utils/security';
-import { tenantDir, tenantsDir, assertTenantDir } from './tenantStore';
+import { tenantDir, tenantsDir, assertTenantDir, listTenantDirs, parseTenantEnv } from './tenantStore';
+import { tenantIdentity, findIdentityConflict, assertTenantDbName, isTenantOwnedVolume, type TenantIdentity, type TenantNames } from './tenantIdentity';
 import { SLUG_RE } from '../utils/validators';
 import { resolveTenantDbId } from './tenantDb';
 import { runDocker } from '../utils/runDocker';
@@ -146,6 +147,56 @@ function toStaticAppDefinition(app: AppDefinition): AppDefinitionStatic {
   return staticDef as AppDefinitionStatic;
 }
 
+/** The names a tenant being created would use, read back from its generated compose file. */
+function candidateNames(identity: TenantIdentity, dbName: string, composeContent: string): TenantNames {
+  const { containerNames, volumes } = readComposeNames(composeContent);
+  return {
+    appId: identity.appId,
+    tenantId: identity.tenantId,
+    composeProject: identity.composeProject,
+    namePrefix: identity.namePrefix,
+    dbName,
+    containerNames,
+    // Shared (external) volumes are shared on purpose; only owned ones must be unique.
+    volumeNames: volumes.filter(v => !v.external && isTenantOwnedVolume(v.name, identity.appId, identity.tenantId)).map(v => v.name),
+  };
+}
+
+/**
+ * Names every existing tenant uses: the compose project and database from its
+ * .env (what it actually runs with), containers and volumes from its compose
+ * file. A .env that exists but cannot be read fails the check (closed).
+ */
+async function existingTenantNames(): Promise<TenantNames[]> {
+  const refs = await listTenantDirs();
+  return Promise.all(refs.map(async ({ appId, tenantId, dir }): Promise<TenantNames> => {
+    const identity = tenantIdentity(appId, tenantId);
+    let env: Record<string, string> = {};
+    try {
+      env = parseTenantEnv(await fs.readFile(path.join(dir, '.env'), 'utf-8'));
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        throw new HttpError(500, `Cannot check tenant names: the .env of ${appId}/${tenantId} could not be read (${err?.code || err?.message || err})`, { expose: true });
+      }
+    }
+    const names: TenantNames = {
+      appId,
+      tenantId,
+      composeProject: env.COMPOSE_PROJECT_NAME || identity.composeProject,
+      namePrefix: identity.namePrefix,
+      dbName: env.DB_NAME || undefined,
+    };
+    try {
+      const { containerNames, volumes } = readComposeNames(await fs.readFile(path.join(dir, 'docker-compose.yml'), 'utf-8'));
+      names.containerNames = containerNames;
+      names.volumeNames = volumes.map(v => v.name);
+    } catch {
+      // No readable compose file: the project, prefix and database checks still apply.
+    }
+    return names;
+  }));
+}
+
 export function createTenant(input: CreateTenantInput): Promise<TenantConfig> {
   return withTenantLock(String(input.appId), String(input.tenantId), () => createTenantLocked(input));
 }
@@ -187,12 +238,16 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
   const db = getDatabaseAdapter(app);
   const tenantPath = getTenantPath(appId, tenantId);
   const appTenantsDir = tenantsDir(appId);
-  const dbTenantId = `${appId}_${tenantId}`;
+  const identity = tenantIdentity(appId, tenantId);
+  const dbTenantId = identity.dbId;
+  const dbName = db.getDatabaseName(dbTenantId);
+  // A name the database server would refuse fails here, before anything exists.
+  assertTenantDbName(dbName, config.database?.type);
   const composePath = path.join(tenantPath, 'docker-compose.yml');
   let tenantDirCreated = false;
   let dbCreated = false;
   let userCreated = false;
-  let composeWritten = false;
+  let upAttempted = false;
 
   try {
     await fs.mkdir(appTenantsDir, { recursive: true });
@@ -204,12 +259,28 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
     const dbPassword = generatePassword(dbPasswordLength);
     const jwtSecret = generatePassword(jwtSecretLength);
 
-    // The domain check reads other tenants' .env files, so the check and the
-    // write of this tenant's .env must be one step: two concurrent creates of
-    // different tenants with the same domain would otherwise both pass.
+    // Generate docker-compose.yml from app service definitions.
+    // Tenant overrides don't exist yet at create-time — they're added later via
+    // `PUT /api/apps/:id/tenants/:tid/traefik`. Pass undefined.
+    const composeContent = generateComposeFile({
+      app,
+      tenantId,
+      domain,
+      config,
+      tenantTraefik: undefined,
+    });
+    const candidate = candidateNames(identity, dbName, composeContent);
+
+    // The domain and name checks read other tenants' files, so the checks and
+    // the write of this tenant's .env and compose file must be one step: two
+    // concurrent creates would otherwise both pass.
     await withFileLock('tenant-domains', async () => {
       // Reserved Overwatch hosts and other tenants' domains/aliases (create-from-backup goes through here too).
       await assertTenantDomainAllowed(appId, tenantId, domain);
+      const conflict = findIdentityConflict(candidate, await existingTenantNames());
+      if (conflict) {
+        throw new ConflictError(`Tenant '${tenantId}' cannot be created in app '${appId}': ${conflict}. Choose a different tenant ID.`);
+      }
 
       // Atomically create tenant directory — fails if already exists (prevents TOCTOU race)
       try {
@@ -225,8 +296,9 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
       // Verify the path hasn't been manipulated via symlinks
       await assertWithinDir(tenantPath, appTenantsDir);
 
-      const envContent = generateEnvContent(config, app, tenantId, domain, tag, dbPassword, jwtSecret);
+      const envContent = generateEnvContent(config, app, identity, dbName, domain, tag, dbPassword, jwtSecret);
       await writeSecretFile(path.join(tenantPath, '.env'), envContent);
+      await fs.writeFile(composePath, composeContent);
     });
 
     // Initialize database adapter and create database.
@@ -243,19 +315,6 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
     // Generate shared.env for this tenant (we hold the tenant lock)
     await generateSharedEnvFile(appId, tenantId, { alreadyLocked: true });
 
-    // Generate docker-compose.yml from app service definitions.
-    // Tenant overrides don't exist yet at create-time — they're added later via
-    // `PUT /api/apps/:id/tenants/:tid/traefik`. Pass undefined.
-    const composeContent = generateComposeFile({
-      app,
-      tenantId,
-      domain,
-      config,
-      tenantTraefik: undefined,
-    });
-    await fs.writeFile(path.join(tenantPath, 'docker-compose.yml'), composeContent);
-    composeWritten = true;
-
     // Seed this tenant's frozen app-definition snapshot. From v1.5.5 on,
     // per-tenant snapshots drive compose regen + backup config so tenants
     // running different image versions don't step on each other's feet.
@@ -266,6 +325,7 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
 
     // Create external volumes and start tenant
     await ensureExternalVolumes(composePath);
+    upAttempted = true;
     await execDocker(
       ['compose', '--project-directory', tenantPath, '-f', composePath, input.start === false ? 'create' : 'up', ...(input.start === false ? [] : ['-d'])],
       COMPOSE_LONG_TIMEOUT_MS,
@@ -277,7 +337,7 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
     // Gather init container evidence first: `down -v` deletes the containers
     // whose logs explain a failed first migration.
     let initFailures = '';
-    if (composeWritten) {
+    if (upAttempted) {
       initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
       await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '-v']).catch(() => {});
     }
@@ -684,16 +744,16 @@ async function pruneReplacedImages(
 function generateEnvContent(
   config: ReturnType<typeof loadConfig>,
   app: AppDefinition,
-  tenantId: string,
+  identity: TenantIdentity,
+  dbName: string,
   domain: string,
   imageTag: string,
   dbPassword: string,
   jwtSecret: string
 ): string {
+  const { tenantId } = identity;
   const imageRegistry = `${app.registry.url}/${app.registry.repository}`;
   const sharedNetwork = config.networking?.external_network || `${config.project.prefix}-network`;
-  const db = getDatabaseAdapter(app);
-  const dbName = db.getDatabaseName(`${app.id}_${tenantId}`);
 
   // Resolve cert resolver via the new `traefik.cert_resolvers` model.
   // The loader-level shim synthesizes this from the legacy `networking.cert_resolvers`
@@ -722,7 +782,7 @@ function generateEnvContent(
 # Generated: ${new Date().toISOString()}
 
 # Docker Compose Project Name (must be unique across all apps)
-COMPOSE_PROJECT_NAME=${app.id}-${tenantId}
+COMPOSE_PROJECT_NAME=${identity.composeProject}
 
 # App Identification
 APP_ID=${formatEnvValue(app.id)}

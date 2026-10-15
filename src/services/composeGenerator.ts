@@ -5,6 +5,7 @@ import type { TraefikTenant } from '../models/traefik';
 import { resolveCertResolver } from '../config/loader';
 import { buildTraefikLabels } from './traefikLabels';
 import { isValidComposeDuration } from '../utils/validators';
+import { containerName } from './tenantIdentity';
 
 interface GenerateOptions {
   app: AppDefinition;
@@ -125,7 +126,7 @@ export function generateComposeFile(options: GenerateOptions): string {
     // Keys are written in this order; js-yaml omits the `undefined` ones.
     return [service.name, {
       image: `${imageRegistry}/${imageName}:\${IMAGE_TAG:-${app.default_image_tag}}`,
-      container_name: `${app.id}-${tenantId}-${service.name}`,
+      container_name: containerName(app.id, tenantId, service.name),
       restart: service.is_init_container ? 'no' : 'unless-stopped',
       user: service.user || undefined,
       env_file: ['.env', 'shared.env'],
@@ -153,6 +154,46 @@ export function generateComposeFile(options: GenerateOptions): string {
   // js-yaml's default compat mode also quotes YAML 1.1 look-alikes ("no",
   // "1000:1000"), so any compose YAML parser reads them back as strings.
   return yaml.dump(compose, { lineWidth: -1, noRefs: true, quotingType: '"' });
+}
+
+export interface DeclaredVolume {
+  /** Key under the top-level `volumes:` mapping (what service mounts refer to). */
+  key: string;
+  /** Docker volume name: `name:` when set, otherwise the key. */
+  name: string;
+  external: boolean;
+}
+
+/**
+ * The container names and top-level volumes a tenant compose file declares.
+ * Throws when the text is not a YAML mapping, so a caller never mistakes an
+ * unreadable file for one without volumes.
+ */
+export function readComposeNames(composeText: string): { containerNames: string[]; volumes: DeclaredVolume[] } {
+  const doc = yaml.load(composeText);
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+    throw new Error('compose file is not a YAML mapping');
+  }
+  const { services, volumes } = doc as { services?: unknown; volumes?: unknown };
+  const containerNames: string[] = [];
+  if (services && typeof services === 'object') {
+    for (const svc of Object.values(services as Record<string, unknown>)) {
+      const name = (svc as { container_name?: unknown } | null)?.container_name;
+      if (typeof name === 'string') containerNames.push(name);
+    }
+  }
+  const declared: DeclaredVolume[] = [];
+  if (volumes && typeof volumes === 'object') {
+    for (const [key, def] of Object.entries(volumes as Record<string, unknown>)) {
+      const d = def && typeof def === 'object' ? def as { name?: unknown; external?: unknown } : {};
+      // `external: { name: x }` is the old compose spelling of an external volume's name.
+      const externalObject = !!d.external && typeof d.external === 'object';
+      const legacyName = externalObject ? (d.external as { name?: unknown }).name : undefined;
+      const name = typeof d.name === 'string' ? d.name : typeof legacyName === 'string' ? legacyName : key;
+      declared.push({ key, name, external: d.external === true || externalObject });
+    }
+  }
+  return { containerNames, volumes: declared };
 }
 
 /** `$` → `$$`: compose reads `$$` as a literal `$` and interpolates a bare `$`. */

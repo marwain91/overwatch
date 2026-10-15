@@ -26,6 +26,11 @@ describe('resolveTenantDbId', () => {
     expect(await resolveTenantDbId('app', 't1', undefined)).toBe('app_t1');
   });
 
+  it('falls back to the same DB id tenant create uses for hyphenated ids', async () => {
+    await writeEnv('my-app', 't-1', 'FOO=bar\n');
+    expect(await resolveTenantDbId('my-app', 't-1', undefined)).toBe('my_app_t_1');
+  });
+
   it('falls back when the tenant .env is missing', async () => {
     expect(await resolveTenantDbId('app', 'nope', undefined)).toBe('app_nope');
   });
