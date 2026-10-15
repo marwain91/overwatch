@@ -156,6 +156,66 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     }
   }
 
+  async resetDatabase(tenantId: string): Promise<void> {
+    if (!this.pool) {
+      await this.initialize();
+    }
+
+    const dbName = this.getDatabaseName(tenantId);
+    const userName = this.getUserName(tenantId);
+    this.validateIdentifiers(dbName, userName);
+    const safeDb = dbName.replace(/"/g, '""');
+    const safeUser = userName.replace(/"/g, '""');
+    const literal = (v: string) => `'${String(v).replace(/'/g, "''")}'`;
+
+    const client = await this.pool!.connect();
+    let releaseError: Error | undefined;
+
+    try {
+      // The admin pool's 30s statement_timeout must not cut off a large DROP
+      await client.query('SET statement_timeout = 0');
+
+      // Keep the database's encoding and locale: a dump made from it may not
+      // load into a database with another encoding. Only a database that
+      // differs from template1 needs template0 to set them.
+      const { rows } = await client.query(
+        `SELECT datname, pg_encoding_to_char(encoding) AS enc, datcollate, datctype
+         FROM pg_database WHERE datname IN ($1, 'template1')`,
+        [dbName]
+      );
+      const current = rows.find((r: any) => r.datname === dbName);
+      const template = rows.find((r: any) => r.datname === 'template1');
+      const keepLocale = current && template
+        && (current.enc !== template.enc || current.datcollate !== template.datcollate || current.datctype !== template.datctype);
+
+      await client.query(`
+        SELECT pg_terminate_backend(pg_stat_activity.pid)
+        FROM pg_stat_activity
+        WHERE pg_stat_activity.datname = $1
+        AND pid <> pg_backend_pid()
+      `, [dbName]);
+      await client.query(`DROP DATABASE IF EXISTS "${safeDb}"`);
+
+      let create = `CREATE DATABASE "${safeDb}" OWNER "${safeUser}"`;
+      if (keepLocale) {
+        create += ` TEMPLATE template0 ENCODING ${literal(current.enc)} LC_COLLATE ${literal(current.datcollate)} LC_CTYPE ${literal(current.datctype)}`;
+      }
+      await client.query(create);
+      // The same access createDatabase sets up: only the tenant role connects.
+      await client.query(`GRANT ALL PRIVILEGES ON DATABASE "${safeDb}" TO "${safeUser}"`);
+      await client.query(`REVOKE CONNECT ON DATABASE "${safeDb}" FROM PUBLIC`);
+      await client.query(`GRANT CONNECT ON DATABASE "${safeDb}" TO "${safeUser}"`);
+    } finally {
+      // Restore the pool default; if that fails, discard the client instead of pooling it
+      try {
+        await client.query('RESET statement_timeout');
+      } catch (err) {
+        releaseError = err instanceof Error ? err : new Error(String(err));
+      }
+      client.release(releaseError);
+    }
+  }
+
   async listDatabases(): Promise<string[]> {
     if (!this.pool) {
       await this.initialize();

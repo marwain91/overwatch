@@ -134,6 +134,38 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     }
   }
 
+  async resetDatabase(tenantId: string): Promise<void> {
+    if (!this.pool) {
+      await this.initialize();
+    }
+
+    const dbName = this.getDatabaseName(tenantId);
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
+
+    const connection = await this.pool!.getConnection();
+    try {
+      // Recreate with the database's own defaults: a dump made from it may not
+      // load into one with another character set (migrated tenants may differ
+      // from what createDatabase uses).
+      const [rows] = await connection.query(
+        'SELECT DEFAULT_CHARACTER_SET_NAME AS cs, DEFAULT_COLLATION_NAME AS co FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?',
+        [dbName]
+      );
+      const current = (rows as any[])[0];
+      const charset = current?.cs ?? 'utf8mb4';
+      const collation = current?.co ?? 'utf8mb4_unicode_ci';
+      if (!/^[A-Za-z0-9_]+$/.test(charset) || !/^[A-Za-z0-9_]+$/.test(collation)) {
+        throw new Error(`Unexpected character set/collation for ${dbName}: ${charset}/${collation}`);
+      }
+      // Database-level grants live in mysql.db and survive DROP DATABASE, so
+      // the tenant user keeps its access without re-granting.
+      await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
+      await connection.query(`CREATE DATABASE \`${dbName}\` CHARACTER SET ${charset} COLLATE ${collation}`);
+    } finally {
+      connection.release();
+    }
+  }
+
   async listDatabases(): Promise<string[]> {
     if (!this.pool) {
       await this.initialize();

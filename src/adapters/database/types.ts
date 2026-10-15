@@ -81,6 +81,16 @@ export interface DatabaseAdapter {
   dropDatabase(tenantId: string, options?: { keepUser?: boolean }): Promise<void>;
 
   /**
+   * Drop the tenant's database and create it again, empty. The tenant user and
+   * its access to the database stay as they are, and so do the database's
+   * character set/collation (MySQL) or encoding/locale (Postgres). A missing
+   * database is created. Callers stop whatever writes to it first (Postgres
+   * terminates the remaining connections; MySQL cannot drop a database other
+   * sessions hold locks in).
+   */
+  resetDatabase(tenantId: string): Promise<void>;
+
+  /**
    * List all tenant databases
    */
   listDatabases(): Promise<string[]>;
