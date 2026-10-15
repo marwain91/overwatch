@@ -145,12 +145,26 @@ function parseLockInfo(errorMsg: string): LockInfo | null {
   return Object.keys(lockInfo).length > 0 ? lockInfo : null;
 }
 
+/**
+ * The definition a backup operation works from. Per-tenant operations use the
+ * tenant's frozen snapshot (its backup config and services are what the tenant
+ * runs), like createBackup always did; the global definition only when the
+ * tenant has none (readTenantAppDef falls back) or for app-wide operations.
+ */
+async function backupAppDef(appId: string, tenantId?: string): Promise<AppDefinition | null> {
+  return (tenantId ? await readTenantAppDef(appId, tenantId) : null) ?? getApp(appId);
+}
+
+/** Repository status of the app's (global) backup configuration. */
 export async function getBackupInfo(appId: string): Promise<BackupInfo & { isLocked?: boolean; lockInfo?: LockInfo }> {
   const app = await getApp(appId);
   if (!app) {
     return { configured: false, initialized: false, error: `App '${appId}' not found` };
   }
+  return getBackupInfoFor(app);
+}
 
+async function getBackupInfoFor(app: AppDefinition): Promise<BackupInfo & { isLocked?: boolean; lockInfo?: LockInfo }> {
   const backup = app.backup;
   if (!backup?.enabled) {
     return { configured: false, initialized: false, error: 'Backup not enabled for this app.' };
@@ -191,13 +205,17 @@ export async function getBackupInfo(appId: string): Promise<BackupInfo & { isLoc
 export async function initializeRepository(appId: string): Promise<void> {
   const app = await getApp(appId);
   if (!app) throw new NotFoundError(`App '${appId}' not found`);
+  await initializeRepositoryFor(app);
+}
+
+async function initializeRepositoryFor(app: AppDefinition): Promise<void> {
   try {
     await execFileAsync('restic', ['init'], { env: getResticEnv(app) });
   } catch (err: any) {
     if (err instanceof HttpError) throw err;
     throw new HttpError(500, `Failed to initialize repository: ${err?.stderr?.toString().trim() || err?.message || err}`, { expose: true });
   }
-  invalidateBackupCache(appId);
+  invalidateBackupCache(app.id);
 }
 
 /**
@@ -230,13 +248,13 @@ function formatError(error: any): { error: string; isLocked?: boolean; lockInfo?
 }
 
 export async function listSnapshots(appId: string, tenantId?: string): Promise<BackupSnapshot[]> {
-  const info = await getBackupInfo(appId);
+  const app = await backupAppDef(appId, tenantId);
+  if (!app) return [];
+
+  const info = await getBackupInfoFor(app);
   if (!info.configured || !info.initialized) {
     return [];
   }
-
-  const app = await getApp(appId);
-  if (!app) return [];
 
   try {
     // Apps may share an S3 bucket, so the repo is NOT app-scoped — filter by
@@ -325,17 +343,17 @@ async function createBackupLocked(appId: string, tenantId: string, options: { ex
   // differ from a sibling tenant on a different image version. Falls back
   // to the global definition if the tenant has no snapshot yet (legacy
   // pre-v1.5.5 tenants, seeded at boot).
-  const app = await readTenantAppDef(appId, tenantId);
+  const app = await backupAppDef(appId, tenantId);
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
-  const info = await getBackupInfo(appId);
+  const info = await getBackupInfoFor(app);
   if (!info.configured) {
     return { success: false, error: 'Backup not configured' };
   }
 
   if (!info.initialized) {
     try {
-      await initializeRepository(appId);
+      await initializeRepositoryFor(app);
     } catch (error: any) {
       console.error('[Backup] Failed to initialize repository:', error.message);
       return { success: false, error: 'Failed to initialize backup repository. Check server logs.' };
@@ -617,10 +635,20 @@ export async function restoreBackupLocked(
   targetTenantId: string,
   options: RestoreBackupOptions = {},
 ): Promise<RestoreBackupResult> {
-  const app = await getApp(appId);
+  // The target tenant's own snapshot decides the repository, database and
+  // services/paths (it may run a different image version than the global
+  // definition); the global definition only when the tenant has none.
+  let app: AppDefinition | null;
+  try {
+    app = await backupAppDef(appId, targetTenantId);
+  } catch (error: any) {
+    // An invalid tenant snapshot is reported like any other restore failure.
+    console.error('Restore failed:', error);
+    return { success: false, ...formatError(error) };
+  }
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
-  const info = await getBackupInfo(appId);
+  const info = await getBackupInfoFor(app);
   if (!info.configured || !info.initialized) {
     return { success: false, error: 'Backup not configured or initialized' };
   }
@@ -630,12 +658,7 @@ export async function restoreBackupLocked(
   let restoreDir: string | undefined;
 
   try {
-    // Inside the try: an invalid tenant snapshot is reported like any other restore failure.
-  // The tenant's own snapshot decides which services/paths exist for it (it may
-  // run a different image version than the global definition); falls back to
-  // the global definition when the tenant has none.
-  const tenantApp = (await readTenantAppDef(appId, targetTenantId)) ?? app;
-  const backupServices = tenantApp.services
+  const backupServices = app.services
     .filter(s => s.backup?.enabled && s.backup?.paths?.length)
     .map(s => ({
       name: s.name,
