@@ -1,10 +1,11 @@
 import jwt from 'jsonwebtoken';
-import { getApp } from './app';
+import { getApp, listApps } from './app';
 import { getTenantInfo } from './docker';
 import { isReservedSecretEnv, loadConfigOrNull } from '../utils/reservedEnv';
 import { HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const DEFAULT_URL_TEMPLATE = 'https://${domain}/admin-login#token=${token}';
+const DEFAULT_SECRET_ENV = 'AUTH_SERVICE_SECRET';
 
 function fillPlaceholder(template: string, name: string, value: string): string {
   // split/join: replaces every occurrence and never interprets `$` in the value.
@@ -25,7 +26,7 @@ export async function mintAdminAccess(appId: string, tenantId: string): Promise<
     throw new ValidationError('Admin access is not enabled for this app');
   }
 
-  const secretEnv = adminAccess.secret_env || 'AUTH_SERVICE_SECRET';
+  const secretEnv = adminAccess.secret_env || DEFAULT_SECRET_ENV;
 
   // Tokens signed with an Overwatch core secret (e.g. JWT_SECRET) would be valid
   // against Overwatch itself; refuse before reading the value.
@@ -75,4 +76,17 @@ export async function mintAdminAccess(appId: string, tenantId: string): Promise<
   accessUrl = fillPlaceholder(accessUrl, 'tenantId', encodeURIComponent(tenantId));
 
   return { accessUrl, token };
+}
+
+/**
+ * Env names that hold the secret a tenant verifies admin tokens with: every
+ * app's admin_access.secret_env, enabled or not, plus the default. Whoever
+ * sets one of these in a tenant's environment can sign tokens it accepts.
+ */
+export async function adminAccessSecretEnvs(): Promise<Set<string>> {
+  const names = new Set([DEFAULT_SECRET_ENV]);
+  for (const app of await listApps()) {
+    if (app.admin_access?.secret_env) names.add(app.admin_access.secret_env);
+  }
+  return names;
 }

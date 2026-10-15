@@ -62,6 +62,8 @@ describe('regenerateAllSharedEnvFiles', () => {
   it('collects a tenants-dir read failure for one app and still sweeps the others', async () => {
     await tenant('good', 'a');
     await tenant('broken', 'b');
+    // With a store missing, an unreadable tenants dir would rightly refuse the whole sweep.
+    for (const f of ['env-vars.json', 'tenant-env-overrides.json']) await fs.writeFile(path.join(dataDir, f), '{}');
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
     vi.doMock('fs/promises', () => ({

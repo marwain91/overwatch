@@ -5,28 +5,46 @@ import request from 'supertest';
 afterEach(() => {
   vi.resetModules();
   vi.doUnmock('../services/envVars');
+  vi.doUnmock('../services/app');
   vi.doUnmock('../middleware/requireRole');
 });
 
 const regenerate = vi.fn(async (_appId?: string, _opts?: { busy?: string[] }) => 0);
 const regenerateTenant = vi.fn(async (..._a: unknown[]) => ({ busy: false }));
 
-async function makeApp(setEnvVar: ReturnType<typeof vi.fn>) {
+interface MakeAppOptions {
+  role?: 'viewer' | 'editor' | 'admin';
+  vars?: Array<{ key: string; value: string; sensitive: boolean }>;
+  effective?: Array<{ key: string; value: string; sensitive: boolean; source: string }>;
+  services?: Record<string, ReturnType<typeof vi.fn>>;
+}
+
+async function makeApp(setEnvVar: ReturnType<typeof vi.fn>, opts: MakeAppOptions = {}) {
   vi.doMock('../services/envVars', () => ({
-    listEnvVars: vi.fn(async () => [{ key: 'API_TOKEN', value: 's3cret', sensitive: true }]),
+    listEnvVars: vi.fn(async () => opts.vars ?? [{ key: 'API_TOKEN', value: 's3cret', sensitive: true }]),
     setEnvVar,
     deleteEnvVar: vi.fn(),
-    getEffectiveEnvVars: vi.fn(),
+    getEffectiveEnvVars: vi.fn(async () => opts.effective ?? []),
     setTenantOverride: vi.fn(),
     deleteTenantOverride: vi.fn(),
     regenerateAllSharedEnvFiles: regenerate,
     regenerateTenantSharedEnv: regenerateTenant,
     generateSharedEnvFile: vi.fn(),
+    ...opts.services,
+  }));
+  vi.doMock('../services/app', () => ({
+    listApps: vi.fn(async () => [
+      { id: 'demo', admin_access: { enabled: true, secret_env: 'DEMO_ADMIN_SECRET' } },
+      { id: 'other' },
+    ]),
+    getApp: vi.fn(),
   }));
   vi.doMock('../middleware/requireRole', () => ({ requireRole: () => (_req: any, _res: any, next: any) => next() }));
   const { default: router } = await import('../routes/envVars');
   const app = express();
   app.use(express.json());
+  // Stands in for authMiddleware.
+  app.use((_req, res, next) => { res.locals.user = { email: 'u@example.com', role: opts.role ?? 'admin' }; next(); });
   app.use('/api/apps/:appId/env-vars', router);
   return app;
 }
@@ -127,5 +145,90 @@ describe('busy tenants are a warning, not a failure', () => {
     expect(set.body.warnings).toEqual([warning('demo/a')]);
     const del = await request(app).delete('/api/apps/demo/env-vars/tenants/a/overrides/K').expect(200);
     expect(del.body.warnings).toEqual([warning('demo/a')]);
+  });
+});
+
+// shared.env outranks the tenant's .env and image ENV: an editor who could set
+// the secret a tenant verifies admin tokens with could sign their own
+// {isSystemAdmin:true} token, which only an admin may mint.
+describe('admin-only keys (tenant admin-token secrets)', () => {
+  const adminOnly = ['AUTH_SERVICE_SECRET', 'DEMO_ADMIN_SECRET', ' AUTH_SERVICE_SECRET'];
+
+  it.each(adminOnly)('an editor cannot set %j globally', async (key) => {
+    const setEnvVar = vi.fn();
+    const app = await makeApp(setEnvVar, { role: 'editor' });
+    const res = await request(app).post('/api/apps/demo/env-vars').send({ key, value: 'known', sensitive: true }).expect(403);
+    expect(res.body.error).toMatch(/admin/i);
+    expect(setEnvVar).not.toHaveBeenCalled();
+  });
+
+  it.each(adminOnly)('an editor cannot set %j as a tenant override', async (key) => {
+    const setTenantOverride = vi.fn();
+    const app = await makeApp(vi.fn(), { role: 'editor', services: { setTenantOverride } });
+    await request(app).post('/api/apps/demo/env-vars/tenants/t1/overrides').send({ key, value: 'known' }).expect(403);
+    expect(setTenantOverride).not.toHaveBeenCalled();
+  });
+
+  it('an editor cannot delete the global variable or the override', async () => {
+    const deleteEnvVar = vi.fn();
+    const deleteTenantOverride = vi.fn();
+    const app = await makeApp(vi.fn(), { role: 'editor', services: { deleteEnvVar, deleteTenantOverride } });
+    await request(app).delete('/api/apps/demo/env-vars/AUTH_SERVICE_SECRET').expect(403);
+    await request(app).delete('/api/apps/demo/env-vars/tenants/t1/overrides/DEMO_ADMIN_SECRET').expect(403);
+    expect(deleteEnvVar).not.toHaveBeenCalled();
+    expect(deleteTenantOverride).not.toHaveBeenCalled();
+  });
+
+  // Only reach the tenant's containers, never Overwatch: apps use them for their own S3/OAuth.
+  it.each(['LOG_LEVEL', 'AWS_SECRET_ACCESS_KEY', 'GOOGLE_CLIENT_SECRET', 'R2_ACCESS_KEY_ID'])('an editor still writes %s', async (key) => {
+    const setEnvVar = vi.fn(async (_a: string, k: string, value: string, sensitive: boolean) => ({ key: k, value, sensitive }));
+    const setTenantOverride = vi.fn();
+    const deleteEnvVar = vi.fn();
+    const app = await makeApp(setEnvVar, { role: 'editor', services: { setTenantOverride, deleteEnvVar } });
+    await request(app).post('/api/apps/demo/env-vars').send({ key, value: 'debug' }).expect(200);
+    await request(app).post('/api/apps/demo/env-vars/tenants/t1/overrides').send({ key, value: 'info' }).expect(200);
+    await request(app).delete(`/api/apps/demo/env-vars/${key}`).expect(200);
+    expect(setEnvVar).toHaveBeenCalled();
+    expect(setTenantOverride).toHaveBeenCalled();
+    expect(deleteEnvVar).toHaveBeenCalled();
+  });
+
+  it('an admin can set, override and delete them', async () => {
+    const setEnvVar = vi.fn(async (_a: string, key: string, value: string, sensitive: boolean) => ({ key, value, sensitive }));
+    const setTenantOverride = vi.fn();
+    const deleteEnvVar = vi.fn();
+    const app = await makeApp(setEnvVar, { role: 'admin', services: { setTenantOverride, deleteEnvVar } });
+    await request(app).post('/api/apps/demo/env-vars').send({ key: 'AUTH_SERVICE_SECRET', value: 'v', sensitive: true }).expect(200);
+    await request(app).post('/api/apps/demo/env-vars/tenants/t1/overrides').send({ key: 'DEMO_ADMIN_SECRET', value: 'v' }).expect(200);
+    await request(app).delete('/api/apps/demo/env-vars/AUTH_SERVICE_SECRET').expect(200);
+    expect(setEnvVar).toHaveBeenCalled();
+    expect(setTenantOverride).toHaveBeenCalled();
+    expect(deleteEnvVar).toHaveBeenCalled();
+  });
+
+  const stored = [
+    { key: 'AUTH_SERVICE_SECRET', value: 'plain-but-secret', sensitive: false },
+    { key: 'DEMO_ADMIN_SECRET', value: 'also-secret', sensitive: false },
+    { key: 'LOG_LEVEL', value: 'info', sensitive: false },
+    { key: 'AWS_ACCESS_KEY_ID', value: 'AKIA-plain', sensitive: false },
+  ];
+
+  it.each(['viewer', 'editor'] as const)('a %s always sees them masked, whatever their sensitive flag', async (role) => {
+    const effective = stored.map(v => ({ ...v, source: 'global' }));
+    const app = await makeApp(vi.fn(), { role, vars: stored, effective });
+    for (const url of ['/api/apps/demo/env-vars', '/api/apps/demo/env-vars/tenants/t1']) {
+      const res = await request(app).get(url).expect(200);
+      const byKey = Object.fromEntries(res.body.map((v: any) => [v.key, v]));
+      expect(byKey.AUTH_SERVICE_SECRET).toMatchObject({ value: '••••••••', sensitive: true });
+      expect(byKey.DEMO_ADMIN_SECRET).toMatchObject({ value: '••••••••', sensitive: true });
+      expect(byKey.LOG_LEVEL).toMatchObject({ value: 'info', sensitive: false });
+      expect(byKey.AWS_ACCESS_KEY_ID).toMatchObject({ value: 'AKIA-plain', sensitive: false });
+    }
+  });
+
+  it('an admin sees them as their sensitive flag says', async () => {
+    const app = await makeApp(vi.fn(), { role: 'admin', vars: stored });
+    const res = await request(app).get('/api/apps/demo/env-vars').expect(200);
+    expect(res.body.find((v: any) => v.key === 'AUTH_SERVICE_SECRET').value).toBe('plain-but-secret');
   });
 });

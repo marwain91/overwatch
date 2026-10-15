@@ -6,6 +6,7 @@ import { withFileLock, withTenantLock } from './fileLock';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 import { writeSecretFile } from '../utils/security';
 import { tenantDir, assertTenantDir, listTenantDirs } from './tenantStore';
+import { parseEnv } from '../utils/env';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const EnvVarSchema = z.object({
@@ -90,31 +91,109 @@ async function ensureDataDir(): Promise<void> {
   }
 }
 
-async function readEnvVarsStore(): Promise<EnvVarsStore> {
-  let data: string;
+interface StoreSpec<T> {
+  name: string;
+  file: () => string;
+  /** withFileLock key that serialises read-modify-write of the store. */
+  lock: string;
+  schema: z.ZodType<T>;
+}
+
+const ENV_VARS_STORE: StoreSpec<EnvVarsStore> = {
+  name: 'env-vars.json', file: getEnvVarsFile, lock: 'env-vars', schema: EnvVarsStoreSchema,
+};
+const OVERRIDES_STORE: StoreSpec<TenantOverridesStore> = {
+  name: 'tenant-env-overrides.json', file: getTenantOverridesFile, lock: 'tenant-overrides', schema: TenantOverridesStoreSchema,
+};
+
+async function readStoreFile(file: string): Promise<string | null> {
   try {
-    data = await fs.readFile(getEnvVarsFile(), 'utf-8');
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      await saveEnvVarsStore({});
-      return {};
-    }
-    throw error;
+    return await fs.readFile(file, 'utf-8');
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
   }
+}
+
+function parseStore<T>(spec: StoreSpec<T>, data: string): T {
   let raw: unknown;
   try {
     raw = JSON.parse(data);
   } catch (err: any) {
-    throw new Error(`env-vars.json is not valid JSON (${err.message}). Refusing to auto-reset.`);
+    throw new Error(`${spec.name} is not valid JSON (${err.message}). Refusing to auto-reset.`);
   }
-  // Handle legacy format (flat array) — treat as no apps, do NOT overwrite silently.
-  if (Array.isArray(raw)) return {};
-  const parsed = EnvVarsStoreSchema.safeParse(raw);
+  // Reading the pre-multi-app format as {} would strip every tenant's shared.env.
+  if (Array.isArray(raw)) {
+    throw new HttpError(
+      500,
+      `${spec.name} is in the legacy single-app format (a top-level array). Refusing to read it as empty, which would strip every tenant's shared.env. ` +
+      `If overwatch.yaml is still in the legacy format, run 'overwatch migrate up'; otherwise rewrite the file as {"<app id>": <the array>} for the app it belongs to.`,
+      { expose: true },
+    );
+  }
+  const parsed = spec.schema.safeParse(raw);
   if (!parsed.success) {
     const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-    throw new Error(`env-vars.json failed validation: ${errors}`);
+    throw new Error(`${spec.name} failed validation: ${errors}`);
   }
   return parsed.data;
+}
+
+/** Variables in a shared.env; 0 when it is absent or not a regular file (a symlink is not followed). */
+async function countSharedEnvVars(file: string): Promise<number> {
+  try {
+    if (!(await fs.lstat(file)).isFile()) return 0;
+    return Object.keys(parseEnv(await fs.readFile(file, 'utf-8'))).length;
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return 0;
+    throw err;
+  }
+}
+
+/** `app/tenant` of the first tenant whose shared.env holds a variable, or null. */
+async function tenantWithSharedEnvVars(): Promise<string | null> {
+  for (const { appId, tenantId, dir } of await listTenantDirs()) {
+    if (await countSharedEnvVars(path.join(dir, 'shared.env')) > 0) return `${appId}/${tenantId}`;
+  }
+  return null;
+}
+
+/**
+ * Create a missing store as {}; the caller holds its lock. A store that is
+ * missing while a tenant's shared.env still holds variables was lost (a
+ * missing data mount, a swapped volume): starting it from {} would strip every
+ * tenant's variables at the next regeneration, so that is refused instead.
+ */
+async function createMissingStore<T>(spec: StoreSpec<T>): Promise<T> {
+  // Another process may have created it while this one waited for the lock.
+  const data = await readStoreFile(spec.file());
+  if (data !== null) return parseStore(spec, data);
+  const holder = await tenantWithSharedEnvVars();
+  if (holder) {
+    const what = `but tenant ${holder} still has variables in its shared.env. Refusing to start ${spec.name} from empty, which would strip every tenant's variables and secrets.`;
+    const advice = `Restore it ('overwatch snapshot list', then 'overwatch snapshot restore <name>', or a backup of the data directory). Only if every tenant's variables should really go, create it containing {}.`;
+    throw new HttpError(500, `${spec.file()} is missing, ${what} ${advice}`, {
+      expose: true,
+      clientMessage: `${spec.name} is missing from the data directory, ${what} ${advice}`,
+    });
+  }
+  await ensureDataDir();
+  await writeSecretFile(spec.file(), '{}');
+  return {} as T;
+}
+
+/**
+ * Read a store. A missing one is created under the store's lock; pass
+ * `locked` when the caller already holds it (the lock is not re-entrant).
+ */
+async function readStore<T>(spec: StoreSpec<T>, opts: { locked?: boolean }): Promise<T> {
+  const data = await readStoreFile(spec.file());
+  if (data !== null) return parseStore(spec, data);
+  return opts.locked ? createMissingStore(spec) : withFileLock(spec.lock, () => createMissingStore(spec));
+}
+
+function readEnvVarsStore(opts: { locked?: boolean } = {}): Promise<EnvVarsStore> {
+  return readStore(ENV_VARS_STORE, opts);
 }
 
 async function saveEnvVarsStore(store: EnvVarsStore): Promise<void> {
@@ -122,30 +201,8 @@ async function saveEnvVarsStore(store: EnvVarsStore): Promise<void> {
   await writeSecretFile(getEnvVarsFile(), JSON.stringify(store, null, 2));
 }
 
-async function readTenantOverridesStore(): Promise<TenantOverridesStore> {
-  let data: string;
-  try {
-    data = await fs.readFile(getTenantOverridesFile(), 'utf-8');
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      await saveTenantOverridesStore({});
-      return {};
-    }
-    throw error;
-  }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(data);
-  } catch (err: any) {
-    throw new Error(`tenant-env-overrides.json is not valid JSON (${err.message}). Refusing to auto-reset.`);
-  }
-  if (Array.isArray(raw)) return {};
-  const parsed = TenantOverridesStoreSchema.safeParse(raw);
-  if (!parsed.success) {
-    const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
-    throw new Error(`tenant-env-overrides.json failed validation: ${errors}`);
-  }
-  return parsed.data;
+function readTenantOverridesStore(opts: { locked?: boolean } = {}): Promise<TenantOverridesStore> {
+  return readStore(OVERRIDES_STORE, opts);
 }
 
 async function saveTenantOverridesStore(store: TenantOverridesStore): Promise<void> {
@@ -192,17 +249,22 @@ export function validateEnvVarValue(value: string): { valid: boolean; error?: st
 
 /**
  * Render a value for a compose env file (`.env` / `shared.env`). Compose
- * interpolates `$VAR` / `${VAR}` in unquoted and double-quoted values, which
- * would blank or rewrite a password or URL holding `$`. Single quotes are read
- * literally; a value that also holds `'` falls back to double quotes with
- * `\`, `"` and `$` backslash-escaped. Values without `$` or edge whitespace
- * stay unquoted, as before. The same rules apply to the project-level `.env` compose reads.
+ * changes an unquoted value that:
+ * - holds `$` (interpolated, which blanks or rewrites a password or URL),
+ * - has leading or trailing whitespace (trimmed),
+ * - holds whitespace before `#` (cut there as an inline comment),
+ * - starts with a quote (parsed as a quoted value, or a parse error that
+ *   takes the tenant's compose down when the quote is unterminated).
+ * Such values are single-quoted, which compose reads literally. A value
+ * holding `'` or ending with `\` (compose does not end a single-quoted value
+ * at a `'` preceded by `\`) is double-quoted with `\`, `"` and `$` escaped.
+ * Other values stay unquoted, as before. The same rules apply to the
+ * project-level `.env` compose reads.
  */
 export function formatEnvValue(value: string | number): string {
   const v = String(value);
-  // Compose trims unquoted leading/trailing whitespace, so such values need quotes too.
-  if (!v.includes('$') && !/^\s|\s$/.test(v)) return v;
-  if (!v.includes("'")) return `'${v}'`;
+  if (!/\$|^\s|\s$|\s#|^['"]/.test(v)) return v;
+  if (!v.includes("'") && !v.endsWith('\\')) return `'${v}'`;
   return `"${v.replace(/[\\"$]/g, c => `\\${c}`)}"`;
 }
 
@@ -233,8 +295,8 @@ export async function setEnvVar(
     throw new ValidationError(valueValidation.error || 'Invalid environment variable value');
   }
 
-  return withFileLock('env-vars', async () => {
-    const store = await readEnvVarsStore();
+  return withFileLock(ENV_VARS_STORE.lock, async () => {
+    const store = await readEnvVarsStore({ locked: true });
     if (!store[appId]) store[appId] = [];
     const vars = store[appId];
     const now = new Date().toISOString();
@@ -264,8 +326,8 @@ export async function setEnvVar(
 }
 
 export async function deleteEnvVar(appId: string, key: string): Promise<void> {
-  return withFileLock('env-vars', async () => {
-    const store = await readEnvVarsStore();
+  return withFileLock(ENV_VARS_STORE.lock, async () => {
+    const store = await readEnvVarsStore({ locked: true });
     const vars = store[appId] || [];
     const index = vars.findIndex(v => v.key === key);
     if (index === -1) {
@@ -302,8 +364,8 @@ export async function setTenantOverride(
     throw new ValidationError(valueValidation.error || 'Invalid environment variable value');
   }
 
-  return withFileLock('tenant-overrides', async () => {
-    const store = await readTenantOverridesStore();
+  return withFileLock(OVERRIDES_STORE.lock, async () => {
+    const store = await readTenantOverridesStore({ locked: true });
     if (!store[appId]) store[appId] = [];
     const appOverrides = store[appId];
     let tenant = appOverrides.find(t => t.tenantId === tenantId);
@@ -335,8 +397,8 @@ export async function setTenantOverride(
 }
 
 export async function deleteTenantOverride(appId: string, tenantId: string, key: string): Promise<void> {
-  return withFileLock('tenant-overrides', async () => {
-    const store = await readTenantOverridesStore();
+  return withFileLock(OVERRIDES_STORE.lock, async () => {
+    const store = await readTenantOverridesStore({ locked: true });
     const appOverrides = store[appId] || [];
     const tenant = appOverrides.find(t => t.tenantId === tenantId);
 
@@ -362,8 +424,8 @@ export async function deleteTenantOverride(appId: string, tenantId: string, key:
 }
 
 export async function deleteTenantAllOverrides(appId: string, tenantId: string): Promise<void> {
-  return withFileLock('tenant-overrides', async () => {
-    const store = await readTenantOverridesStore();
+  return withFileLock(OVERRIDES_STORE.lock, async () => {
+    const store = await readTenantOverridesStore({ locked: true });
     const appOverrides = store[appId] || [];
     const index = appOverrides.findIndex(t => t.tenantId === tenantId);
 
@@ -377,9 +439,10 @@ export async function deleteTenantAllOverrides(appId: string, tenantId: string):
 // ─── Merged view ─────────────────────────────────────────────────────────────
 
 export async function getEffectiveEnvVars(appId: string, tenantId: string): Promise<EffectiveEnvVar[]> {
-  const globalVars = await listEnvVars(appId);
-  const tenantOverrides = await getTenantOverrides(appId, tenantId);
+  return mergeEffectiveEnvVars(await listEnvVars(appId), await getTenantOverrides(appId, tenantId));
+}
 
+function mergeEffectiveEnvVars(globalVars: EnvVar[], tenantOverrides: TenantEnvOverride['overrides']): EffectiveEnvVar[] {
   const effective: EffectiveEnvVar[] = [];
 
   for (const gv of globalVars) {
@@ -430,7 +493,7 @@ export function generateSharedEnvFile(
   appId: string,
   tenantId: string,
   opts: { alreadyLocked?: boolean } = {},
-): Promise<void> {
+): Promise<SharedEnvOutcome> {
   if (opts.alreadyLocked) return generateSharedEnvFileUnlocked(appId, tenantId);
   return withTenantLock(appId, tenantId, () => generateSharedEnvFileUnlocked(appId, tenantId));
 }
@@ -471,10 +534,10 @@ export async function regenerateTenantSharedEnv(
   appId: string,
   tenantId: string,
   opts: { waitMs?: number } = {},
-): Promise<{ busy: boolean }> {
+): Promise<{ busy: boolean; kept?: true }> {
   try {
-    await withTenantLock(appId, tenantId, () => generateSharedEnvFileUnlocked(appId, tenantId), { waitMs: opts.waitMs ?? SHARED_ENV_BUSY_WAIT_MS });
-    return { busy: false };
+    const outcome = await withTenantLock(appId, tenantId, () => generateSharedEnvFileUnlocked(appId, tenantId), { waitMs: opts.waitMs ?? SHARED_ENV_BUSY_WAIT_MS });
+    return outcome === 'kept' ? { busy: false, kept: true } : { busy: false };
   } catch (err) {
     if (!(err instanceof ConflictError)) throw err;
     scheduleBackgroundSharedEnv(appId, tenantId);
@@ -482,20 +545,47 @@ export async function regenerateTenantSharedEnv(
   }
 }
 
-async function generateSharedEnvFileUnlocked(appId: string, tenantId: string): Promise<void> {
+/** `kept`: an existing shared.env was left as it was (see generateSharedEnvFileUnlocked). */
+export type SharedEnvOutcome = 'written' | 'kept' | 'no-tenant';
+
+function hasEntry(store: Record<string, unknown>, appId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(store, appId);
+}
+
+async function generateSharedEnvFileUnlocked(appId: string, tenantId: string): Promise<SharedEnvOutcome> {
   const tenantPath = tenantDir(appId, tenantId);
 
   // Check tenant directory exists
   try {
     await fs.access(tenantPath);
   } catch {
-    return; // Skip if tenant directory doesn't exist
+    return 'no-tenant'; // Skip if tenant directory doesn't exist
   }
 
   // Verify path hasn't been manipulated via symlinks
   await assertTenantDir(appId, tenantId);
 
-  const effective = await getEffectiveEnvVars(appId, tenantId);
+  const sharedEnvPath = path.join(tenantPath, 'shared.env');
+  const [envStore, overridesStore] = await Promise.all([readEnvVarsStore(), readTenantOverridesStore()]);
+
+  // Neither store knows the app (a renamed app id, a replaced store), yet the
+  // tenant has variables: writing now would strip them at its next restart.
+  // An app whose entry is an empty list really has none, so that still writes.
+  if (!hasEntry(envStore, appId) && !hasEntry(overridesStore, appId)) {
+    const held = await countSharedEnvVars(sharedEnvPath);
+    if (held > 0) {
+      console.error(
+        `[env-vars] KEEPING ${appId}/${tenantId} shared.env unchanged: it holds ${held} variable(s), but neither ` +
+        `${ENV_VARS_STORE.name} nor ${OVERRIDES_STORE.name} has an entry for app '${appId}', so regenerating it would strip them ` +
+        `at the tenant's next restart. If the app id was renamed, re-key both files to '${appId}'; if they were replaced, restore them. ` +
+        `To really clear the variables, add "${appId}": [] to ${ENV_VARS_STORE.name}.`,
+      );
+      return 'kept';
+    }
+  }
+
+  const tenantOverrides = (overridesStore[appId] || []).find(t => t.tenantId === tenantId)?.overrides || [];
+  const effective = mergeEffectiveEnvVars(envStore[appId] || [], tenantOverrides);
 
   const lines = [
     '# Shared environment variables',
@@ -510,8 +600,6 @@ async function generateSharedEnvFileUnlocked(appId: string, tenantId: string): P
 
   lines.push(''); // trailing newline
 
-  const sharedEnvPath = path.join(tenantPath, 'shared.env');
-
   // If shared.env is a symlink, remove it first so we write a real file
   try {
     const stat = await fs.lstat(sharedEnvPath);
@@ -523,6 +611,7 @@ async function generateSharedEnvFileUnlocked(appId: string, tenantId: string): P
   }
 
   await writeSecretFile(sharedEnvPath, lines.join('\n'));
+  return 'written';
 }
 
 /**
@@ -617,12 +706,16 @@ export async function regenerateAllSharedEnvFiles(
   let count = 0;
   const failures: SharedEnvFailure[] = [];
 
+  const kept: string[] = [];
+
   const tenants = await listTenantDirs(onlyAppId, {
     onError: (appId, err: any) => {
       console.error(`[env-vars] cannot list tenants of ${appId}: ${err?.message || err}`);
       failures.push({ appId, tenantId: '*' });
     },
   });
+  // A lost or legacy store fails every tenant the same way: report it once.
+  if (tenants.length > 0) await Promise.all([readEnvVarsStore(), readTenantOverridesStore()]);
 
   for (const { appId, tenantId, dir } of tenants) {
     try {
@@ -634,8 +727,9 @@ export async function regenerateAllSharedEnvFiles(
       continue;
     }
     try {
-      const { busy } = await regenerateTenantSharedEnv(appId, tenantId, { waitMs: opts.waitMs });
+      const { busy, kept: wasKept } = await regenerateTenantSharedEnv(appId, tenantId, { waitMs: opts.waitMs });
       if (busy) opts.busy?.push(`${appId}/${tenantId}`);
+      else if (wasKept) kept.push(`${appId}/${tenantId}`);
       else count++;
     } catch (err: any) {
       console.error(`[env-vars] shared.env regeneration failed for ${appId}/${tenantId}: ${err?.message || err}`);
@@ -643,6 +737,9 @@ export async function regenerateAllSharedEnvFiles(
     }
   }
 
+  if (kept.length > 0) {
+    console.error(`[env-vars] Kept the existing shared.env of ${kept.length} tenant(s) whose app has no env-var store entry: ${kept.join(', ')}`);
+  }
   if (failures.length > 0) throw new SharedEnvRegenerationError(failures, count);
   return count;
 }
