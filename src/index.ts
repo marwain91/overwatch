@@ -42,6 +42,7 @@ import { isLegacyFormat, runMigration } from './services/migration';
 import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitialised } from './services/schemaVersions';
 import { createSnapshot, pruneOldSnapshots } from './services/configSnapshots';
 import { resolveTrustProxySetting } from './utils/proxyTrust';
+import { installCrashHandlers } from './utils/crashHandlers';
 import cron from 'node-cron';
 
 // Initialize and start server
@@ -331,4 +332,5 @@ async function start() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
+installCrashHandlers();
 start();
