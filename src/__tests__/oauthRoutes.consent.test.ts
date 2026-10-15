@@ -20,6 +20,9 @@ vi.mock('../services/users', async (orig) => {
   return { ...actual, isAdminEmail: vi.fn(async () => true), getUserRole: vi.fn(async () => 'editor') };
 });
 
+const writeAuditEntry = vi.fn();
+vi.mock('../services/auditLog', () => ({ writeAuditEntry: (e: unknown) => writeAuditEntry(e) }));
+
 import { createOAuthRouter } from '../routes/oauth';
 import { registerClient, getClient, consumeAuthCode } from '../oauth/store';
 import { isAdminEmail } from '../services/users';
@@ -51,7 +54,44 @@ describe('oauth consent step', () => {
     process.env.JWT_SECRET = 'x'.repeat(40);
     process.env.GOOGLE_CLIENT_ID = 'cid';
     verifyIdToken.mockReset();
+    writeAuditEntry.mockReset();
     (isAdminEmail as any).mockResolvedValue(true);
+  });
+
+  it('shows the full redirect URI, not only its host', async () => {
+    const { consent } = await reachConsent('c', 'https://client.example:8443/oauth/callback/evil-path?hint=1');
+    expect(consent.text).toContain('https://client.example:8443/oauth/callback/evil-path?hint=1');
+  });
+
+  it('audits an approval and a denial', async () => {
+    const approved = await reachConsent('Claude');
+    await request(appWith()).post('/oauth/authorize/decision').type('form')
+      .send({ consent_token: approved.consentToken, decision: 'approve' });
+    expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      user: 'a@b.c', action: 'oauth consent approved', path: '/oauth/authorize/decision',
+      body: expect.objectContaining({ client_id: approved.client.client_id, client_name: 'Claude', redirect_uri: 'https://client.example/cb' }),
+    }));
+    const denied = await reachConsent('Other');
+    await request(appWith()).post('/oauth/authorize/decision').type('form')
+      .send({ consent_token: denied.consentToken, decision: 'deny' });
+    expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+      user: 'a@b.c', action: 'oauth consent denied', body: expect.objectContaining({ client_id: denied.client.client_id }),
+    }));
+  });
+
+  it('audits a sign-in by a Google account that is not an admin', async () => {
+    const client = await registerClient({ client_name: 'c', redirect_uris: ['https://client.example/cb'] });
+    const page = await request(appWith()).get('/oauth/authorize').query({
+      response_type: 'code', client_id: client.client_id, redirect_uri: 'https://client.example/cb',
+      code_challenge: 'abc', code_challenge_method: 'S256',
+    });
+    const reqToken = /name="request_token" value="([^"]+)"/.exec(page.text)![1];
+    verifyIdToken.mockResolvedValue({ getPayload: () => ({ email: 'intruder@b.c', email_verified: true }) });
+    (isAdminEmail as any).mockResolvedValue(false);
+    const res = await request(appWith()).post('/oauth/authorize/callback').type('form')
+      .send({ request_token: reqToken, credential: 'google-jwt' });
+    expect(res.status).toBe(403);
+    expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({ user: 'intruder@b.c', action: 'oauth login denied', status: 403 }));
   });
 
   it('names the client, the redirect host, the scope and the signed-in account', async () => {

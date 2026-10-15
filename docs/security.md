@@ -29,7 +29,7 @@ Mounting the Docker socket gives Overwatch full control over containers. Conside
 
 ## Audit Logging
 
-All state-changing operations are logged to `data/audit.log` with:
+All state-changing operations, web sign-ins (and refused sign-ins), and the MCP OAuth events (consent, token issuance, refresh, revocation, refresh-token reuse) are logged to `data/audit.log` with:
 - Timestamp
 - User email
 - Action type

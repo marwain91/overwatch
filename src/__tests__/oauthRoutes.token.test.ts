@@ -284,6 +284,32 @@ describe('oauth /token', () => {
     expect(second.body.expires_in).toBe(900);
   });
 
+  describe('audit trail', () => {
+    beforeEach(() => writeAuditEntry.mockReset());
+
+    it('audits the code exchange, a refresh and a revocation', async () => {
+      const app = appWith();
+      const verifier = await issueCode('CODE_AUDIT');
+      const first = await request(app).post('/oauth/token').type('form').send({
+        grant_type: 'authorization_code', code: 'CODE_AUDIT', client_id: 'c1', redirect_uri: 'https://client/cb', code_verifier: verifier,
+      });
+      expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+        user: 'a@b.c', action: 'oauth token issued', path: '/oauth/token', status: 200, body: { client_id: 'c1' },
+      }));
+      const second = await request(app).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: first.body.refresh_token });
+      expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({ user: 'a@b.c', action: 'oauth token refreshed', status: 200 }));
+      await request(app).post('/oauth/revoke').type('form').send({ token: second.body.refresh_token });
+      expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({ user: 'a@b.c', action: 'oauth token revoked', path: '/oauth/revoke' }));
+      // The audit body never carries a token.
+      expect(JSON.stringify(writeAuditEntry.mock.calls)).not.toContain(first.body.refresh_token);
+    });
+
+    it('does not audit a revocation of an unknown token', async () => {
+      await request(appWith()).post('/oauth/revoke').type('form').send({ token: 'nope' });
+      expect(writeAuditEntry).not.toHaveBeenCalled();
+    });
+  });
+
   describe('refresh token families', () => {
     const refresh = (app: express.Express, rt: string) =>
       request(app).post('/oauth/token').type('form').send({ grant_type: 'refresh_token', client_id: 'c1', refresh_token: rt });

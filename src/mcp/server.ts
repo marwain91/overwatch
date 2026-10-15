@@ -73,6 +73,10 @@ export function mountMcp(app: Express, opts: MountMcpOptions): void {
   // read admin-users) to blunt credential-stuffing / DoS.
   const oauthLimiter = rateLimit({ windowMs: 60_000, maxRequests: 20, message: 'Too many OAuth requests, slow down.' });
   app.use('/oauth', oauthLimiter);
+  // Registration is unauthenticated and persists a client, so it gets a much
+  // smaller budget; a real MCP client registers once per connection setup.
+  const registerLimiter = rateLimit({ windowMs: 10 * 60_000, maxRequests: 10, message: 'Too many client registrations, slow down.' });
+  app.post('/oauth/register', registerLimiter);
 
   // Even authenticated admins could flood /mcp; a modest limiter is cheap defense-in-depth.
   const mcpLimiter = rateLimit({ windowMs: 60_000, maxRequests: 60, message: 'Too many MCP requests, slow down.' });

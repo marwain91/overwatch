@@ -10,6 +10,15 @@ vi.mock('../config', async (orig) => {
   return { ...actual, getDataDir: () => tmpDir };
 });
 
+const readJsonStrict = vi.hoisted(() => vi.fn());
+const writeJsonAtomic = vi.hoisted(() => vi.fn());
+vi.mock('../utils/atomicJson', async (orig) => {
+  const actual = await (orig as any)();
+  readJsonStrict.mockImplementation(actual.readJsonStrict);
+  writeJsonAtomic.mockImplementation(actual.writeJsonAtomic);
+  return { ...actual, readJsonStrict, writeJsonAtomic };
+});
+
 import {
   registerClient, getClient,
   putAuthCode, consumeAuthCode,
@@ -216,6 +225,37 @@ describe('oauth store', () => {
       expect(r.record.family_id).toBeUndefined();
       expect(r.record.rotated?.map(x => x.token_hash)).toEqual([sha('LEGACY')]);
       expect(await redeemRefreshToken('LEGACY', 'c1')).toMatchObject({ ok: false });
+    });
+  });
+
+  describe('parsed store cache', () => {
+    it('parses the file once while it is unchanged', async () => {
+      const c = await registerClient({ client_name: 'c', redirect_uris: ['https://c/cb'] });
+      readJsonStrict.mockClear();
+      for (let i = 0; i < 5; i++) expect((await getClient(c.client_id))?.client_name).toBe('c');
+      await touchClient(c.client_id); // first touch writes
+      await touchClient(c.client_id); // then a no-op
+      expect(readJsonStrict.mock.calls.length).toBeLessThanOrEqual(1);
+    });
+
+    it('sees a change made by another process', async () => {
+      const c = await registerClient({ client_name: 'before', redirect_uris: ['https://c/cb'] });
+      expect((await getClient(c.client_id))?.client_name).toBe('before');
+      const st = await read();
+      st.clients[0].client_name = 'after-but-same-size';
+      st.clients[0].client_name = 'afterX';
+      await fs.writeFile(path.join(tmpDir, 'mcp-oauth.json'), JSON.stringify(st));
+      expect((await getClient(c.client_id))?.client_name).toBe('afterX');
+    });
+
+    it('a failed write leaves the cached view unchanged', async () => {
+      const c = await registerClient({ client_name: 'c', redirect_uris: ['https://c/cb'] });
+      writeJsonAtomic.mockRejectedValueOnce(new Error('ENOSPC'));
+      await expect(saveRefreshToken('LOST', { client_id: c.client_id, email: 'a@b.c', expires_at: Date.now() + 60_000 })).rejects.toThrow('ENOSPC');
+      expect(await consumeRefreshToken('LOST')).toBeUndefined();
+      writeJsonAtomic.mockRejectedValueOnce(new Error('ENOSPC'));
+      await expect(touchClient(c.client_id)).rejects.toThrow('ENOSPC');
+      expect((await getClient(c.client_id))?.last_used_at).toBeUndefined();
     });
   });
 });

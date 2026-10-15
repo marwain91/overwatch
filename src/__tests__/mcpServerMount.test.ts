@@ -75,4 +75,18 @@ describe('mountMcp', () => {
     expect(res.status).not.toBe(401);
     expect(JSON.stringify(res.body) + res.text).not.toMatch(/expiration/i);
   });
+
+  it('limits dynamic client registration per IP more strictly than the other OAuth endpoints', async () => {
+    const app = express();
+    app.use(express.json());
+    mountMcp(app, { issuer: ISSUER, accessTokenTtl: '1h', refreshTokenTtl: '30d' });
+    const statuses: number[] = [];
+    for (let i = 0; i < 11; i++) {
+      statuses.push((await request(app).post('/oauth/register').send({ client_name: `c${i}`, redirect_uris: ['https://client/cb'] })).status);
+    }
+    expect(statuses.slice(0, 10).every(s => s === 201)).toBe(true);
+    expect(statuses[10]).toBe(429);
+    // Other OAuth endpoints keep their own, larger budget.
+    expect((await request(app).post('/oauth/revoke').type('form').send({ token: 'x' })).status).toBe(200);
+  });
 });

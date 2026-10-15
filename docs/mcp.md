@@ -43,8 +43,8 @@ on every request, so removing an admin revokes MCP access immediately.
    and `/.well-known/oauth-authorization-server`), dynamically registers
    (RFC 7591), and opens the authorize URL — sign in with your Google admin
    account.
-3. After sign-in Overwatch shows a consent page naming the client, the host it
-   will be redirected to, and the scope (`tenants`). Choose **Approve** or
+3. After sign-in Overwatch shows a consent page naming the client, the full
+   redirect URI it will be sent back to, and the scope (`tenants`). Choose **Approve** or
    **Deny**; no authorization code is issued until you approve.
 4. The client receives an access token (default 1h) + a rotating refresh token
    (default 30d) and calls tools. `update_tenant` streams progress notifications
@@ -58,7 +58,12 @@ on every request, so removing an admin revokes MCP access immediately.
   session token.
 - Auth codes are single-use, 60s-lived, and held in memory — Overwatch assumes a
   single-process deployment per host.
-- The OAuth endpoints are rate-limited per IP.
+- The OAuth endpoints are rate-limited per IP (20 requests a minute), and
+  dynamic client registration (`POST /oauth/register`) has its own, smaller
+  budget of 10 registrations per 10 minutes per IP.
+- **Audit log.** Consent approvals and denials, refused sign-ins, token
+  issuance at the code exchange, refreshes, revocations and refresh-token
+  reuse are written to `data/audit.log` (no token values).
 - **Consent.** The consent form carries a signed, single-use, 5-minute token that
   is only handed to the admin who just signed in with Google, so a forged
   cross-site request cannot approve a client. The page is not frameable
