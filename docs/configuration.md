@@ -183,12 +183,30 @@ alert_rules:
   - id: string                    # Unique rule ID
     name: string                  # Display name
     condition:
-      type: "container_down" | "cpu_threshold" | "memory_threshold" | "health_check_failed"
+      type: "container_down" | "cpu_threshold" | "memory_threshold" | "health_check_failed" | "backup_failed" | "backup_stale"
       duration: string            # How long condition must persist (e.g., "3m", "5m")
       threshold: number           # CPU/memory percentage threshold
       consecutive_failures: number # Health check failure count
+      max_age_hours: number       # backup_stale: hours without a successful backup (default: 26)
     cooldown: string              # Min time between repeated alerts (default: "15m")
     severity: "info" | "warning" | "critical"  # Default: "warning"
+```
+
+Backup rules cover manual and scheduled backups:
+
+- **`backup_failed`** fires when a tenant backup fails, including a tenant that stayed busy with another operation (update, restore) for the backup's 10 s lock wait, and when a backup is *incomplete* (some service paths could not be copied; the message lists them). It also fires, for the app, when a scheduled run cannot start at all (for example its tenant directories cannot be listed). It resolves on the next complete backup of the same tenant; the app-level alert resolves on the next successful backup of any of the app's tenants.
+- **`backup_stale`** fires for each app with a backup `schedule` that has had no successful backup within `max_age_hours`. It is checked every 5 minutes and resolves on the next successful backup. The age is tracked in memory: after an Overwatch restart it counts from the restart, so set `max_age_hours` comfortably above the schedule interval (the default 26 h suits a daily schedule).
+
+```yaml
+alert_rules:
+  - id: backup-failed
+    name: Backup failed
+    condition: { type: backup_failed }
+    severity: critical
+  - id: backup-stale
+    name: No recent backup
+    condition: { type: backup_stale, max_age_hours: 26 }
+    cooldown: 6h
 ```
 
 ### Retention Configuration
