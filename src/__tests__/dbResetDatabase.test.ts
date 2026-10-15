@@ -73,11 +73,20 @@ describe('postgres resetDatabase', () => {
     return a;
   }
 
-  /** The database row for `p_t1` (null: absent) and template1. */
-  const catalog = (db: typeof tpl | null) => (sql: string) => {
+  /** The database row for `p_t1` (null: absent) and template1; the tenant role exists unless `noRole`. */
+  const catalog = (db: typeof tpl | null, noRole = false) => (sql: string) => {
+    if (sql.includes('FROM pg_roles')) return noRole ? [] : [{ x: 1 }];
     if (!sql.includes('FROM pg_database')) return [];
     return [...(db ? [{ datname: 'p_t1', ...db }] : []), { datname: 'template1', ...tpl }];
   };
+
+  // The recreated database is owned by the tenant role: without it the CREATE
+  // would fail after the DROP and leave the tenant with no database at all.
+  it('refuses before dropping anything when the tenant role does not exist', async () => {
+    const conn = fakeConn(catalog(tpl, true));
+    await expect(make(conn).resetDatabase('t1')).rejects.toThrow(/role/);
+    expect(conn.queries.some(q => q.startsWith('DROP') || q.includes('pg_terminate_backend'))).toBe(false);
+  });
 
   it('terminates connections, drops and recreates the database owned by the tenant role', async () => {
     const conn = fakeConn(catalog(tpl));

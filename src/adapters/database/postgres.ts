@@ -175,6 +175,13 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
       // The admin pool's 30s statement_timeout must not cut off a large DROP
       await client.query('SET statement_timeout = 0');
 
+      // The new database is owned by the tenant role; without it CREATE would
+      // fail after the DROP and leave no database at all.
+      const role = await client.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [userName]);
+      if (role.rows.length === 0) {
+        throw new Error(`Refusing to reset database ${dbName}: its role ${userName} does not exist`);
+      }
+
       // Keep the database's encoding and locale: a dump made from it may not
       // load into a database with another encoding. Only a database that
       // differs from template1 needs template0 to set them.
