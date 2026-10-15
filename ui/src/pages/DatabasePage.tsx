@@ -230,7 +230,7 @@ function ProcessesTab() {
       <div className="flex items-center gap-3 text-sm text-content-muted">
         <span>{processes?.length || 0} processes</span>
         <span className="text-content-faint">|</span>
-        <span className="text-xs text-content-faint">Auto-refreshes every 5s</span>
+        <span className="text-xs text-content-faint">Auto-refreshes every 10s while this window is active</span>
       </div>
 
       <div className="card overflow-x-auto">
