@@ -5,6 +5,14 @@ import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProces
 import { BaseDatabaseAdapter, STDERR_TAIL_BYTES } from './base';
 
 /**
+ * A database name as a database-level GRANT/REVOKE pattern: `_` and `%` are
+ * wildcards there, so `p_t1` would also match a database named `pXt1`.
+ */
+function grantDbPattern(dbName: string): string {
+  return dbName.replace(/[\\_%]/g, '\\$&');
+}
+
+/**
  * MySQL/MariaDB database adapter
  */
 export class MySQLAdapter extends BaseDatabaseAdapter {
@@ -85,7 +93,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
 
       grantAttempted = true;
       await connection.query(
-        `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${userName}'@'%'`
+        `GRANT ALL PRIVILEGES ON \`${grantDbPattern(dbName)}\`.* TO '${userName}'@'%'`
       );
       await connection.query('FLUSH PRIVILEGES');
       return { created, userCreated };
@@ -95,7 +103,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       // are about to drop would otherwise linger and apply to a future database
       // with the same name.
       if (created && !userCreated && grantAttempted) {
-        await connection.query(`REVOKE ALL PRIVILEGES ON \`${dbName}\`.* FROM '${userName}'@'%'`).catch(() => {});
+        await connection.query(`REVOKE ALL PRIVILEGES ON \`${grantDbPattern(dbName)}\`.* FROM '${userName}'@'%'`).catch(() => {});
       }
       if (created) await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``).catch(() => {});
       if (userCreated) await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`).catch(() => {});
