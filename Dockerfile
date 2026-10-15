@@ -5,7 +5,7 @@
 # and for Dependabot, which bumps the digest (all three FROM lines together).
 
 # ── Stage 1: Build server from source ──
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS server-build
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS server-build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -16,7 +16,7 @@ COPY src/ ./src/
 RUN npm run build
 
 # ── Stage 2: Build React UI ──
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS ui-build
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS ui-build
 WORKDIR /ui
 COPY ui/package*.json ./
 RUN npm ci
@@ -24,7 +24,7 @@ COPY ui/ ./
 RUN npm run build
 
 # ── Stage 3: Runtime ──
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f
+FROM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4
 
 ARG BUILD_TIME=dev
 ARG BUILD_COMMIT=dev
