@@ -1,5 +1,5 @@
 import { createTenantLocked, startCreatedTenantLocked, deleteTenantLocked } from './tenant';
-import { restoreBackupLocked } from './backup';
+import { assertSnapshotOfApp, restoreBackupLocked } from './backup';
 import { withTenantLock } from './fileLock';
 import type { LockInfo } from './backup';
 
@@ -37,7 +37,9 @@ async function rollback(appId: string, tenantId: string): Promise<void> {
  * already cleans up after itself.
  *
  * The tenant lock is held for the whole sequence, so the unlocked variants of
- * create/restore/delete are used inside it (the lock is not re-entrant).
+ * create/restore/delete are used inside it (the lock is not re-entrant). The
+ * snapshot is checked to be the app's before anything is created; any tenant's
+ * snapshot of the app may be used (cross-tenant by design).
  */
 export function createTenantFromBackup(
   appId: string,
@@ -54,6 +56,7 @@ async function createTenantFromBackupLocked(
 ): Promise<TenantFromBackupResult> {
   const { tenantId, domain, imageTag } = options;
 
+  await assertSnapshotOfApp(appId, snapshotId);
   await createTenantLocked({ appId, tenantId, domain, imageTag, start: false });
 
   try {

@@ -183,16 +183,34 @@ alert_rules:
   - id: string                    # Unique rule ID
     name: string                  # Display name
     condition:
-      type: "container_down" | "cpu_threshold" | "memory_threshold" | "health_check_failed"
+      type: "container_down" | "cpu_threshold" | "memory_threshold" | "health_check_failed" | "backup_failed" | "backup_stale"
       duration: string            # How long condition must persist (e.g., "3m", "5m")
       threshold: number           # CPU/memory percentage threshold
       consecutive_failures: number # Health check failure count
+      max_age_hours: number       # backup_stale: hours without a successful backup (default: 26)
     cooldown: string              # Min time between repeated alerts (default: "15m")
     severity: "info" | "warning" | "critical"  # Default: "warning"
 ```
 
 - `container_down` fires when a container that died on its own (a crash, an OOM kill) has not started again within `duration` (default "5m"). Requested stops (`docker stop`/`kill`, `docker compose stop`/`down`, a tenant stop, restart or delete from Overwatch) do not alert.
 - `health_check_failed` fires once per outage, on the probe where the failure count reaches `consecutive_failures` (default 3; probes run every 10s). It resolves on the next healthy probe.
+
+Backup rules cover manual and scheduled backups:
+
+- **`backup_failed`** fires when a tenant backup fails, including a tenant that stayed busy with another operation (update, restore) for the backup's 10 s lock wait, and when a backup is *incomplete* (some service paths could not be copied; the message lists them). It also fires, for the app, when a scheduled run cannot start at all (for example its tenant directories cannot be listed). It resolves on the next complete backup of the same tenant; the app-level alert resolves on the next successful backup of any of the app's tenants.
+- **`backup_stale`** fires for each tenant of an app with a backup `schedule` that has had no successful backup within `max_age_hours` (an incomplete backup counts; `backup_failed` reports it). It is checked every 5 minutes and resolves on the tenant's next successful backup. After an Overwatch restart the age counts from the tenant's newest snapshot in the repository (or from the restart when there is none or the repository cannot be read). Set `max_age_hours` comfortably above the schedule interval; the default 26 h suits a daily schedule.
+
+```yaml
+alert_rules:
+  - id: backup-failed
+    name: Backup failed
+    condition: { type: backup_failed }
+    severity: critical
+  - id: backup-stale
+    name: No recent backup
+    condition: { type: backup_stale, max_age_hours: 26 }
+    cooldown: 6h
+```
 
 ### Retention Configuration
 
@@ -563,6 +581,8 @@ Who may sign in, and what they may do, is stored in `data/admin-users.json` and 
 | `S3_ACCESS_KEY` | S3 access key |
 | `S3_SECRET_KEY` | S3 secret key |
 | `RESTIC_PASSWORD` | Restic encryption password |
+
+A tenant backup holds the tenant's database dump, its `.env` and the backed-up service paths, and is tagged `app:<appId>` and `tenant:<tenantId>`. MySQL/MariaDB dumps include triggers, stored routines and events (`--routines --events`, so the database root user needs the privileges to read them); Postgres dumps leave out owners and privileges, and a restore connects to the database as the tenant's own database role, never as the superuser, so a backup can only ever run with the tenant's own privileges (a tampered dump cannot switch back to the superuser mid-file). One consequence: a superuser-only ("untrusted") Postgres extension, such as PostGIS, can no longer be created by a restore and must be installed on the database server out of band before the restore; trusted extensions (pgcrypto, uuid-ossp, …) still restore. Ownership statements in dumps from older Overwatch versions are dropped on restore, so those dumps restore too. Dump and restore clients run under `timeout` inside the database container and are stopped after 1 hour. Each tenant is backed up with its own app definition (the one frozen for the image it runs), so a tenant keeps using its backup repository until it is updated. Restore, retention (prune) and repository unlock are described in the [API reference](api.md#backups).
 
 ### Admin Access (optional, from app config)
 

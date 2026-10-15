@@ -1,8 +1,14 @@
 import mysql from 'mysql2/promise';
-import { spawn } from 'child_process';
-import { createReadStream, createWriteStream } from 'fs';
-import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
-import { BaseDatabaseAdapter, STDERR_TAIL_BYTES } from './base';
+import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult, DatabaseResetRefusedError } from './types';
+import { BaseDatabaseAdapter } from './base';
+
+/**
+ * A database name as a database-level GRANT/REVOKE pattern: `_` and `%` are
+ * wildcards there, so `p_t1` would also match a database named `pXt1`.
+ */
+function grantDbPattern(dbName: string): string {
+  return dbName.replace(/[\\_%]/g, '\\$&');
+}
 
 /**
  * MySQL/MariaDB database adapter
@@ -85,7 +91,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
 
       grantAttempted = true;
       await connection.query(
-        `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${userName}'@'%'`
+        `GRANT ALL PRIVILEGES ON \`${grantDbPattern(dbName)}\`.* TO '${userName}'@'%'`
       );
       await connection.query('FLUSH PRIVILEGES');
       return { created, userCreated };
@@ -95,7 +101,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       // are about to drop would otherwise linger and apply to a future database
       // with the same name.
       if (created && !userCreated && grantAttempted) {
-        await connection.query(`REVOKE ALL PRIVILEGES ON \`${dbName}\`.* FROM '${userName}'@'%'`).catch(() => {});
+        await connection.query(`REVOKE ALL PRIVILEGES ON \`${grantDbPattern(dbName)}\`.* FROM '${userName}'@'%'`).catch(() => {});
       }
       if (created) await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``).catch(() => {});
       if (userCreated) await connection.query(`DROP USER IF EXISTS '${userName}'@'%'`).catch(() => {});
@@ -128,6 +134,60 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
     }
   }
 
+  async resetDatabase(tenantId: string): Promise<void> {
+    const dbName = this.getDatabaseName(tenantId);
+    let dropIssued = false;
+    let connection: mysql.PoolConnection | undefined;
+    try {
+      this.validateIdentifiers(dbName, this.getUserName(tenantId));
+      if (!this.pool) {
+        await this.initialize();
+      }
+      connection = await this.pool!.getConnection();
+
+      // Recreate with the database's own defaults: a dump made from it may not
+      // load into one with another character set (migrated tenants may differ
+      // from what createDatabase uses).
+      const [rows] = await connection.query(
+        'SELECT DEFAULT_CHARACTER_SET_NAME AS cs, DEFAULT_COLLATION_NAME AS co FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?',
+        [dbName]
+      );
+      const current = (rows as any[])[0];
+      const charset = current?.cs ?? 'utf8mb4';
+      const collation = current?.co ?? 'utf8mb4_unicode_ci';
+      if (!/^[A-Za-z0-9_]+$/.test(charset) || !/^[A-Za-z0-9_]+$/.test(collation)) {
+        throw new Error(`Unexpected character set/collation for ${dbName}: ${charset}/${collation}`);
+      }
+
+      // DROP waits on metadata locks of other sessions: end the ones on this
+      // database and bound the wait, so a stray session cannot hang the reset.
+      const [sessions] = await connection.query(
+        'SELECT ID AS id FROM information_schema.PROCESSLIST WHERE DB = ? AND ID <> CONNECTION_ID()',
+        [dbName]
+      );
+      for (const { id } of sessions as any[]) {
+        await connection.query('KILL ?', [id]).catch(() => {}); // already gone
+      }
+      await connection.query('SET SESSION lock_wait_timeout = 60');
+
+      // Database-level grants live in mysql.db and survive DROP DATABASE, so
+      // the tenant user keeps its access without re-granting.
+      dropIssued = true;
+      await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
+      await connection.query(`CREATE DATABASE \`${dbName}\` CHARACTER SET ${charset} COLLATE ${collation}`);
+    } catch (error: any) {
+      // MySQL drops table by table: once DROP was sent, the database may be changed.
+      if (!dropIssued) throw new DatabaseResetRefusedError(`Database ${dbName} was not reset: ${error?.message || error}`);
+      throw error;
+    } finally {
+      if (connection) {
+        // Back to the server default before the connection returns to the pool.
+        await connection.query('SET SESSION lock_wait_timeout = DEFAULT').catch(() => {});
+        connection.release();
+      }
+    }
+  }
+
   async listDatabases(): Promise<string[]> {
     if (!this.pool) {
       await this.initialize();
@@ -143,71 +203,28 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
 
   async dumpDatabase(tenantId: string, outputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
-    const containerName = this.getContainerName();
-
-    // Stream mysqldump's stdout directly to disk. Previously we buffered the
-    // entire dump in memory via execFile (with a 100 MB cap), which broke for
-    // any DB whose dump exceeded that — and crashed the Overwatch container
-    // for very large dumps even before the cap. spawn + pipe handles arbitrary
-    // sizes. MYSQL_PWD is named in argv but its value comes from the spawned
-    // process env, so the password never shows up in `ps` output.
-    return new Promise<void>((resolve, reject) => {
-      const proc = spawn('docker', [
-        'exec', '-e', 'MYSQL_PWD',
-        containerName, 'mysqldump', '-u', this.config.rootUser,
-        '--single-transaction', dbName,
-      ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
-
-      const out = createWriteStream(outputPath, { mode: 0o600 });
-      proc.stdout.pipe(out);
-
-      let stderr = '';
-      proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-      const fail = (err: Error) => { proc.kill(); out.destroy(); reject(err); };
-      proc.on('error', fail);
-      out.on('error', fail);
-      proc.on('close', (code) => {
-        if (code !== 0) {
-          out.end();
-          reject(new Error(`mysqldump exited ${code}: ${stderr.slice(0, 1000)}`));
-          return;
-        }
-        // Resolve only once the dump is on disk: a write that fails on the
-        // final flush must fail the backup, not archive a truncated dump.
-        if (out.writableFinished) resolve();
-        else { out.once('finish', () => resolve()); out.end(); }
-      });
-    });
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
+    // --routines/--events: stored procedures, functions and events are not
+    // dumped by default (triggers are). MYSQL_PWD is named in argv but its
+    // value comes from the spawned process env, so it never shows up in `ps`.
+    return this.runDumpToFile({
+      execOptions: ['-e', 'MYSQL_PWD'],
+      argv: ['mysqldump', '-u', this.config.rootUser, '--single-transaction', '--routines', '--events', dbName],
+      env: { MYSQL_PWD: this.config.rootPassword },
+      label: 'mysqldump',
+    }, outputPath);
   }
 
   async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
-    const containerName = this.getContainerName();
-
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
     // spawn (no shell) with stdin pipe; password goes via env, not argv
-    return new Promise<void>((resolve, reject) => {
-      const proc = spawn('docker', [
-        'exec', '-i', '-e', 'MYSQL_PWD',
-        containerName, 'mysql', '-u', this.config.rootUser, dbName,
-      ], { env: { ...process.env, MYSQL_PWD: this.config.rootPassword } });
-
-      // Both streams need error listeners: an unhandled stream error is
-      // uncaught and kills the process. The client closes stdin early when it
-      // stops at a SQL error (EPIPE here; its exit code and stderr say why).
-      const input = createReadStream(inputPath);
-      input.on('error', (err) => { proc.kill(); reject(err); });
-      proc.stdin.on('error', () => {});
-      input.pipe(proc.stdin);
-
-      let stderr = '';
-      proc.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-STDERR_TAIL_BYTES); });
-      proc.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`mysql restore exited with code ${code}: ${stderr}`));
-      });
-      proc.on('error', reject);
-    });
+    return this.runRestoreFromFile({
+      execOptions: ['-e', 'MYSQL_PWD'],
+      argv: ['mysql', '-u', this.config.rootUser, dbName],
+      env: { MYSQL_PWD: this.config.rootPassword },
+      label: 'mysql restore',
+    }, inputPath);
   }
 
   async getServerInfo(): Promise<DatabaseServerInfo> {

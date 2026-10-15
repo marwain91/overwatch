@@ -10,6 +10,8 @@ import { writeSecretFile } from '../utils/security';
 import { jsonlLogFor, readLinesReverse } from '../utils/jsonlLog';
 import { readJsonStrict } from '../utils/atomicJson';
 import { withFileLock } from './fileLock';
+import { listApps } from './app';
+import { listTenantDirs } from './tenantStore';
 
 type AlertRule = NonNullable<OverwatchConfig['alert_rules']>[number];
 
@@ -192,6 +194,130 @@ function evictStaleContainers(rules: AlertRule[], now: number): void {
   }
 }
 
+// ─── Backup rules (backup_failed, backup_stale) ──────────────────────────────
+
+const BACKUP_STALE_CHECK_MS = 5 * 60 * 1000;
+const DEFAULT_BACKUP_MAX_AGE_HOURS = 26;
+// `appId/tenantId` -> time of the last successful backup. A tenant seen for
+// the first time starts from its newest snapshot in the repository (so a
+// restart does not reset the age), or from now when it has none.
+const lastBackupSuccess = new Map<string, number>();
+let backupStaleTimer: ReturnType<typeof setInterval> | undefined;
+
+/** Alert scope of a backup; the prefix keeps it apart from container names. */
+function backupScope(appId: string, tenantId?: string): string {
+  return tenantId ? `backup:${appId}/${tenantId}` : `backup:${appId}`;
+}
+
+/** tenantId -> time of its newest snapshot. Best effort: an unreachable repository gives none. */
+async function newestSnapshotTimes(appId: string): Promise<Map<string, number>> {
+  const newest = new Map<string, number>();
+  try {
+    // Imported lazily: only backup_stale needs the backup service graph.
+    const { listSnapshotsCached } = await import('./backupCache');
+    for (const s of await listSnapshotsCached(appId)) {
+      const time = Date.parse(s.time);
+      if (s.tenantId && Number.isFinite(time)) newest.set(s.tenantId, Math.max(newest.get(s.tenantId) ?? 0, time));
+    }
+  } catch (err: any) {
+    console.error(`[AlertEngine] Backup staleness check could not list the snapshots of '${appId}': ${err?.message || err}`);
+  }
+  return newest;
+}
+
+async function checkBackupStaleness(rules: AlertRule[]): Promise<void> {
+  let apps: Awaited<ReturnType<typeof listApps>>;
+  try {
+    apps = await listApps();
+  } catch (err: any) {
+    console.error(`[AlertEngine] Backup staleness check could not list apps: ${err?.message || err}`);
+    return;
+  }
+
+  const current = new Set<string>();
+  const unlisted = new Set<string>(); // apps whose tenants could not be listed: keep their state
+  for (const app of apps) {
+    if (!app.backup?.enabled || !app.backup.schedule) continue;
+    let tenantIds: string[];
+    try {
+      tenantIds = (await listTenantDirs(app.id)).map(t => t.tenantId);
+    } catch (err: any) {
+      // The scheduled run fails the same way and reports it (backup_failed).
+      console.error(`[AlertEngine] Backup staleness check could not list the tenants of '${app.id}': ${err?.message || err}`);
+      unlisted.add(app.id);
+      continue;
+    }
+    const newest = tenantIds.some(t => !lastBackupSuccess.has(`${app.id}/${t}`)) ? await newestSnapshotTimes(app.id) : null;
+    const now = Date.now();
+    for (const tenantId of tenantIds) {
+      const key = `${app.id}/${tenantId}`;
+      current.add(key);
+      if (!lastBackupSuccess.has(key)) lastBackupSuccess.set(key, Math.min(now, newest?.get(tenantId) ?? now));
+      const age = now - lastBackupSuccess.get(key)!;
+      for (const rule of rules) {
+        const maxAgeHours = rule.condition.max_age_hours ?? DEFAULT_BACKUP_MAX_AGE_HOURS;
+        if (age > maxAgeHours * 3600 * 1000) {
+          fireAlert(rule, backupScope(app.id, tenantId), `No successful backup of ${key} in the last ${maxAgeHours} h`, tenantId);
+        }
+      }
+    }
+  }
+
+  // Tenant deleted, or backups of its app disabled: nothing is stale any more.
+  for (const key of [...lastBackupSuccess.keys()]) {
+    const [appId, tenantId] = key.split('/');
+    if (current.has(key) || unlisted.has(appId)) continue;
+    for (const rule of rules) resolveAlert(rule, backupScope(appId, tenantId));
+    lastBackupSuccess.delete(key);
+  }
+}
+
+function startBackupRules(
+  rules: AlertRule[],
+  subscribe: <K extends keyof EventMap>(event: K, handler: (data: EventMap[K]) => void) => void,
+): void {
+  const failedRules = rules.filter(r => r.condition.type === 'backup_failed');
+  const staleRules = rules.filter(r => r.condition.type === 'backup_stale');
+  if (failedRules.length === 0 && staleRules.length === 0) return;
+
+  subscribe('backup:failed', (e) => {
+    const what = e.tenantId ? `${e.appId}/${e.tenantId}` : `app '${e.appId}'`;
+    for (const rule of failedRules) fireAlert(rule, backupScope(e.appId, e.tenantId), `Backup of ${what} failed: ${e.reason}`, e.tenantId);
+  });
+
+  subscribe('backup:completed', (e) => {
+    if (e.tenantId) {
+      // Incomplete backups count: the database is in them (backup_failed reports the rest).
+      lastBackupSuccess.set(`${e.appId}/${e.tenantId}`, Date.now());
+      for (const rule of staleRules) resolveAlert(rule, backupScope(e.appId, e.tenantId));
+    }
+
+    const scope = backupScope(e.appId, e.tenantId);
+    for (const rule of failedRules) {
+      if (e.incomplete) {
+        // The database is in the snapshot, but some files are not: not a backup to rely on.
+        fireAlert(rule, scope, `Backup of ${e.appId}/${e.tenantId} is incomplete; not backed up: ${(e.missingPaths ?? []).join(', ')}`, e.tenantId);
+        continue;
+      }
+      resolveAlert(rule, scope);
+      // A tenant that was backed up shows the app's runs work again.
+      if (e.tenantId) resolveAlert(rule, backupScope(e.appId));
+    }
+  });
+
+  if (staleRules.length > 0) {
+    void checkBackupStaleness(staleRules);
+    backupStaleTimer = setInterval(() => { void checkBackupStaleness(staleRules); }, BACKUP_STALE_CHECK_MS);
+    backupStaleTimer.unref();
+  }
+}
+
+function stopBackupRules(): void {
+  if (backupStaleTimer) clearInterval(backupStaleTimer);
+  backupStaleTimer = undefined;
+  lastBackupSuccess.clear();
+}
+
 export function startAlertEngine(): void {
   if (started) return;
   started = true;
@@ -342,6 +468,8 @@ export function startAlertEngine(): void {
     }
   });
 
+  startBackupRules(rules, subscribe);
+
   console.log(`[AlertEngine] Started with ${rules.length} rule(s)`);
 }
 
@@ -357,6 +485,7 @@ export function stopAlertEngine(): void {
   cpuThresholdTimers.clear();
   memThresholdTimers.clear();
   lastSeen.clear();
+  stopBackupRules();
 }
 
 /** Newest first; reads backwards from the end of the file and stops at `limit`. */

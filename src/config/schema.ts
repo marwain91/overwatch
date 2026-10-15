@@ -27,10 +27,12 @@ export const RetentionConfigSchema = z.object({
 
 // Alert rule condition
 export const AlertConditionSchema = z.object({
-  type: z.enum(['container_down', 'cpu_threshold', 'memory_threshold', 'health_check_failed']).describe('Type of condition that triggers the alert'),
+  type: z.enum(['container_down', 'cpu_threshold', 'memory_threshold', 'health_check_failed', 'backup_failed', 'backup_stale'])
+    .describe('Type of condition that triggers the alert. backup_failed: a tenant backup (or a whole scheduled run) failed or was incomplete; resolves on the next successful backup of the same tenant/app. backup_stale: an app with a backup schedule has had no successful backup for max_age_hours'),
   duration: z.string().optional().describe('Duration the condition must persist (e.g. 1m, 5m)'),
   threshold: z.number().optional().describe('Threshold value for CPU/memory alerts (percentage)'),
   consecutive_failures: z.number().optional().describe('Number of consecutive failures before alerting'),
+  max_age_hours: z.number().positive().optional().describe('backup_stale: hours without a successful backup before the alert fires (default 26)'),
 });
 
 // Alert rule configuration

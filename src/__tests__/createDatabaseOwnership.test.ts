@@ -78,7 +78,7 @@ describe('mysql createDatabase ownership', () => {
   it('rollback of a pre-existing user revokes the grant on the dropped database, before the drop', async () => {
     const conn = fakeConn({ userExists: true, failOn: 'FLUSH PRIVILEGES' });
     await expect(make(conn).createDatabase('t1', 'pw')).rejects.toThrow('boom');
-    const revoke = conn.queries.findIndex(q => q === "REVOKE ALL PRIVILEGES ON `p_t1`.* FROM 'p_t1'@'%'");
+    const revoke = conn.queries.findIndex(q => q === "REVOKE ALL PRIVILEGES ON `p\\_t1`.* FROM 'p_t1'@'%'");
     const drop = conn.queries.indexOf('DROP DATABASE IF EXISTS `p_t1`');
     expect(revoke).toBeGreaterThan(-1);
     expect(drop).toBeGreaterThan(revoke);
@@ -96,6 +96,16 @@ describe('mysql createDatabase ownership', () => {
     const conn = fakeConn({ dbExists: true, failOn: 'CREATE USER' });
     await expect(make(conn).createDatabase('t1', 'pw')).rejects.toThrow('boom');
     expect(conn.queries.some(q => q.startsWith('DROP'))).toBe(false);
+  });
+
+  // `_` and `%` are wildcards in a database-level GRANT: an unescaped `p_t1`
+  // also grants access to a database named `pXt1`.
+  it('escapes LIKE wildcards in the database name of GRANT', async () => {
+    const conn = fakeConn({});
+    await make(conn).createDatabase('t1', 'pw');
+    expect(conn.queries).toContain("GRANT ALL PRIVILEGES ON `p\\_t1`.* TO 'p_t1'@'%'");
+    // Only the grant takes a pattern; CREATE DATABASE names the database itself.
+    expect(conn.queries.some(q => q.startsWith('CREATE DATABASE `p_t1`'))).toBe(true);
   });
 
   it('dropDatabase keepUser leaves the user', async () => {

@@ -94,7 +94,8 @@ export function useTenantBackups(appId: string, tenantId: string | null) {
 export function useCreateBackup(appId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (tenantId: string) => api.post(`/apps/${appId}/backups`, { tenantId }),
+    mutationFn: (tenantId: string) =>
+      api.post<{ success: boolean; snapshotId?: string; incomplete?: boolean; missingPaths?: string[] }>(`/apps/${appId}/backups`, { tenantId }),
     onSuccess: (_, tenantId) => {
       qc.invalidateQueries({ queryKey: ['backups', appId, tenantId] });
       qc.invalidateQueries({ queryKey: ['backups', appId], exact: true });
@@ -106,15 +107,22 @@ export function useCreateBackup(appId: string) {
 export function useRestoreBackup(appId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ snapshotId, tenantId }: { snapshotId: string; tenantId: string }) =>
-      api.post<{ success: boolean; message: string; warnings?: string[] }>(`/apps/${appId}/backups/${snapshotId}/restore`, { tenantId }),
+    // The target tenant id the user typed is the X-Confirm-Id of the restore.
+    mutationFn: ({ snapshotId, tenantId, allowCrossTenant }: { snapshotId: string; tenantId: string; allowCrossTenant: boolean }) =>
+      api.post<{ success: boolean; message: string; warnings?: string[]; safetySnapshotId?: string }>(
+        `/apps/${appId}/backups/${snapshotId}/restore`, { tenantId, allowCrossTenant }, tenantId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tenants', appId] });
+    },
+    // A failed restore can still have taken the pre-restore snapshot.
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['backups', appId] });
       qc.invalidateQueries({ queryKey: ['backup-summary', appId] });
     },
   });
 }
 
+/** Callers confirm first (DeleteSnapshotModal); the request then echoes the snapshot id. */
 export function useDeleteBackup(appId: string) {
   const qc = useQueryClient();
   return useMutation({

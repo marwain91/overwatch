@@ -49,19 +49,153 @@ function formatSelectedDate(dateKey: string): string {
   return new Date(y, m - 1, d).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 }
 
+function snapshotTime(b: BackupSnapshot): string {
+  return new Date(b.time).toLocaleString();
+}
+
+/** Marks the snapshot an in-place restore took of the tenant's data just before. */
+export function PreRestoreBadge({ snapshot }: { snapshot: BackupSnapshot }) {
+  if (!snapshot.tags.includes('pre-restore')) return null;
+  return (
+    <span className="rounded bg-yellow-500/15 px-1.5 py-0.5 text-xs font-medium text-yellow-400" title="Taken automatically just before a restore replaced this tenant's data">
+      pre-restore
+    </span>
+  );
+}
+
+/**
+ * Restore one snapshot into a tenant. The target's live data is replaced, so
+ * the user types the target tenant id; restoring into a tenant other than the
+ * one the snapshot was taken of is a separate, explicit choice.
+ */
+export function RestoreSnapshotModal({ appId, snapshot, tenantIds, onClose }: {
+  appId: string;
+  snapshot: BackupSnapshot;
+  tenantIds: string[];
+  onClose: () => void;
+}) {
+  const restoreBackup = useRestoreBackup(appId);
+  const source = snapshot.tenantId;
+  const sourceExists = !!source && tenantIds.includes(source);
+  const otherTenants = tenantIds.filter((t) => t !== source);
+  const [crossTenantChoice, setCrossTenantChoice] = useState(false);
+  const [otherChoice, setOtherChoice] = useState<string | null>(null);
+  const [confirmText, setConfirmText] = useState('');
+
+  // Derived, not stored: the tenant list may still be loading when this opens.
+  const crossTenant = !sourceExists || crossTenantChoice;
+  const otherTarget = otherChoice && otherTenants.includes(otherChoice) ? otherChoice : (otherTenants[0] ?? '');
+
+  const target = crossTenant ? otherTarget : (source ?? '');
+  const canRestore = !!target && confirmText === target && !restoreBackup.isPending;
+
+  const restore = () => restoreBackup.mutate({ snapshotId: snapshot.id, tenantId: target, allowCrossTenant: crossTenant }, {
+    onSuccess: (res) => {
+      const safety = res?.safetySnapshotId ? ` The previous data is in snapshot ${res.safetySnapshotId.slice(0, 8)}.` : '';
+      if (res?.warnings?.length) toast.warning(`Backup restored to ${target} with warnings: ${res.warnings.join('; ')}.${safety}`);
+      else toast.success(`Backup restored to ${target}.${safety}`);
+      onClose();
+    },
+    onError: (err) => toast.error(err.message, { duration: 20_000 }),
+  });
+
+  return (
+    <Modal title={`Restore snapshot ${snapshot.shortId}`} size="md" onClose={onClose}>
+      <p className="mb-3 text-sm text-content-muted">
+        Taken {snapshotTime(snapshot)}{source ? <> of tenant <code className="text-content-secondary">{source}</code></> : ' (tenant unknown)'}.
+      </p>
+
+      {sourceExists ? (
+        <label className="mb-3 flex items-center gap-2 text-sm text-content-tertiary">
+          <input
+            type="checkbox"
+            checked={crossTenant}
+            disabled={otherTenants.length === 0}
+            onChange={(e) => { setCrossTenantChoice(e.target.checked); setConfirmText(''); }}
+          />
+          Restore into a different tenant (cross-tenant)
+        </label>
+      ) : (
+        <p className="mb-3 text-sm text-content-muted">
+          {source ? `Tenant ${source} no longer exists. ` : ''}It can only be restored into another tenant.
+        </p>
+      )}
+
+      {crossTenant && (
+        <select className="input mb-3" value={otherTarget} onChange={(e) => { setOtherChoice(e.target.value); setConfirmText(''); }}>
+          {otherTenants.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+      )}
+
+      {target && (
+        <div className="mb-3 rounded border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-300">
+          <p>
+            This overwrites the live database and files of <code className="font-semibold">{target}</code> with this snapshot.
+            Overwatch first saves the current data as a <em>pre-restore</em> snapshot and stops the tenant while it restores.
+          </p>
+          {crossTenant && (
+            <p className="mt-2 font-medium">
+              Cross-tenant: <code>{target}</code> gets the data of {source ? <code>{source}</code> : 'another tenant'}.
+            </p>
+          )}
+        </div>
+      )}
+
+      <input
+        className="input mb-3"
+        placeholder={target ? `Type ${target} to confirm` : 'No tenant to restore into'}
+        value={confirmText}
+        disabled={!target}
+        onChange={(e) => setConfirmText(e.target.value)}
+      />
+      <div className="flex justify-end gap-2">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn btn-danger" disabled={!canRestore} onClick={restore}>
+          {restoreBackup.isPending ? 'Restoring...' : 'Restore'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Deleting a snapshot is permanent: confirm before the request goes out. */
+export function DeleteSnapshotModal({ appId, snapshot, onClose }: { appId: string; snapshot: BackupSnapshot; onClose: () => void }) {
+  const deleteBackup = useDeleteBackup(appId);
+  return (
+    <Modal title={`Delete snapshot ${snapshot.shortId}`} size="md" onClose={onClose}>
+      <p className="mb-4 text-sm text-content-muted">
+        Snapshot {snapshot.shortId}, taken {snapshotTime(snapshot)}{snapshot.tenantId ? ` of ${snapshot.tenantId}` : ''}, is removed
+        from the backup repository. Its data cannot be restored afterwards.
+      </p>
+      <div className="flex justify-end gap-2">
+        <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        <button
+          className="btn btn-danger"
+          disabled={deleteBackup.isPending}
+          onClick={() => deleteBackup.mutate(snapshot.id, {
+            onSuccess: () => { toast.success('Backup deleted'); onClose(); },
+            onError: (err) => toast.error(err.message),
+          })}
+        >
+          {deleteBackup.isPending ? 'Deleting...' : 'Delete snapshot'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: string; tenantId: string; tenants: Tenant[]; onClose: () => void }) {
   const { data: status, isLoading: statusLoading } = useBackupStatus(appId);
   const { data: backups, isLoading } = useTenantBackups(appId, tenantId);
   const { data: summary } = useBackupSummary(appId);
   const createBackup = useCreateBackup(appId);
-  const restoreBackup = useRestoreBackup(appId);
-  const deleteBackup = useDeleteBackup(appId);
   const isAdmin = useCan('admin');
   const canEdit = useCan('editor');
 
   const [viewMonth, setViewMonth] = useState(() => new Date());
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [restoreTarget, setRestoreTarget] = useState<{ snapshotId: string; tenantId: string } | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<BackupSnapshot | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BackupSnapshot | null>(null);
 
   const backupsByDate = useMemo(() => groupByDate(backups ?? []), [backups]);
 
@@ -108,7 +242,10 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
           className="btn btn-primary btn-sm"
           disabled={createBackup.isPending}
           onClick={() => createBackup.mutate(tenantId, {
-            onSuccess: () => toast.success('Backup created'),
+            onSuccess: (res) => {
+              if (res?.incomplete) toast.warning(`Backup created, but incomplete. Not backed up: ${(res.missingPaths ?? []).join(', ')}`);
+              else toast.success('Backup created');
+            },
             onError: (err) => toast.error(err.message),
           })}
         >
@@ -165,24 +302,19 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
               <div className="space-y-2">
                 {selectedBackups.map((b) => (
                   <div key={b.id} className="flex items-center justify-between rounded border border-border-subtle bg-surface-muted px-3 py-2">
-                    <div>
-                      <p className="text-sm text-content-secondary">
-                        {new Date(b.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
-                      </p>
-                      <p className="text-xs text-content-faint">{b.shortId}</p>
+                    <div className="flex items-center gap-3">
+                      <div>
+                        <p className="text-sm text-content-secondary">
+                          {new Date(b.time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+                        </p>
+                        <p className="text-xs text-content-faint">{b.shortId}</p>
+                      </div>
+                      <PreRestoreBadge snapshot={b} />
                     </div>
                     {isAdmin && (
                     <div className="flex gap-1">
-                      <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId })}>Restore</button>
-                      <button
-                        className="btn btn-danger btn-xs"
-                        onClick={() => deleteBackup.mutate(b.id, {
-                          onSuccess: () => toast.success('Backup deleted'),
-                          onError: (err) => toast.error(err.message),
-                        })}
-                      >
-                        Delete
-                      </button>
+                      <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget(b)}>Restore</button>
+                      <button className="btn btn-danger btn-xs" onClick={() => setDeleteTarget(b)}>Delete</button>
                     </div>
                     )}
                   </div>
@@ -197,28 +329,15 @@ export function BackupsModal({ appId, tenantId, tenants, onClose }: { appId: str
         )}
       </div>
 
-      {/* Restore flow */}
       {restoreTarget && (
-        <div className="mt-4 border-t border-border-subtle pt-4">
-          <h3 className="mb-2 text-sm font-medium text-content-secondary">Restore to:</h3>
-          <select className="input mb-2" value={restoreTarget.tenantId} onChange={(e) => setRestoreTarget({ ...restoreTarget, tenantId: e.target.value })}>
-            {tenants.map((t) => <option key={t.tenantId} value={t.tenantId}>{t.tenantId}</option>)}
-          </select>
-          <div className="flex gap-2">
-            <button className="btn btn-danger btn-sm" onClick={() => restoreBackup.mutate(restoreTarget, {
-              onSuccess: (res) => {
-                if (res?.warnings?.length) toast.warning(`Backup restored with warnings: ${res.warnings.join('; ')}`);
-                else toast.success('Backup restored');
-                setRestoreTarget(null);
-              },
-              onError: (err) => toast.error(err.message),
-            })} disabled={restoreBackup.isPending}>
-              {restoreBackup.isPending ? 'Restoring...' : 'Restore'}
-            </button>
-            <button className="btn btn-secondary btn-sm" onClick={() => setRestoreTarget(null)}>Cancel</button>
-          </div>
-        </div>
+        <RestoreSnapshotModal
+          appId={appId}
+          snapshot={restoreTarget}
+          tenantIds={tenants.map((t) => t.tenantId)}
+          onClose={() => setRestoreTarget(null)}
+        />
       )}
+      {deleteTarget && <DeleteSnapshotModal appId={appId} snapshot={deleteTarget} onClose={() => setDeleteTarget(null)} />}
     </Modal>
   );
 }

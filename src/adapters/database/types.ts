@@ -43,6 +43,17 @@ export interface CreateDatabaseResult {
 }
 
 /**
+ * resetDatabase failed before it changed anything (a precondition failed, or
+ * the drop was refused): the database is exactly as it was.
+ */
+export class DatabaseResetRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DatabaseResetRefusedError';
+  }
+}
+
+/**
  * Interface for database adapters.
  * Each adapter handles database operations for a specific database engine.
  */
@@ -81,6 +92,16 @@ export interface DatabaseAdapter {
   dropDatabase(tenantId: string, options?: { keepUser?: boolean }): Promise<void>;
 
   /**
+   * Drop the tenant's database and create it again, empty. The tenant user and
+   * its access to the database stay as they are, and so do the database's
+   * character set/collation (MySQL) or encoding/locale (Postgres). A missing
+   * database is created. Callers stop whatever writes to it first; remaining
+   * sessions on the database are ended. Throws DatabaseResetRefusedError when
+   * it failed before changing anything.
+   */
+  resetDatabase(tenantId: string): Promise<void>;
+
+  /**
    * List all tenant databases
    */
   listDatabases(): Promise<string[]>;
@@ -91,9 +112,12 @@ export interface DatabaseAdapter {
   dumpDatabase(tenantId: string, outputPath: string): Promise<void>;
 
   /**
-   * Restore the database from a file
+   * Restore the database from a dump file. `password`, when given, logs the
+   * client in as the tenant's own database role (least privilege): the dump
+   * then runs with no more than the tenant's rights. Without it the adapter
+   * uses whatever local auth the DB container allows.
    */
-  restoreDatabase(tenantId: string, inputPath: string): Promise<void>;
+  restoreDatabase(tenantId: string, inputPath: string, options?: { password?: string }): Promise<void>;
 
   /**
    * Get the database name for a tenant

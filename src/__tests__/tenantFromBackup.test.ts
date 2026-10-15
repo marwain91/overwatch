@@ -9,13 +9,17 @@ const createTenantLocked = vi.fn();
 const startCreatedTenantLocked = vi.fn();
 const deleteTenantLocked = vi.fn();
 const restoreBackupLocked = vi.fn();
+const assertSnapshotOfApp = vi.fn();
 vi.mock('../config', () => ({ getDataDir: () => dataDir }));
 vi.mock('../services/tenant', () => ({
   createTenantLocked: (...a: unknown[]) => createTenantLocked(...a),
   startCreatedTenantLocked: (...a: unknown[]) => startCreatedTenantLocked(...a),
   deleteTenantLocked: (...a: unknown[]) => deleteTenantLocked(...a),
 }));
-vi.mock('../services/backup', () => ({ restoreBackupLocked: (...a: unknown[]) => restoreBackupLocked(...a) }));
+vi.mock('../services/backup', () => ({
+  restoreBackupLocked: (...a: unknown[]) => restoreBackupLocked(...a),
+  assertSnapshotOfApp: (...a: unknown[]) => assertSnapshotOfApp(...a),
+}));
 
 import { createTenantFromBackup } from '../services/tenantFromBackup';
 import { withTenantLock } from '../services/fileLock';
@@ -25,7 +29,8 @@ const opts = { tenantId: 't1', domain: 't1.example.com', imageTag: 'v1' };
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tfb-'));
   calls.length = 0;
-  for (const m of [createTenantLocked, startCreatedTenantLocked, deleteTenantLocked, restoreBackupLocked]) m.mockReset();
+  for (const m of [createTenantLocked, startCreatedTenantLocked, deleteTenantLocked, restoreBackupLocked, assertSnapshotOfApp]) m.mockReset();
+  assertSnapshotOfApp.mockResolvedValue(undefined);
   createTenantLocked.mockImplementation(async () => { calls.push('create'); });
   startCreatedTenantLocked.mockImplementation(async () => { calls.push('start'); });
   deleteTenantLocked.mockImplementation(async () => { calls.push('delete'); });
@@ -66,6 +71,15 @@ describe('createTenantFromBackup', () => {
     expect(r.success).toBe(false);
     expect(r.error).toContain('migrator exited 1');
     expect(deleteTenantLocked).toHaveBeenCalledWith('demo', 't1', false);
+  });
+
+  // Checked first, so a wrong id does not create (and then delete) a tenant.
+  it("refuses a snapshot that is not the app's before creating anything", async () => {
+    assertSnapshotOfApp.mockRejectedValue(Object.assign(new Error("Snapshot 'abc12345' not found for app 'demo'"), { status: 404 }));
+    await expect(createTenantFromBackup('demo', 'abc12345', opts)).rejects.toMatchObject({ status: 404 });
+    expect(assertSnapshotOfApp).toHaveBeenCalledWith('demo', 'abc12345');
+    expect(createTenantLocked).not.toHaveBeenCalled();
+    expect(deleteTenantLocked).not.toHaveBeenCalled();
   });
 
   it('does not roll back (nothing was created) when createTenant throws', async () => {
