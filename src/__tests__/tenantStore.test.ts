@@ -138,10 +138,10 @@ describe('readTenantEnv', () => {
     expect(env.OTHER).toBe('1');
   });
 
-  it('reads a value wrapped in matching quotes without $ as compose does (quotes stripped)', async () => {
+  it('keeps the quotes of a value wrapped in them (formatEnvLine quotes it, so compose keeps them too)', async () => {
     const { readTenantEnv, formatEnvLine } = await load();
     await mkTenant('a', 't', `${formatEnvLine('KEY', '"foo"')}\n${formatEnvLine('K2', "'bar'")}\n`);
-    expect(await readTenantEnv('a', 't')).toEqual({ KEY: 'foo', K2: 'bar' });
+    expect(await readTenantEnv('a', 't')).toEqual({ KEY: '"foo"', K2: "'bar'" });
   });
 
   it('parses comments, blanks and CRLF, and leaves hand-written unquoted values alone', async () => {
