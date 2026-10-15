@@ -1,4 +1,6 @@
+import { createHash } from 'crypto';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
+import { RegistryLoginTarget, holdRegistryLogin, runWithRegistryLogin } from './login';
 import { GHCRAdapter } from './ghcr';
 import { GitLabAdapter } from './gitlab';
 import { DockerHubAdapter } from './dockerhub';
@@ -13,9 +15,10 @@ export { GitLabAdapter } from './gitlab';
 export { DockerHubAdapter } from './dockerhub';
 export { ECRAdapter } from './ecr';
 export { CustomRegistryAdapter } from './custom';
+export { REGISTRY_LOGIN_TTL_MS, REGISTRY_LOGIN_HOLD_MS, RegistryLoginUnavailableError } from './login';
 
 // Per-app adapter cache
-const adapterCache = new Map<string, RegistryAdapter>();
+const adapterCache = new Map<string, { adapter: RegistryAdapter; config: RegistryAdapterConfig }>();
 
 /**
  * Create a registry adapter from adapter config
@@ -64,13 +67,17 @@ function appRegistryToAdapterConfig(registry: AppRegistry): RegistryAdapterConfi
  * Get or create a registry adapter for a specific app
  */
 export function getRegistryAdapterForApp(app: AppDefinition): RegistryAdapter {
-  let adapter = adapterCache.get(app.id);
-  if (!adapter) {
+  return cachedAdapterForApp(app).adapter;
+}
+
+function cachedAdapterForApp(app: AppDefinition): { adapter: RegistryAdapter; config: RegistryAdapterConfig } {
+  let entry = adapterCache.get(app.id);
+  if (!entry) {
     const config = appRegistryToAdapterConfig(app.registry);
-    adapter = createRegistryAdapter(config);
-    adapterCache.set(app.id, adapter);
+    entry = { adapter: createRegistryAdapter(config), config };
+    adapterCache.set(app.id, entry);
   }
-  return adapter;
+  return entry;
 }
 
 /**
@@ -86,22 +93,67 @@ export function clearAdapterCache(appId?: string): void {
   }
 }
 
+// Docker keys stored credentials by registry host; a Docker Hub login names no server.
+function loginHost(config: RegistryAdapterConfig): string {
+  if (config.type === 'dockerhub') return 'docker.io';
+  return config.url.split('/')[0].toLowerCase();
+}
+
+/** The app's registry login, or null when the app has no registry credentials. */
+function loginTargetForApp(app: AppDefinition): RegistryLoginTarget | null {
+  const { adapter, config } = cachedAdapterForApp(app);
+  if (!adapter.hasCredentials()) return null;
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify([config.type, config.url, config.username ?? null, config.token ?? null, config.awsRegion ?? null]))
+    .digest('hex');
+  return { host: loginHost(config), fingerprint, label: `app '${app.id}'`, login: () => adapter.login() };
+}
+
+/**
+ * Log in to the app's registry before a pull, so apps added after boot,
+ * rotated credentials and expired ECR tokens work without a restart. Apps
+ * without registry credentials are left alone: their pulls use whatever docker
+ * login state exists, as before.
+ *
+ * A login is reused per registry host and credential for REGISTRY_LOGIN_TTL_MS.
+ * Docker keeps one credential per host, so another app's different credential
+ * for the same host waits REGISTRY_LOGIN_HOLD_MS, until the caller's pull has
+ * read this one. Throws when the registry rejects the login or it times out.
+ * Wrap the pull in withRegistryLogin instead where possible.
+ */
+export async function ensureRegistryLogin(app: AppDefinition): Promise<void> {
+  const target = loginTargetForApp(app);
+  if (target) await holdRegistryLogin(target);
+}
+
+/**
+ * ensureRegistryLogin that keeps the registry host for the app's credential
+ * until `fn` (the pull) settles.
+ */
+export async function withRegistryLogin<T>(app: AppDefinition, fn: () => Promise<T>): Promise<T> {
+  const target = loginTargetForApp(app);
+  return target ? runWithRegistryLogin(target, fn) : fn();
+}
+
 /**
  * Login to registry for a specific app
  */
 export async function loginToRegistryForApp(app: AppDefinition): Promise<void> {
-  const adapter = getRegistryAdapterForApp(app);
-  await adapter.login();
+  if (!loginTargetForApp(app)) {
+    console.log(`Registry credentials not configured for app '${app.id}', skipping registry login`);
+    return;
+  }
+  await withRegistryLogin(app, async () => undefined);
 }
 
 /**
- * Login to registries for all apps
+ * Login to registries for all apps. Pulls log in again when they need to;
+ * this only warms the login cache at boot.
  */
 export async function loginToAllRegistries(apps: AppDefinition[]): Promise<void> {
   for (const app of apps) {
     try {
       await loginToRegistryForApp(app);
-      console.log(`Registry login successful for app '${app.id}'`);
     } catch (error) {
       console.error(`Warning: Registry login failed for app '${app.id}':`, error);
     }
