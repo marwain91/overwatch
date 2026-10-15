@@ -7,11 +7,12 @@ import * as path from 'path';
 import * as os from 'os';
 
 let dataDir: string;
-const saveNotificationChannels = vi.fn();
+// Runs the route's mutator on an empty store, like the real one under its lock.
+const updateNotificationChannels = vi.fn(async (mutate: (channels: unknown[]) => unknown) => mutate([]));
 const prev = process.env.OVERWATCH_ALLOW_PRIVATE_WEBHOOK;
 
 beforeEach(async () => {
-  saveNotificationChannels.mockClear();
+  updateNotificationChannels.mockClear();
   delete process.env.OVERWATCH_ALLOW_PRIVATE_WEBHOOK;
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-monitoring-audit-'));
   vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as any);
@@ -19,7 +20,7 @@ beforeEach(async () => {
   vi.doMock('../services/alertEngine', () => ({
     getAlertHistory: vi.fn(),
     getNotificationChannelsData: vi.fn(async () => []),
-    saveNotificationChannels,
+    updateNotificationChannels,
     sendTestNotification: vi.fn(),
   }));
 });
@@ -36,11 +37,13 @@ afterEach(async () => {
 async function appWithAudit() {
   const { default: router } = await import('../routes/monitoring');
   const { auditLog } = await import('../middleware/audit');
+  const { errorHandler } = await import('../middleware/errorHandler');
   const app = express();
   app.use(express.json());
   // Stands in for authMiddleware, which resolves the caller once per request.
   app.use((_req, res, next) => { res.locals.user = { email: 'admin@example.test', role: 'admin' }; next(); });
   app.use('/api/monitoring', auditLog, router);
+  app.use(errorHandler);
   return app;
 }
 
@@ -68,6 +71,7 @@ describe('monitoring mutations are audited without secrets', () => {
   });
 
   it('records update and delete too', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {}); // errorHandler logs the 404s
     const app = await appWithAudit();
     const id = '00000000-0000-4000-8000-000000000009';
     await request(app).put(`/api/monitoring/notifications/${id}`).send({ name: 'x' });
@@ -86,7 +90,7 @@ describe('monitoring mutations are audited without secrets', () => {
     const res = await request(app).post('/api/monitoring/notifications').send({ name: 'x', config: { url: 'https://rebind.example.com/' } });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/private/);
-    expect(saveNotificationChannels).not.toHaveBeenCalled();
+    expect(updateNotificationChannels).not.toHaveBeenCalled();
   });
 });
 
