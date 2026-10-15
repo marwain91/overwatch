@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as util from 'util';
 
 vi.mock('pg', () => ({
   Pool: class { on() {} end = vi.fn(async () => {}); },
@@ -164,12 +163,11 @@ describe('createTenant database ownership', () => {
 
   async function load(db: any, composeUpFails: boolean) {
     const appsDir = path.join(tmpRoot, 'apps');
-    const execFile: any = vi.fn((_c: string, args: string[], cb: any) => {
+    const execFile = vi.fn((_c: string, args: string[], _opts: unknown, cb: any) => {
       if (composeUpFails && args.includes('up')) cb(new Error('compose up failed'), '', '');
       else cb(null, '', '');
+      return { on: () => {} };
     });
-    execFile[util.promisify.custom] = (c: string, args: string[]) =>
-      new Promise((res, rej) => execFile(c, args, (e: any, stdout: string, stderr: string) => e ? rej(e) : res({ stdout, stderr })));
     vi.doMock('child_process', () => ({ execFile }));
     vi.doMock('../services/fileLock', () => ({ withFileLock: <T>(_n: string, fn: () => Promise<T>) => fn(), withTenantLock: <T>(_a: string, _t: string, fn: () => Promise<T>) => fn() }));
     vi.doMock('../config', () => ({

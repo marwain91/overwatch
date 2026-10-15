@@ -2,22 +2,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as util from 'util';
 import type { HttpError } from '../utils/httpErrors';
 
-/** execFile mock whose promisified form resolves `{stdout, stderr}` like Node's. */
+/** execFile mock with Node's `(cmd, args, opts, cb)` signature, as runDocker calls it. */
 function withPromisify(
   mock: (cmd: string, args: string[], cb: (err: any, stdout: string, stderr: string) => void) => void,
 ) {
-  const fn = vi.fn(mock) as any;
-  fn[util.promisify.custom] = (cmd: string, args: string[]) =>
-    new Promise((resolve, reject) => {
-      fn(cmd, args, (err: any, stdout: string, stderr: string) => {
-        if (err) reject(err);
-        else resolve({ stdout, stderr });
-      });
-    });
-  return fn;
+  return vi.fn((cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
+    mock(cmd, args, cb);
+    return { on: () => {} };
+  });
 }
 
 let tmpRoot: string;

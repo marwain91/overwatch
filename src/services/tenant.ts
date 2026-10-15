@@ -1,8 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { loadConfig } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
@@ -22,7 +20,7 @@ import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { tenantDir, tenantsDir, assertTenantDir } from './tenantStore';
 import { SLUG_RE } from '../utils/validators';
 import { resolveTenantDbId } from './tenantDb';
-import { getDockerEnv } from '../utils/runDocker';
+import { runDocker } from '../utils/runDocker';
 import { writeFileAtomic } from '../utils/atomicJson';
 import { withFileLock, withTenantLock } from './fileLock';
 import { isDeepStrictEqual } from 'util';
@@ -30,15 +28,12 @@ import { extractComposeErrorMessage } from '../utils/composeErrors';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 
-const execFileAsync = promisify(execFile);
-// Compose resolves ${VAR} against its own environment, so docker runs with the
-// curated one rather than Overwatch's (which holds operator secrets).
-// Timeout and maxBuffer follow runDocker's pattern: a hung daemon or a registry
-// stall must not pin the tenant lock (and a request) forever.
-const DOCKER_MAX_BUFFER = 64 * 1024 * 1024;
+// runDocker gives every call the curated env (compose resolves ${VAR} against
+// its own environment, and Overwatch's holds operator secrets) and a timeout,
+// so a hung daemon or a registry stall cannot pin the tenant lock forever.
 const COMPOSE_TIMEOUT_MS = 300_000;
 const execDocker = (args: string[], timeoutMs: number = COMPOSE_TIMEOUT_MS) =>
-  execFileAsync('docker', args, { env: getDockerEnv(), timeout: timeoutMs, maxBuffer: DOCKER_MAX_BUFFER });
+  runDocker('docker', args, { timeoutMs });
 
 export interface CreateTenantInput {
   appId: string;

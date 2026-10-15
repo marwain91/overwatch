@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as util from 'util';
 
 let tmpRoot: string;
 beforeEach(async () => { tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-app-rollback-')); });
@@ -72,17 +71,17 @@ async function setup() {
     writeTenantAppDef: vi.fn(async () => undefined),
   }));
   vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
-  const execFile: any = vi.fn();
-  execFile[util.promisify.custom] = async (_cmd: string, args: string[]) => {
+  const execFile = vi.fn((_cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
     const dir = args[args.indexOf('--project-directory') + 1] ?? '';
     if (args.includes('up') && dir.endsWith('tenant-one') && !failedOnce) {
       failedOnce = true;
       upReached();
-      await upGate;
-      throw Object.assign(new Error('up failed'), { stderr: 'Error: up failed' });
+      void upGate.then(() => cb(Object.assign(new Error('up failed'), { stderr: 'Error: up failed' }), '', 'Error: up failed'));
+    } else {
+      cb(null, '', '');
     }
-    return { stdout: '', stderr: '' };
-  };
+    return { on: () => {} };
+  });
   vi.doMock('child_process', () => ({ execFile }));
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   vi.spyOn(console, 'log').mockImplementation(() => undefined);

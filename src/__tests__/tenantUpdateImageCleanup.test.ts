@@ -2,25 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import * as util from 'util';
 
-/**
- * Wrap a vi.fn execFile mock so `promisify(execFile)` resolves with
- * `{stdout, stderr}` (matching the real Node `child_process.execFile`),
- * not just the second callback argument.
- */
+/** execFile mock with Node's `(cmd, args, opts, cb)` signature, as runDocker calls it. */
 function withPromisify(
   mock: (cmd: string, args: string[], cb: (err: any, stdout: string, stderr: string) => void) => void,
-): typeof mock & { [k: symbol]: any } {
-  const fn = vi.fn(mock) as any;
-  fn[util.promisify.custom] = (cmd: string, args: string[]) =>
-    new Promise((resolve, reject) => {
-      fn(cmd, args, (err: any, stdout: string, stderr: string) => {
-        if (err) reject(err);
-        else resolve({ stdout, stderr });
-      });
-    });
-  return fn;
+) {
+  return vi.fn((cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
+    mock(cmd, args, cb);
+    return { on: () => {} };
+  });
 }
 
 
