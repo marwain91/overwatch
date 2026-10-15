@@ -11,7 +11,8 @@ vi.mock('../services/docker', () => ({ startTenant, stopTenant, restartTenant })
 vi.mock('../services/auditLog', () => ({ writeAuditEntry: (...a: any[]) => writeAuditEntry(...a) }));
 
 import { HttpError } from '../utils/httpErrors';
-import { startTenantHandler, stopTenantHandler, restartTenantHandler } from '../mcp/tools/lifecycle';
+import { startTenantHandler, restartTenantHandler } from '../mcp/tools/lifecycle';
+import { MCP_TOOLS, guardedTool } from '../mcp/server';
 
 const editor = { email: 'a@b.c', role: 'editor' as const };
 const viewer = { email: 'v@b.c', role: 'viewer' as const };
@@ -24,8 +25,9 @@ describe('lifecycle tools', () => {
     expect(writeAuditEntry).toHaveBeenCalledWith(expect.objectContaining({ method: 'MCP', path: '/mcp/start_tenant' }));
   });
 
-  it('viewer is denied with a tool error', async () => {
-    const r = await stopTenantHandler({ appId: 'app1', tenantId: 't1' }, viewer);
+  it('viewer is denied with a tool error (gate applied at registration)', async () => {
+    const stop = guardedTool(MCP_TOOLS.find(t => t.name === 'stop_tenant')!);
+    const r = await stop({ appId: 'app1', tenantId: 't1' }, { authInfo: { extra: viewer } });
     expect(r.isError).toBe(true);
     expect(stopTenant).not.toHaveBeenCalled();
   });

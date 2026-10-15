@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { updateTenant, validateImageTag } from '../../services/tenant';
-import { requireToolRole, writeMcpAudit, ToolRoleError, toolErrorMessage } from '../audit';
+import { writeMcpAudit, toolErrorMessage } from '../audit';
 import { McpAuthExtra } from '../auth';
 import { slugInput } from './read';
 import type { TenantUpdateProgress } from '../../services/eventBus';
@@ -27,18 +27,12 @@ export const updateTenantInput = z.object({
 // render a bar; message carries the human-readable step+status.
 const STEP_ORDER: Record<string, number> = { manifest: 1, config: 2, pull: 3, restart: 4, done: 5, failed: 5 };
 
+// Role (editor) is enforced where the tool is registered (mcp/server.ts).
 export async function updateTenantHandler(
   args: z.infer<typeof updateTenantInput>,
   auth: McpAuthExtra,
   ctx: UpdateToolContext,
 ): Promise<ToolResult> {
-  try {
-    requireToolRole(auth.role, 'editor');
-  } catch (e) {
-    if (e instanceof ToolRoleError) return { isError: true, content: [{ type: 'text', text: e.message }] };
-    throw e;
-  }
-
   const tag = validateImageTag(args.imageTag);
   if (!tag.valid) return { isError: true, content: [{ type: 'text', text: tag.error || 'invalid image tag' }] };
 
