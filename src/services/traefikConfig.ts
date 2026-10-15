@@ -16,6 +16,7 @@ import { readTenantTraefik, writeTenantTraefik, loadAliasContext, assertHostAlia
 import type { TraefikTenant } from '../models/traefik';
 import { NotFoundError } from '../utils/httpErrors';
 import { tenantDir, readTenantEnv } from './tenantStore';
+import { withFileLock } from './fileLock';
 import * as fs from 'fs/promises';
 import { assertTenantRawLabelsOwned, assertNoGlobalMiddlewareShadowing, globalDefaultMiddlewares } from './traefikLabels';
 import {
@@ -199,8 +200,11 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
     throw err;
   }
   const incoming = TraefikTenantSchema.parse(body);
+  // The alias check reads every other tenant's domain and aliases, so the check
+  // and the write hold the lock tenant create takes for its domain check:
+  // otherwise two concurrent writes can both pass and claim the same host.
   // Restoring masked credentials reads the stored value, so it runs under the write lock.
-  await writeTenantTraefik(appId, tenantId, async (stored) => {
+  await withFileLock('tenant-domains', () => writeTenantTraefik(appId, tenantId, async (stored) => {
     const parsed = restoreTenantTraefik(incoming, stored);
     if (parsed.host_aliases && parsed.host_aliases.length > 0) {
       parsed.host_aliases = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
@@ -217,6 +221,6 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
       });
     }
     return parsed;
-  });
+  }));
   return readTenantTraefik(appId, tenantId, { raw: true });
 }
