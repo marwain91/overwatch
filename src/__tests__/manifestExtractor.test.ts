@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AppDefinition } from '../models/app';
 
 function buildApp(overrides: Partial<AppDefinition> = {}): AppDefinition {
@@ -64,33 +64,33 @@ describe('resolveManifestPathInImage', () => {
 });
 
 // Mock the docker CLI calls so we can exercise extractFileFromImage without
-// an actual daemon. The module uses promisify(execFile) internally, so we
-// vi.mock the entire child_process + util pair.
+// an actual daemon. The module runs docker through runDocker, which calls
+// execFile(cmd, args, opts, cb).
+type DockerReply = { stdout?: string; stderr?: string; fail?: boolean | string; timeout?: boolean };
+interface DockerCall { args: string[]; opts: any }
+
+function mockExecFile(handler: (args: string[]) => DockerReply, calls: DockerCall[] = []) {
+  vi.doMock('child_process', () => ({
+    execFile: (_cmd: string, args: string[], opts: any, cb: (err: Error | null, stdout: string, stderr: string) => void) => {
+      calls.push({ args, opts });
+      const result = handler(args);
+      if (result.timeout) {
+        cb(Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM' }), '', '');
+      } else if (result.fail) {
+        const stderr = typeof result.fail === 'string' ? result.fail : 'docker failed';
+        cb(Object.assign(new Error('Command failed'), { code: 1 }), '', stderr);
+      } else {
+        cb(null, result.stdout ?? '', result.stderr ?? '');
+      }
+      return { on() {} };
+    },
+  }));
+}
+
 describe('extractFileFromImage — docker interactions', () => {
   beforeEach(() => {
     vi.resetModules();
   });
-
-  function mockExecFile(handler: (args: string[]) => { stdout?: string; stderr?: string; fail?: boolean | string }) {
-    vi.doMock('child_process', () => ({
-      execFile: (
-        _cmd: string,
-        args: string[],
-        _optsOrCb: any,
-        maybeCb?: (err: Error | null, out: { stdout: string; stderr: string }) => void,
-      ) => {
-        const cb = typeof _optsOrCb === 'function' ? _optsOrCb : maybeCb!;
-        const result = handler(args);
-        if (result.fail) {
-          const err: any = new Error(typeof result.fail === 'string' ? result.fail : 'docker failed');
-          err.stderr = typeof result.fail === 'string' ? result.fail : '';
-          cb(err, { stdout: '', stderr: err.stderr });
-          return;
-        }
-        cb(null, { stdout: result.stdout ?? '', stderr: result.stderr ?? '' });
-      },
-    }));
-  }
 
   it('returns null when docker cp reports "No such file or directory"', async () => {
     mockExecFile((args) => {
@@ -237,5 +237,139 @@ describe('extractFileFromImage — docker interactions', () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as Error).message).toMatch(/not valid JSON/);
     expect((err as Error).message).not.toContain('SECRETVALUE');
+  });
+});
+
+describe('extractFileFromImage — timeouts, env and cleanup', () => {
+  const SAVED_ENV = { ...process.env };
+  const local = (args: string[]) => args[0] === 'image' && args[1] === 'inspect';
+  const missing = 'Error response from daemon: No such image: ghcr.io/x/y:1';
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env.JWT_SECRET = 'jwt-secret';
+    process.env.MYSQL_ROOT_PASSWORD = 'root-pw';
+  });
+  afterEach(() => {
+    vi.doUnmock('child_process');
+    vi.doUnmock('../adapters/registry');
+    vi.restoreAllMocks();
+    for (const k of Object.keys(process.env)) if (!(k in SAVED_ENV)) delete process.env[k];
+    Object.assign(process.env, SAVED_ENV);
+  });
+
+  it('runs every docker call with a timeout and the curated env', async () => {
+    const fsSync = await import('fs');
+    const calls: DockerCall[] = [];
+    mockExecFile((args) => {
+      if (local(args)) return { fail: missing };
+      if (args[0] === 'cp') { fsSync.writeFileSync(args[2], '{}'); return {}; }
+      return {};
+    }, calls);
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    const { COMPOSE_LONG_TIMEOUT_MS } = await import('../services/composeTimeouts');
+    await extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json');
+
+    expect(calls.map(c => c.args[0])).toEqual(['image', 'pull', 'create', 'cp', 'rm']);
+    for (const { opts } of calls) {
+      expect(opts.timeout).toBeGreaterThan(0);
+      expect(opts.env).not.toHaveProperty('JWT_SECRET');
+      expect(opts.env).not.toHaveProperty('MYSQL_ROOT_PASSWORD');
+    }
+    // A pull can legitimately take long; the bound only stops a stalled registry.
+    expect(calls.find(c => c.args[0] === 'pull')!.opts.timeout).toBe(COMPOSE_LONG_TIMEOUT_MS);
+    expect(calls.find(c => c.args[0] === 'create')!.opts.timeout).toBeLessThan(COMPOSE_LONG_TIMEOUT_MS);
+  });
+
+  it('ends docker options before the image reference', async () => {
+    const fsSync = await import('fs');
+    const calls: DockerCall[] = [];
+    mockExecFile((args) => {
+      if (local(args)) return { fail: missing };
+      if (args[0] === 'cp') { fsSync.writeFileSync(args[2], '{}'); return {}; }
+      return {};
+    }, calls);
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json');
+    for (const verb of ['image', 'pull', 'create']) {
+      const args = calls.find(c => c.args[0] === verb)!.args;
+      expect(args.slice(-2)).toEqual(['--', 'ghcr.io/x/y:1']);
+    }
+  });
+
+  it('removes the temporary container even when docker create times out', async () => {
+    const calls: DockerCall[] = [];
+    mockExecFile((args) => {
+      if (local(args)) return { stdout: '[{}]' };
+      if (args[0] === 'create') return { timeout: true };
+      return {};
+    }, calls);
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).rejects.toThrow(/timed out/);
+    const create = calls.find(c => c.args[0] === 'create')!.args;
+    const name = create[create.indexOf('--name') + 1];
+    expect(name).toMatch(/^ow-manifest-/);
+    expect(calls.find(c => c.args[0] === 'rm')!.args).toEqual(['rm', '-f', name]);
+  });
+
+  it('removes the temporary container when docker cp fails', async () => {
+    const calls: DockerCall[] = [];
+    mockExecFile((args) => {
+      if (local(args)) return { stdout: '[{}]' };
+      if (args[0] === 'cp') return { fail: 'permission denied' };
+      return {};
+    }, calls);
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).rejects.toThrow(/permission denied/);
+    const create = calls.find(c => c.args[0] === 'create')!.args;
+    expect(calls.find(c => c.args[0] === 'rm')!.args).toEqual(['rm', '-f', create[create.indexOf('--name') + 1]]);
+  });
+
+  it('does not start an hour-long pull when the docker daemon is unreachable', async () => {
+    const calls: DockerCall[] = [];
+    mockExecFile((args) => {
+      if (local(args)) return { fail: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' };
+      return {};
+    }, calls);
+    const { extractFileFromImage } = await import('../services/manifestExtractor');
+    await expect(extractFileFromImage('ghcr.io/x/y:1', '/overwatch/app.json')).rejects.toThrow(/Cannot connect/);
+    expect(calls.map(c => c.args[0])).toEqual(['image']);
+  });
+
+  it('readManifestFromAppImage pulls inside the app registry login', async () => {
+    const fsSync = await import('fs');
+    const order: string[] = [];
+    const withRegistryLogin = vi.fn(async (_app: unknown, fn: () => Promise<unknown>) => {
+      order.push('login');
+      const result = await fn();
+      order.push('release');
+      return result;
+    });
+    vi.doMock('../adapters/registry', () => ({ withRegistryLogin }));
+    mockExecFile((args) => {
+      order.push(args[0]);
+      if (local(args)) return { fail: missing };
+      if (args[0] === 'cp') { fsSync.writeFileSync(args[2], '{"id":"acme"}'); return {}; }
+      return {};
+    });
+    const { readManifestFromAppImage } = await import('../services/manifestExtractor');
+    const app = buildApp();
+    await expect(readManifestFromAppImage(app, 'v1')).resolves.toEqual({ id: 'acme' });
+    expect(withRegistryLogin).toHaveBeenCalledWith(app, expect.any(Function));
+    expect(order.slice(0, 4)).toEqual(['image', 'login', 'pull', 'release']);
+  });
+
+  it('readManifestFromAppImage does not log in for an image that is already local', async () => {
+    const fsSync = await import('fs');
+    const withRegistryLogin = vi.fn();
+    vi.doMock('../adapters/registry', () => ({ withRegistryLogin }));
+    mockExecFile((args) => {
+      if (local(args)) return { stdout: '[{}]' };
+      if (args[0] === 'cp') { fsSync.writeFileSync(args[2], '{"id":"acme"}'); return {}; }
+      return {};
+    });
+    const { readManifestFromAppImage } = await import('../services/manifestExtractor');
+    await readManifestFromAppImage(buildApp(), 'v1');
+    expect(withRegistryLogin).not.toHaveBeenCalled();
   });
 });
