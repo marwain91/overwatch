@@ -5,10 +5,12 @@ import { listApps } from '../services/app';
 import { listTenantDirs, readTenantEnv } from '../services/tenantStore';
 import { requireRole } from '../middleware/requireRole';
 import { HttpError } from '../utils/httpErrors';
+import { createLimiter } from '../utils/limiter';
 
 const router = Router();
 
 const HIDDEN_QUERY = '[hidden]';
+const MAX_CONCURRENT_ENV_READS = 10;
 
 // Driver messages carry hosts, user names and SQL, and these routes are open to
 // every role, so failures are classified into fixed messages; the raw error is
@@ -41,24 +43,31 @@ async function dbCall<T>(fn: () => Promise<T>): Promise<T> {
 async function collectTenantDbNames(): Promise<Set<string>> {
   const dbNames = new Set<string>();
 
+  // One .env read per tenant: run them in parallel, bounded, instead of one
+  // after another on every page load.
+  const limit = createLimiter(MAX_CONCURRENT_ENV_READS);
+  const reads: Promise<void>[] = [];
   try {
     const apps = await listApps();
     for (const app of apps) {
       for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {}, followSymlinks: true })) {
-        try {
-          const env = await readTenantEnv(app.id, tenantId);
-          if (env.DB_NAME) {
-            dbNames.add(env.DB_NAME);
+        reads.push(limit(async () => {
+          try {
+            const env = await readTenantEnv(app.id, tenantId);
+            if (env.DB_NAME) {
+              dbNames.add(env.DB_NAME);
+            }
+          } catch {
+            // Skip tenants without .env
           }
-        } catch {
-          // Skip tenants without .env
-        }
+        }));
       }
     }
   } catch {
     // Apps directory doesn't exist yet
   }
 
+  await Promise.all(reads);
   return dbNames;
 }
 
