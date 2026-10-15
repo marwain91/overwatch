@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { tenantAppDefMock } from './tenantAppDefMock';
 
 // Tenant create and update log in to the app's registry right before compose
 // pulls, so an app added after boot or a rotated token works without a restart.
@@ -68,19 +69,20 @@ beforeEach(async () => {
     readTenantTraefik: vi.fn(async () => undefined),
     assertTenantDomainAllowed: vi.fn(async () => undefined),
   }));
-  vi.doMock('../services/envVars', () => ({
-    generateSharedEnvFile: vi.fn(async () => undefined),
-    deleteTenantAllOverrides: vi.fn(),
-    formatEnvValue: (v: unknown) => String(v),
-  }));
+  vi.doMock('../services/envVars', async () => {
+    const actual = await vi.importActual<typeof import('../services/envVars')>('../services/envVars');
+    return {
+      generateSharedEnvFile: vi.fn(async () => undefined),
+      deleteTenantAllOverrides: vi.fn(),
+      formatEnvValue: actual.formatEnvValue,
+      formatEnvLine: actual.formatEnvLine,
+    };
+  });
   vi.doMock('../services/manifestExtractor', () => ({
     readManifestFromAppImage: vi.fn(async () => null),
     resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/portal/web:v2'),
   }));
-  vi.doMock('../services/tenantAppDef', () => ({
-    readTenantAppDef: vi.fn(async () => app()),
-    writeTenantAppDef: vi.fn(async () => undefined),
-  }));
+  vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({ readTenantAppDef: vi.fn(async () => app()) }));
   vi.doMock('../services/initContainerDiagnostics', () => ({ describeFailedInitContainers: vi.fn(async () => '') }));
   vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
   vi.doMock('child_process', () => ({
@@ -123,8 +125,9 @@ describe('tenant create', () => {
     const { createTenant, getTenantPath } = await import('../services/tenant');
     await expect(createTenant({ appId: 'portal', tenantId: 'one', domain: 'one.example.test', imageTag: 'v1' }))
       .rejects.toThrow(/Failed to create tenant: Registry login to ghcr\.io failed for app 'portal'/);
+    // Login runs before compose up is attempted, so there are no containers to take down.
     expect(events).not.toContain('docker:up');
-    expect(events).toContain('docker:down');
+    expect(events).not.toContain('docker:down');
     expect(events).toContain('db:drop');
     await expect(fs.access(getTenantPath('portal', 'one'))).rejects.toThrow();
   });
