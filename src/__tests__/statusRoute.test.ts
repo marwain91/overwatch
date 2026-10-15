@@ -105,3 +105,33 @@ describe('status route Docker access', () => {
     expect(listApps).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('container logs role gate', () => {
+  async function build(role: 'viewer' | 'editor' | 'admin') {
+    const getContainerLogs = vi.fn(async () => 'secret log line');
+    vi.doMock('../services/docker', () => ({
+      listContainers: vi.fn(async () => []),
+      findManagedContainer: vi.fn(async (id: string) => ({ id })),
+      getContainerLogs,
+      restartContainer: vi.fn(),
+      listTenants: vi.fn(async () => []),
+    }));
+    const { default: statusRouter } = await import('../routes/status');
+    const app = express();
+    app.use('/api/status', (_req, res, next) => { res.locals.user = { email: 'u@b.c', role }; next(); }, statusRouter);
+    return { app, getContainerLogs };
+  }
+
+  it('refuses a viewer: tenant logs can hold PII and tokens', async () => {
+    const { app, getContainerLogs } = await build('viewer');
+    const res = await request(app).get('/api/status/containers/abcdef123456/logs');
+    expect(res.status).toBe(403);
+    expect(getContainerLogs).not.toHaveBeenCalled();
+  });
+
+  it('serves an editor', async () => {
+    const { app } = await build('editor');
+    const res = await request(app).get('/api/status/containers/abcdef123456/logs').expect(200);
+    expect(res.body.logs).toBe('secret log line');
+  });
+});

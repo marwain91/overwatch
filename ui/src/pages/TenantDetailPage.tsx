@@ -32,7 +32,8 @@ export function TenantDetailPage() {
   const [tail, setTail] = useState<number>(200);
   const [confirmRestart, setConfirmRestart] = useState<{ id: string; name: string } | null>(null);
 
-  const { data: logs, isLoading: logsLoading, dataUpdatedAt, refetch: refetchLogs } = useContainerLogs(selectedContainer, tail);
+  // Logs are editor-only on the API; viewers never fetch them.
+  const { data: logs, isLoading: logsLoading, dataUpdatedAt, refetch: refetchLogs } = useContainerLogs(canEdit ? selectedContainer : null, tail);
 
   // Auto-select first container
   useEffect(() => {
@@ -215,7 +216,7 @@ export function TenantDetailPage() {
       </section>
 
       {/* Log Viewer */}
-      {selectedContainer && (
+      {canEdit && selectedContainer && (
         <LogViewer
           containerName={tenant.containers.find((c) => c.id === selectedContainer)?.service || selectedContainer}
           logs={logs || null}
