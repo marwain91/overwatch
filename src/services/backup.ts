@@ -17,6 +17,8 @@ import { resolveTenantDbId } from './tenantDb';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 import { withTenantLock } from './fileLock';
 import { eventBus } from './eventBus';
+import { getDockerEnv } from '../utils/runDocker';
+import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 
 const rawExecFile = promisify(execFile);
 // Every restic/docker shell-out gets a timeout and a bounded buffer. Without
@@ -28,6 +30,9 @@ const RESTIC_LONG_TIMEOUT_MS = 3_600_000; // backup / restore / prune / docker c
 const RESTIC_SNAPSHOTS_TIMEOUT_MS = 120_000;
 const execFileAsync = (cmd: string, args: string[], opts: Record<string, unknown> = {}) =>
   rawExecFile(cmd, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: EXEC_MAX_BUFFER, ...opts });
+// docker gets the same allowlisted env as runDocker, not Overwatch's secrets.
+const dockerExec = (args: string[], opts: Record<string, unknown> = {}) =>
+  execFileAsync('docker', args, { env: getDockerEnv(), ...opts });
 
 /** Validate that a path is safe for use in docker exec/cp (no shell metacharacters, no traversal) */
 function isValidContainerPath(p: string): boolean {
@@ -421,9 +426,7 @@ async function createBackupLocked(appId: string, tenantId: string, options: { ex
           // (container stopped, daemon error) means the path was not backed up.
           let checkOutput = '';
           try {
-            ({ stdout: checkOutput } = await execFileAsync(
-              'docker', ['exec', containerName, 'ls', '-A', pathConfig.container]
-            ));
+            ({ stdout: checkOutput } = await dockerExec(['exec', containerName, 'ls', '-A', pathConfig.container]));
           } catch (lsErr: any) {
             const detail = `${lsErr?.stderr || ''} ${lsErr?.message || ''}`;
             if (!/No such file or directory/i.test(detail)) throw lsErr;
@@ -431,7 +434,7 @@ async function createBackupLocked(appId: string, tenantId: string, options: { ex
           if (checkOutput.trim()) {
             const localDir = path.join(tenantBackupDir, pathConfig.local);
             await fs.mkdir(localDir, { recursive: true });
-            await execFileAsync('docker', ['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
+            await dockerExec(['cp', `${containerName}:${pathConfig.container}/.`, `${localDir}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
           }
         } catch (error: any) {
           const msg = error?.message || String(error);
@@ -615,8 +618,27 @@ export interface RestoreBackupOptions {
   newDomain?: string;
   /** The tenant's containers exist but are stopped (create-from-backup): copy without `exec`. */
   containersStopped?: boolean;
+  /**
+   * In-place restore of a snapshot taken of another tenant (or of no known
+   * tenant). It replaces this tenant's data with another tenant's, so it must
+   * be asked for explicitly. Create-from-backup is cross-tenant by design.
+   */
+  allowCrossTenant?: boolean;
 }
-export type RestoreBackupResult = { success: boolean; warnings?: string[]; error?: string; isLocked?: boolean; lockInfo?: LockInfo };
+export type RestoreBackupResult = {
+  success: boolean;
+  warnings?: string[];
+  error?: string;
+  isLocked?: boolean;
+  lockInfo?: LockInfo;
+  /** In-place restore: the snapshot of the tenant's data taken just before. */
+  safetySnapshotId?: string;
+  /** In-place restore that failed after the data was touched: whether the safety snapshot was put back. */
+  rolledBack?: boolean;
+};
+
+/** Tag of the snapshot an in-place restore takes of the tenant before replacing its data. */
+export const PRE_RESTORE_TAG = 'pre-restore';
 
 /** Serialised with the tenant's other lifecycle operations. */
 export function restoreBackup(
@@ -628,7 +650,265 @@ export function restoreBackup(
   return withTenantLock(appId, targetTenantId, () => restoreBackupLocked(appId, snapshotId, targetTenantId, options));
 }
 
-/** Caller must hold the tenant lock (withTenantLock) for appId/targetTenantId. */
+/** A restore step that failed, with a message that is safe to return to the client. */
+class RestoreStepError extends Error {}
+
+interface SnapshotRef {
+  id: string;
+  shortId: string;
+  tags: string[];
+}
+
+/**
+ * The snapshot `snapshotId` names, when it names exactly one. Apps may share a
+ * repository, and a `--tag` filter cannot scope an id (restic ignores filters
+ * when explicit snapshot ids are given), so ownership is checked on its tags.
+ */
+async function findSnapshot(app: AppDefinition, snapshotId: string): Promise<SnapshotRef | null> {
+  const { stdout } = await execFileAsync('restic', ['snapshots', '--json', snapshotId], {
+    env: getResticEnv(app),
+    timeout: RESTIC_SNAPSHOTS_TIMEOUT_MS,
+  });
+  const found = JSON.parse(stdout || '[]') as Array<{ id: string; short_id: string; tags?: string[] }>;
+  return found.length === 1 ? { id: found[0].id, shortId: found[0].short_id, tags: found[0].tags ?? [] } : null;
+}
+
+/** Whether `snapshotId` names exactly one snapshot tagged for this app. */
+async function snapshotBelongsToApp(app: AppDefinition, snapshotId: string): Promise<boolean> {
+  const snapshot = await findSnapshot(app, snapshotId);
+  return !!snapshot && snapshot.tags.includes(`app:${app.id}`);
+}
+
+/**
+ * The snapshot a restore into `targetTenantId` may use: it must be tagged for
+ * this app and, in place, for the target tenant unless allowCrossTenant.
+ * Throws 404 for an unknown id or another app's snapshot, 400 otherwise.
+ */
+async function resolveRestoreSnapshot(
+  app: AppDefinition,
+  snapshotId: string,
+  targetTenantId: string,
+  options: RestoreBackupOptions,
+): Promise<SnapshotRef> {
+  const snapshot = await findSnapshot(app, snapshotId);
+  const notFound = new NotFoundError(`Snapshot '${snapshotId}' not found for app '${app.id}'`);
+  if (!snapshot) throw notFound;
+  if (!snapshot.tags.some(t => t.startsWith('app:'))) {
+    throw new ValidationError(
+      `Snapshot '${snapshotId}' has no app tag (an untagged legacy snapshot), so Overwatch cannot tell which app or tenant it belongs to and does not restore it.`,
+    );
+  }
+  if (!snapshot.tags.includes(`app:${app.id}`)) throw notFound;
+  if (!options.createNew && !options.allowCrossTenant) {
+    const source = snapshot.tags.find(t => t.startsWith('tenant:'))?.slice('tenant:'.length);
+    if (source !== targetTenantId) {
+      throw new ValidationError(source
+        ? `Snapshot '${snapshotId}' was taken of tenant '${source}', not '${targetTenantId}'. Restoring it replaces the data of '${targetTenantId}' with that of '${source}'; set allowCrossTenant to do this on purpose.`
+        : `Snapshot '${snapshotId}' has no tenant tag, so it cannot be matched to '${targetTenantId}'; set allowCrossTenant to restore it anyway.`);
+    }
+  }
+  return snapshot;
+}
+
+interface StagedSnapshot {
+  /** The tenant's data inside the staging dir (database.sql, .env, path dirs). */
+  tenantDir: string;
+  metadata: any;
+}
+
+/** Download a snapshot into a new staging dir (added to `dirs`) and locate the tenant data in it. */
+async function stageSnapshot(app: AppDefinition, snapshotId: string, targetTenantId: string, dirs: string[]): Promise<StagedSnapshot> {
+  const restoreDir = await makeStagingDir('restore');
+  dirs.push(restoreDir);
+
+  // execFile avoids shell injection on snapshotId
+  await execFileAsync(
+    'restic', ['restore', snapshotId, '--target', restoreDir],
+    { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS }
+  );
+
+  // Find the backup data
+  const { stdout: findOutput } = await execFileAsync('find', [restoreDir, '-name', 'metadata.json', '-type', 'f']);
+  const metadataPath = findOutput.trim();
+  if (!metadataPath) {
+    throw new RestoreStepError('Invalid backup: metadata.json not found');
+  }
+
+  // Verify metadata path is within the restore directory (prevents symlink attacks)
+  await assertWithinDir(metadataPath, restoreDir);
+
+  const backupDataDir = path.dirname(metadataPath);
+  const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf-8'));
+
+  // Refuse archives that don't belong to this app — prevents restoring a
+  // snapshot from a sibling/attacker-controlled app into the target tree.
+  if (metadata.appId && metadata.appId !== app.id) {
+    throw new RestoreStepError(`Backup appId mismatch: archive is for '${metadata.appId}', not '${app.id}'`);
+  }
+
+  // Find the tenant data in the backup
+  let sourceTenantId = targetTenantId;
+  if (metadata.tenants && metadata.tenants.length > 0) {
+    if (metadata.tenants.length === 1) {
+      sourceTenantId = metadata.tenants[0];
+    } else if (!metadata.tenants.includes(targetTenantId)) {
+      throw new RestoreStepError(`Tenant ${targetTenantId} not found in backup. Available: ${metadata.tenants.join(', ')}`);
+    }
+  }
+
+  const tenantBackupDir = path.join(backupDataDir, sourceTenantId);
+  try {
+    await fs.access(tenantBackupDir);
+    // Verify the resolved path is within the restore directory (prevents symlink attacks)
+    await assertWithinDir(tenantBackupDir, restoreDir);
+  } catch (e: any) {
+    if (e.message?.includes('resolves outside')) {
+      throw new RestoreStepError('Backup contains unsafe symlinks');
+    }
+    throw new RestoreStepError(`Tenant data not found in backup for ${sourceTenantId}`);
+  }
+  try {
+    await fs.access(path.join(tenantBackupDir, 'database.sql'));
+  } catch {
+    throw new RestoreStepError('Invalid backup: database.sql not found');
+  }
+
+  return { tenantDir: tenantBackupDir, metadata };
+}
+
+interface RestoreTarget {
+  appId: string;
+  tenantId: string;
+  db: ReturnType<typeof getDatabaseAdapter>;
+  dbName: string;
+  backupServices: Array<{ name: string; paths: Array<{ container: string; local: string }> }>;
+}
+
+/** Client-safe text for a failed database import (the client error itself carries stderr). */
+function describeImportError(error: any): string {
+  const msg = String(error?.message || error);
+  if (/must be (able to SET ROLE|member of role)/.test(msg)) {
+    return "database import failed: the dump gives its objects to another tenant's database role. "
+      + 'It is a Postgres dump made by an older Overwatch version; restore it into the tenant it was taken from, '
+      + 'or back that tenant up again with this version and use the new snapshot';
+  }
+  return 'database import failed (see server logs)';
+}
+
+/**
+ * Load a staged snapshot into the tenant: the database, then the service
+ * paths. `resetDatabase` empties the database first, so tables that exist only
+ * in the live database do not survive. With `copyFailureIsFatal` a failed path
+ * copy throws (the tenant would be half restored); otherwise it is a warning.
+ * Returns the warnings.
+ */
+async function applySnapshot(
+  target: RestoreTarget,
+  staged: StagedSnapshot,
+  opts: { resetDatabase: boolean; containersStopped: boolean; copyFailureIsFatal: boolean },
+): Promise<string[]> {
+  const { appId, tenantId, db, dbName } = target;
+  await db.initialize();
+  if (opts.resetDatabase) {
+    try {
+      await db.resetDatabase(dbName);
+    } catch (error: any) {
+      console.error(`[Backup] Failed to reset the database of ${appId}/${tenantId}:`, error?.message || error);
+      throw new RestoreStepError('database reset failed (see server logs)');
+    }
+  }
+  try {
+    await db.restoreDatabase(dbName, path.join(staged.tenantDir, 'database.sql'));
+  } catch (error: any) {
+    console.error(`[Backup] Failed to restore the database of ${appId}/${tenantId}:`, error?.message || error);
+    throw new RestoreStepError(describeImportError(error));
+  }
+
+  const warnings: string[] = [];
+  const metadata = staged.metadata;
+  if (metadata.incomplete) {
+    // Only fixed text plus well-formed container paths: metadata comes from the archive.
+    const missing = Array.isArray(metadata.missingPaths)
+      ? metadata.missingPaths
+          .map((m: any) => m?.path)
+          .filter((m: unknown): m is string => typeof m === 'string' && isValidContainerPath(m))
+      : [];
+    warnings.push(`The backup was incomplete when taken${missing.length ? `; missing paths: ${missing.join(', ')}` : ''}`);
+  }
+
+  // Restore paths to service containers
+  for (const service of target.backupServices) {
+    const containerName = `${appId}-${tenantId}-${service.name}`;
+
+    for (const pathConfig of service.paths) {
+      if (!isValidContainerPath(pathConfig.container)) {
+        console.error(`Skipping unsafe container path: ${pathConfig.container}`);
+        warnings.push(`${service.name}: a configured path was skipped (unsafe path)`);
+        continue;
+      }
+      if (!isValidContainerPath(pathConfig.local)) {
+        console.error(`Skipping unsafe local path: ${pathConfig.local}`);
+        warnings.push(`${service.name}: a configured path was skipped (unsafe path)`);
+        continue;
+      }
+      const localBackupDir = path.join(staged.tenantDir, pathConfig.local);
+      try {
+        await fs.access(localBackupDir);
+      } catch (accessErr: any) {
+        if (accessErr?.code === 'ENOENT') continue; // path was empty/absent when the backup was taken
+        console.error(`[Backup] Cannot read ${localBackupDir} from the backup: ${accessErr?.message || accessErr}`);
+        warnings.push(`${pathConfig.container}: not restored (backup data unreadable; see server logs)`);
+        continue;
+      }
+      try {
+        // A stopped container cannot exec; docker cp into its volume mount points works.
+        if (!opts.containersStopped) {
+          await dockerExec(['exec', containerName, 'mkdir', '-p', pathConfig.container]);
+        }
+        await dockerExec(['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
+      } catch (error: any) {
+        console.error(`[Backup] Failed to restore ${pathConfig.container} into ${containerName}: ${error?.message || error}`);
+        if (opts.copyFailureIsFatal) throw new RestoreStepError(`copying ${pathConfig.container} into ${service.name} failed (see server logs)`);
+        warnings.push(`${pathConfig.container}: not restored (copy failed; see server logs)`);
+      }
+    }
+  }
+  return warnings;
+}
+
+function tenantComposeArgs(appId: string, tenantId: string, ...rest: string[]): string[] {
+  const dir = tenantDir(appId, tenantId);
+  return ['compose', '--project-directory', dir, '-f', path.join(dir, 'docker-compose.yml'), ...rest];
+}
+
+async function tenantIsRunning(appId: string, tenantId: string): Promise<boolean> {
+  const { stdout } = await dockerExec(tenantComposeArgs(appId, tenantId, 'ps', '--status', 'running', '-q'), { timeout: 60_000 });
+  return String(stdout).trim().length > 0;
+}
+
+/** Start the tenant's containers again; `up --no-recreate` also reruns its init containers on the restored data. */
+async function startTenantAgain(appId: string, tenantId: string): Promise<string | null> {
+  try {
+    await dockerExec(tenantComposeArgs(appId, tenantId, 'up', '-d', '--no-recreate'), { timeout: COMPOSE_LONG_TIMEOUT_MS });
+    return null;
+  } catch (error: any) {
+    console.error(`[Backup] ${appId}/${tenantId} failed to start after the restore:`, error?.message || error);
+    return 'see server logs';
+  }
+}
+
+/**
+ * Caller must hold the tenant lock (withTenantLock) for appId/targetTenantId.
+ *
+ * In place (the default): checks the snapshot is the app's and the tenant's,
+ * downloads it, takes a pre-restore snapshot of the tenant (aborting if that
+ * fails), stops the tenant, resets and imports the database, copies the paths
+ * and starts the tenant again if it was running. If the import or a copy
+ * fails, the pre-restore snapshot is put back the same way.
+ *
+ * createNew (create-from-backup): imports into the tenant's fresh database and
+ * copies into its stopped containers; the caller starts it.
+ */
 export async function restoreBackupLocked(
   appId: string,
   snapshotId: string,
@@ -652,141 +932,49 @@ export async function restoreBackupLocked(
   if (!info.configured || !info.initialized) {
     return { success: false, error: 'Backup not configured or initialized' };
   }
+  if (options.createNew && !options.newDomain) {
+    return { success: false, error: 'Domain required for new tenant' };
+  }
 
-  const db = getDatabaseAdapter(app);
-
-  let restoreDir: string | undefined;
-
+  let snapshot: SnapshotRef;
   try {
-  const backupServices = app.services
-    .filter(s => s.backup?.enabled && s.backup?.paths?.length)
-    .map(s => ({
-      name: s.name,
-      paths: s.backup!.paths!,
-    }));
-
-    restoreDir = await makeStagingDir('restore');
-
-    // Restore from restic (execFile avoids shell injection on snapshotId)
-    await execFileAsync(
-      'restic', ['restore', snapshotId, '--target', restoreDir],
-      { env: getResticEnv(app), timeout: RESTIC_LONG_TIMEOUT_MS }
-    );
-
-    // Find the backup data
-    const { stdout: findOutput } = await execFileAsync('find', [restoreDir, '-name', 'metadata.json', '-type', 'f']);
-    const metadataPath = findOutput.trim();
-    if (!metadataPath) {
-      return { success: false, error: 'Invalid backup: metadata.json not found' };
-    }
-
-    // Verify metadata path is within the restore directory (prevents symlink attacks)
-    await assertWithinDir(metadataPath, restoreDir);
-
-    const backupDataDir = path.dirname(metadataPath);
-    const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf-8'));
-
-    // Refuse archives that don't belong to this app — prevents restoring a
-    // snapshot from a sibling/attacker-controlled app into the target tree.
-    if (metadata.appId && metadata.appId !== appId) {
-      return { success: false, error: `Backup appId mismatch: archive is for '${metadata.appId}', not '${appId}'` };
-    }
-
-    // Find the tenant data in the backup
-    let sourceTenantId = targetTenantId;
-    if (metadata.tenants && metadata.tenants.length > 0) {
-      if (metadata.tenants.length === 1) {
-        sourceTenantId = metadata.tenants[0];
-      } else if (!metadata.tenants.includes(targetTenantId)) {
-        return { success: false, error: `Tenant ${targetTenantId} not found in backup. Available: ${metadata.tenants.join(', ')}` };
-      }
-    }
-
-    const tenantBackupDir = path.join(backupDataDir, sourceTenantId);
-    try {
-      await fs.access(tenantBackupDir);
-      // Verify the resolved path is within the restore directory (prevents symlink attacks)
-      await assertWithinDir(tenantBackupDir, restoreDir);
-    } catch (e: any) {
-      if (e.message?.includes('resolves outside')) {
-        return { success: false, error: 'Backup contains unsafe symlinks' };
-      }
-      return { success: false, error: `Tenant data not found in backup for ${sourceTenantId}` };
-    }
-
-    if (options.createNew && !options.newDomain) {
-      return { success: false, error: 'Domain required for new tenant' };
-    }
-
-    // Restore database using adapter
-    const dbName = await resolveTenantDbId(appId, targetTenantId, app);
-    const sqlFile = path.join(tenantBackupDir, 'database.sql');
-    try {
-      await fs.access(sqlFile);
-      await db.initialize();
-      await db.restoreDatabase(dbName, sqlFile);
-    } catch (error: any) {
-      console.error('[Backup] Failed to restore database:', error.message);
-      return { success: false, error: 'Failed to restore database. Check server logs.' };
-    }
-
-    const warnings: string[] = [];
-    if (metadata.incomplete) {
-      // Only fixed text plus well-formed container paths: metadata comes from the archive.
-      const missing = Array.isArray(metadata.missingPaths)
-        ? metadata.missingPaths
-            .map((m: any) => m?.path)
-            .filter((m: unknown): m is string => typeof m === 'string' && isValidContainerPath(m))
-        : [];
-      warnings.push(`The backup was incomplete when taken${missing.length ? `; missing paths: ${missing.join(', ')}` : ''}`);
-    }
-
-    // Restore paths to service containers
-    for (const service of backupServices) {
-      const containerName = `${appId}-${targetTenantId}-${service.name}`;
-
-      for (const pathConfig of service.paths) {
-        try {
-          if (!isValidContainerPath(pathConfig.container)) {
-            console.error(`Skipping unsafe container path: ${pathConfig.container}`);
-            warnings.push(`${service.name}: a configured path was skipped (unsafe path)`);
-            continue;
-          }
-          if (!isValidContainerPath(pathConfig.local)) {
-            console.error(`Skipping unsafe local path: ${pathConfig.local}`);
-            warnings.push(`${service.name}: a configured path was skipped (unsafe path)`);
-            continue;
-          }
-          const localBackupDir = path.join(tenantBackupDir, pathConfig.local);
-          try {
-            await fs.access(localBackupDir);
-          } catch (accessErr: any) {
-            if (accessErr?.code === 'ENOENT') continue; // path was empty/absent when the backup was taken
-            console.error(`[Backup] Cannot read ${localBackupDir} from the backup: ${accessErr?.message || accessErr}`);
-            warnings.push(`${pathConfig.container}: not restored (backup data unreadable; see server logs)`);
-            continue;
-          }
-          // A stopped container cannot exec; docker cp into its volume mount points works.
-          if (!options.containersStopped) {
-            await execFileAsync('docker', ['exec', containerName, 'mkdir', '-p', pathConfig.container]);
-          }
-          await execFileAsync('docker', ['cp', `${localBackupDir}/.`, `${containerName}:${pathConfig.container}/`], { timeout: RESTIC_LONG_TIMEOUT_MS });
-        } catch (error: any) {
-          console.error(`[Backup] Failed to restore ${pathConfig.container} into ${containerName}: ${error?.message || error}`);
-          warnings.push(`${pathConfig.container}: not restored (copy failed; see server logs)`);
-        }
-      }
-    }
-
-    return warnings.length > 0 ? { success: true, warnings } : { success: true };
+    snapshot = await resolveRestoreSnapshot(app, snapshotId, targetTenantId, options);
   } catch (error: any) {
+    if (error instanceof HttpError) throw error;
+    return { success: false, ...formatError(error) };
+  }
+
+  const dirs: string[] = [];
+  try {
+    const target: RestoreTarget = {
+      appId,
+      tenantId: targetTenantId,
+      db: getDatabaseAdapter(app),
+      dbName: await resolveTenantDbId(appId, targetTenantId, app),
+      backupServices: app.services
+        .filter(s => s.backup?.enabled && s.backup?.paths?.length)
+        .map(s => ({ name: s.name, paths: s.backup!.paths! })),
+    };
+    const staged = await stageSnapshot(app, snapshot.id, targetTenantId, dirs);
+
+    if (options.createNew) {
+      const warnings = await applySnapshot(target, staged, {
+        resetDatabase: false,
+        containersStopped: !!options.containersStopped,
+        copyFailureIsFatal: false,
+      });
+      return warnings.length > 0 ? { success: true, warnings } : { success: true };
+    }
+    return await restoreInPlace(app, target, staged, dirs);
+  } catch (error: any) {
+    if (error instanceof RestoreStepError) return { success: false, error: error.message };
     console.error('Restore failed:', error);
     const formatted = formatError(error);
     return { success: false, ...formatted };
   } finally {
-    if (restoreDir) {
+    for (const dir of dirs) {
       try {
-        await fs.rm(restoreDir, { recursive: true, force: true });
+        await fs.rm(dir, { recursive: true, force: true });
       } catch {
         // Ignore cleanup errors
       }
@@ -794,18 +982,84 @@ export async function restoreBackupLocked(
   }
 }
 
-/**
- * Whether `snapshotId` names exactly one snapshot tagged for this app. Apps may
- * share a repository, and a `--tag` filter cannot scope an id: restic ignores
- * filters when explicit snapshot ids are given.
- */
-async function snapshotBelongsToApp(app: AppDefinition, snapshotId: string): Promise<boolean> {
-  const { stdout } = await execFileAsync('restic', ['snapshots', '--json', snapshotId], {
-    env: getResticEnv(app),
-    timeout: RESTIC_SNAPSHOTS_TIMEOUT_MS,
-  });
-  const found = JSON.parse(stdout || '[]') as Array<{ tags?: string[] }>;
-  return found.length === 1 && (found[0].tags ?? []).includes(`app:${app.id}`);
+async function restoreInPlace(app: AppDefinition, target: RestoreTarget, staged: StagedSnapshot, dirs: string[]): Promise<RestoreBackupResult> {
+  const { appId, tenantId } = target;
+
+  // 1. Safety net: a snapshot of the data as it is now. No safety net, no restore.
+  const safety = await createBackupLocked(appId, tenantId, { extraTags: [PRE_RESTORE_TAG] });
+  if (!safety.success || !safety.snapshotId) {
+    return {
+      success: false,
+      error: `Restore aborted: the safety snapshot of the current data failed (${safety.error || 'no snapshot id'}). Nothing was changed.`,
+      isLocked: safety.isLocked,
+      lockInfo: safety.lockInfo,
+    };
+  }
+  const safetySnapshotId = safety.snapshotId;
+  const safetyShort = safetySnapshotId.slice(0, 8);
+  if (safety.incomplete) {
+    return {
+      success: false,
+      safetySnapshotId,
+      error: `Restore aborted: the safety snapshot could not save ${(safety.missingPaths ?? []).join(', ')} (are the tenant's containers running?). Nothing was changed.`,
+    };
+  }
+
+  // 2. Nothing may write while the data is replaced: stop (not down) the tenant.
+  let wasRunning = false;
+  try {
+    wasRunning = await tenantIsRunning(appId, tenantId);
+    if (wasRunning) await dockerExec(tenantComposeArgs(appId, tenantId, 'stop'), { timeout: 180_000 });
+  } catch (error: any) {
+    console.error(`[Backup] Could not stop ${appId}/${tenantId} for the restore:`, error?.message || error);
+    if (wasRunning) await startTenantAgain(appId, tenantId);
+    return { success: false, safetySnapshotId, error: 'Restore aborted: the tenant could not be stopped (see server logs). Its data was not changed.' };
+  }
+
+  // 3. Replace the data; 4. on failure, put the pre-restore snapshot back.
+  let warnings: string[];
+  try {
+    warnings = await applySnapshot(target, staged, { resetDatabase: true, containersStopped: true, copyFailureIsFatal: true });
+  } catch (error: any) {
+    const reason = error instanceof RestoreStepError ? error.message : 'unexpected error (see server logs)';
+    if (!(error instanceof RestoreStepError)) console.error(`[Backup] Restore of ${appId}/${tenantId} failed:`, error);
+    try {
+      const safetyStaged = await stageSnapshot(app, safetySnapshotId, tenantId, dirs);
+      await applySnapshot(target, safetyStaged, { resetDatabase: true, containersStopped: true, copyFailureIsFatal: true });
+    } catch (rollbackError: any) {
+      const rollbackReason = rollbackError instanceof RestoreStepError ? rollbackError.message : 'unexpected error (see server logs)';
+      console.error(`[Backup] Rollback of ${appId}/${tenantId} to ${safetySnapshotId} failed:`, rollbackError);
+      return {
+        success: false,
+        rolledBack: false,
+        safetySnapshotId,
+        error: `Restore failed: ${reason}. Rolling back to the pre-restore snapshot ${safetyShort} also failed: ${rollbackReason}. `
+          + `The tenant was left stopped and its data may be incomplete; restore snapshot ${safetyShort} to recover it.`,
+      };
+    }
+    const startError = wasRunning ? await startTenantAgain(appId, tenantId) : null;
+    return {
+      success: false,
+      rolledBack: true,
+      safetySnapshotId,
+      error: `Restore failed: ${reason}. The tenant was rolled back to the pre-restore snapshot ${safetyShort}.`
+        + (startError ? ` It then failed to start (${startError}).` : ''),
+    };
+  }
+
+  // 5. Start again what was running.
+  if (wasRunning) {
+    const startError = await startTenantAgain(appId, tenantId);
+    if (startError) {
+      return {
+        success: false,
+        safetySnapshotId,
+        ...(warnings.length > 0 ? { warnings } : {}),
+        error: `The backup was restored, but the tenant failed to start (${startError}). The data from before the restore is in snapshot ${safetyShort}.`,
+      };
+    }
+  }
+  return { success: true, safetySnapshotId, ...(warnings.length > 0 ? { warnings } : {}) };
 }
 
 export async function deleteSnapshot(appId: string, snapshotId: string): Promise<{ success: boolean; error?: string; isLocked?: boolean; lockInfo?: LockInfo }> {

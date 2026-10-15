@@ -35,6 +35,7 @@ vi.mock('../adapters/database', () => ({
     initialize: vi.fn().mockResolvedValue(undefined),
     dumpDatabase: mockDump,
     restoreDatabase: mockRestore,
+    resetDatabase: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 vi.mock('../services/app', () => ({
@@ -67,6 +68,10 @@ vi.mock('child_process', () => ({
     const done = typeof opts === 'function' ? opts : cb!;
     const fail = (msg: string, stderr = '') => done(Object.assign(new Error(msg), { stderr }));
     (async () => {
+      if (cmd === 'restic' && args[0] === 'snapshots' && args.length === 3) {
+        // restore checks the snapshot belongs to the app and the tenant
+        return done(null, { stdout: JSON.stringify([{ id: args[2], short_id: args[2].slice(0, 8), tags: ['app:gadgets', 'tenant:t1'] }]), stderr: '' });
+      }
       if (cmd === 'restic' && args[0] === 'restore') {
         const target = args[args.indexOf('--target') + 1];
         const dir = path.join(target, 'snap');
@@ -167,9 +172,11 @@ describe('backup/restore integrity', () => {
     expect(backedUpMetadata.incomplete).toBeUndefined();
   });
 
+  // In place a failed copy rolls the tenant back (restoreSafety.test.ts); a
+  // new tenant from a backup keeps it as a warning.
   it('returns a warning when a path fails to restore but the DB restored', async () => {
     behaviour.cpError = 'container not running /tmp/acme-backups/restore-1 secret-stderr';
-    const r = await restoreBackup('gadgets', 'abcd1234', 't1');
+    const r = await restoreBackupLocked('gadgets', 'abcd1234', 't1', { createNew: true, newDomain: 't1.example.com', containersStopped: true });
     expect(r.success).toBe(true);
     expect(r.warnings?.length).toBe(1);
     expect(r.warnings).toEqual(['/data: not restored (copy failed; see server logs)']);
@@ -207,7 +214,7 @@ describe('backup/restore integrity', () => {
     mockReadTenantAppDef.mockImplementation(async () => snapshot);
     await restoreBackup('gadgets', 'abcd1234', 't1');
     expect(mockReadTenantAppDef).toHaveBeenCalledWith('gadgets', 't1');
-    const cp = dockerCmds.find(a => a[0] === 'cp')!;
+    const cp = dockerCmds.find(a => a[0] === 'cp' && a[2].includes(':'))!;
     expect(cp[2]).toBe('gadgets-t1-api:/uploads/');
     expect(dockerCmds.some(a => a.join(' ').includes('gadgets-t1-web'))).toBe(false);
   });
@@ -215,7 +222,7 @@ describe('backup/restore integrity', () => {
   it('falls back to the global definition when no tenant snapshot exists', async () => {
     mockReadTenantAppDef.mockImplementation(async () => null);
     await restoreBackup('gadgets', 'abcd1234', 't1');
-    expect(dockerCmds.find(a => a[0] === 'cp')![2]).toBe('gadgets-t1-web:/data/');
+    expect(dockerCmds.find(a => a[0] === 'cp' && a[2].includes(':'))![2]).toBe('gadgets-t1-web:/data/');
   });
 
   it('serialises on the tenant lock for the whole restore', async () => {
@@ -231,13 +238,13 @@ describe('backup/restore integrity', () => {
   });
 
   it('copies into stopped containers without exec mkdir when containersStopped is set', async () => {
-    await restoreBackupLocked('gadgets', 'abcd1234', 't1', { containersStopped: true });
+    await restoreBackupLocked('gadgets', 'abcd1234', 't1', { createNew: true, newDomain: 't1.example.com', containersStopped: true });
     expect(dockerCmds.some(a => a[0] === 'exec')).toBe(false);
     expect(dockerCmds.some(a => a[0] === 'cp')).toBe(true);
   });
 
   it('still creates the target directory in running containers', async () => {
-    await restoreBackup('gadgets', 'abcd1234', 't1');
+    await restoreBackupLocked('gadgets', 'abcd1234', 't1', { createNew: true, newDomain: 't1.example.com' });
     expect(dockerCmds.some(a => a[0] === 'exec' && a.includes('mkdir'))).toBe(true);
   });
 
