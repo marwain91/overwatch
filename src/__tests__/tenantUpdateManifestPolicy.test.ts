@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import type { HttpError } from '../utils/httpErrors';
+import { updateDbMethods } from './updateDbMock';
 
 /** execFile mock with Node's `(cmd, args, opts, cb)` signature, as runDocker calls it. */
 function withPromisify(
@@ -26,6 +27,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.resetModules();
   vi.doUnmock('child_process');
+  vi.doUnmock('../adapters/database');
   vi.doUnmock('../config');
   vi.doUnmock('../config/loader');
   vi.doUnmock('../services/app');
@@ -118,6 +120,7 @@ async function runUpdate(imageManifest: any, appStatic: any = shopStatic()) {
     resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/shop/backend:1.2.0'),
   }));
   vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
+  vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => updateDbMethods() }));
   vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
     readTenantAppDef: vi.fn(async () => tenantSnapshot),
     writeTenantAppDef,

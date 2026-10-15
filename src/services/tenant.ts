@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as os from 'os';
 import { loadConfig, getDataDir } from '../config';
 import { resolveCertResolver } from '../config/loader';
 import { readTenantTraefik, assertTenantDomainAllowed } from './tenantTraefik';
@@ -21,7 +22,7 @@ import { assertWithinDir, writeSecretFile } from '../utils/security';
 import { tenantDir, tenantsDir, assertTenantDir, listTenantDirs, parseTenantEnv } from './tenantStore';
 import { tenantIdentity, findIdentityConflict, assertTenantDbName, isTenantOwnedVolume, type TenantIdentity, type TenantNames } from './tenantIdentity';
 import { SLUG_RE } from '../utils/validators';
-import { resolveTenantDbName } from './tenantDb';
+import { resolveTenantDbId, resolveTenantDbName } from './tenantDb';
 import { runDocker } from '../utils/runDocker';
 import { writeFileAtomic } from '../utils/atomicJson';
 import { withFileLock, withTenantLock } from './fileLock';
@@ -730,6 +731,47 @@ async function updateTenantLocked(
   // that used to be part of this compose stack but aren't in the regenerated
   // file (e.g. a service removed via an upstream manifest update).
   emit('restart', 'started');
+
+  // The new image's migrations run on `up`. A failed restart puts the previous
+  // image back, which must not run against a schema the migrations already
+  // changed, so the database is dumped first and restored on that rollback.
+  // Without the dump nothing has run yet, so the update stops here.
+  const db = getDatabaseAdapter(app);
+  const dumpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-update-'));
+  const dumpPath = path.join(dumpDir, 'database.sql');
+  let dbId: string;
+  try {
+    dbId = await resolveTenantDbId(appId, tenantId, app);
+    await db.initialize();
+    await db.dumpDatabase(dbId, dumpPath);
+  } catch (error: any) {
+    await fs.rm(dumpDir, { recursive: true, force: true });
+    await restoreTenantUpdateStateBestEffort('pre-update database dump failure');
+    console.error(`[tenant:update] Pre-update database dump of ${appId}/${tenantId} failed: ${error?.message || error}`);
+    const detail = 'Could not back up the database before running the new version\'s migrations (see server logs). Nothing was changed; the tenant still runs the previous version.';
+    emit('restart', 'failed', detail);
+    emit('failed', 'failed', detail);
+    throw new HttpError(500, detail, { expose: true });
+  }
+
+  /** Put the pre-update dump back. Returns a note for the error message. */
+  const restoreDatabaseFromDump = async (): Promise<string> => {
+    try {
+      // Stop every container of the project (orphans included) so nothing of
+      // the new version writes while the database is reset.
+      await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'down', '--remove-orphans'], 120_000);
+      await db.resetDatabase(dbId);
+      await db.restoreDatabase(dbId, dumpPath, { password: originalEnv.DB_PASSWORD || undefined });
+      return '\n\nThe database was restored to its state before the update.';
+    } catch (restoreErr: any) {
+      // Keep the dump for a manual restore: the tenant directory survives until the tenant is deleted.
+      const kept = `pre-update-${new Date().toISOString().replace(/[:.]/g, '-')}.sql`;
+      await fs.copyFile(dumpPath, path.join(tenantPath, kept)).then(() => fs.chmod(path.join(tenantPath, kept), 0o600)).catch(() => undefined);
+      console.error(`[tenant:update] Failed to restore the database of ${appId}/${tenantId} after a failed update: ${restoreErr?.message || restoreErr}`);
+      return `\n\nThe database could NOT be restored to its state before the update (see server logs); the pre-update dump is kept in the tenant directory as ${kept}.`;
+    }
+  };
+
   try {
     await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate', '--remove-orphans'], COMPOSE_LONG_TIMEOUT_MS);
     emit('restart', 'completed');
@@ -743,14 +785,17 @@ async function updateTenantLocked(
     // tell an operator what broke.
     const composeError = extractComposeErrorMessage(error);
     const initFailures = await describeFailedInitContainers(app, tenantId).catch(() => '');
-    const detail = initFailures ? `${composeError}\n\n${initFailures}` : composeError;
     await restoreTenantUpdateStateBestEffort('restart failure');
+    const dbNote = await restoreDatabaseFromDump();
+    const detail = (initFailures ? `${composeError}\n\n${initFailures}` : composeError) + dbNote;
     await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'up', '-d', '--force-recreate'], COMPOSE_LONG_TIMEOUT_MS).catch((rollbackErr: any) => {
       console.error(`[tenant:update] Failed to restart restored compose for ${appId}/${tenantId}: ${rollbackErr?.message || rollbackErr}`);
     });
     emit('restart', 'failed', detail);
     emit('failed', 'failed', detail);
     throw new HttpError(500, detail, { expose: true });
+  } finally {
+    await fs.rm(dumpDir, { recursive: true, force: true });
   }
 }
 

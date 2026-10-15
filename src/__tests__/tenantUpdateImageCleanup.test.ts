@@ -3,6 +3,7 @@ import { tenantAppDefMock } from './tenantAppDefMock';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { updateDbMethods } from './updateDbMock';
 
 /** execFile mock with Node's `(cmd, args, opts, cb)` signature, as runDocker calls it. */
 function withPromisify(
@@ -125,7 +126,8 @@ describe('tenant update image cleanup', () => {
       readTenantAppDef: vi.fn(async () => baseApp('customer-portal')),
       writeTenantAppDef: vi.fn(async () => undefined),
     }));
-    vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
+    vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => updateDbMethods() }));
+  vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
 
     // `config --images` is called twice: once before mutations (returns old
     // image), once after restart (returns new image). Other compose commands
@@ -220,7 +222,8 @@ describe('tenant update image cleanup', () => {
       readTenantAppDef: vi.fn(async () => baseApp('customer-portal')),
       writeTenantAppDef: vi.fn(async () => undefined),
     }));
-    vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
+    vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => updateDbMethods() }));
+  vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
 
     const rmiCalls: string[] = [];
     vi.doMock('child_process', () => ({

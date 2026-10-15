@@ -3,6 +3,7 @@ import { tenantAppDefMock } from './tenantAppDefMock';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { updateDbMethods } from './updateDbMock';
 
 let tmpRoot: string;
 beforeEach(async () => { tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'overwatch-app-rollback-')); });
@@ -11,7 +12,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.resetModules();
   for (const m of ['child_process', '../config', '../config/loader', '../services/app', '../services/envVars', '../services/docker',
-    '../services/manifestExtractor', '../services/tenantAppDef', '../services/tenantTraefik', '../services/fileLock']) vi.doUnmock(m);
+    '../services/manifestExtractor', '../services/tenantAppDef', '../services/tenantTraefik', '../services/fileLock', '../adapters/database']) vi.doUnmock(m);
 });
 
 const TS = { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' };
@@ -73,6 +74,7 @@ async function setup() {
     readTenantAppDef: vi.fn(async () => ({ ...shop(), ...TS })),
     writeTenantAppDef: vi.fn(async () => undefined),
   }));
+  vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => updateDbMethods() }));
   vi.doMock('../services/docker', () => ({ ensureExternalVolumes: vi.fn(async () => undefined) }));
   const execFile = vi.fn((_cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout: string, stderr: string) => void) => {
     const dir = args[args.indexOf('--project-directory') + 1] ?? '';

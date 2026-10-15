@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as yaml from 'js-yaml';
+import { updateDbMethods } from './updateDbMock';
 
 let tmpRoot: string;
 
@@ -171,6 +172,7 @@ describe('tenant lifecycle rollback', () => {
       resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/customer-portal/web-api:new'),
     }));
     vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
+    vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => updateDbMethods() }));
     vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
       readTenantAppDef: vi.fn(async () => baseApp('customer-portal')),
       writeTenantAppDef: vi.fn(async (_appId: string, _tenantId: string, appDef: any) => {
@@ -265,6 +267,7 @@ describe('tenant lifecycle rollback', () => {
       resolveManifestImageRef: vi.fn(() => 'ghcr.io/jerryminiapps/product/backend:1.2.26'),
     }));
     vi.doMock('../services/tenantTraefik', () => ({ readTenantTraefik: vi.fn(async () => undefined) }));
+    vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => updateDbMethods() }));
     vi.doMock('../services/tenantAppDef', () => tenantAppDefMock({
       readTenantAppDef: vi.fn(async () => staleSnapshot),
       writeTenantAppDef,

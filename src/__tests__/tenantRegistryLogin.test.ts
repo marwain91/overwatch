@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { tenantAppDefMock } from './tenantAppDefMock';
+import { updateDbMethods } from './updateDbMock';
 
 // Tenant create and update log in to the app's registry right before compose
 // pulls, so an app added after boot or a rotated token works without a restart.
@@ -14,6 +15,7 @@ const ensureRegistryLogin = vi.fn();
 // Holds the registry host for the app's credential until the pull settles.
 const withRegistryLogin = vi.fn();
 const db = {
+  ...updateDbMethods(),
   initialize: vi.fn(async () => undefined),
   databaseExists: vi.fn(async () => false),
   createDatabase: vi.fn(async () => ({ created: true, userCreated: true })),

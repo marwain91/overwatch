@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import * as yaml from 'js-yaml';
+import { updateDbMethods } from './updateDbMock';
 
 /** How a tenant update reads and edits the tenant .env. */
 
@@ -56,13 +57,14 @@ beforeEach(async () => {
     readManifestFromAppImage: vi.fn(async () => null),
     resolveManifestImageRef: vi.fn(() => 'ghcr.io/acme/shop/web:v2'),
   }));
+  vi.doMock('../adapters/database', () => ({ getDatabaseAdapter: () => updateDbMethods() }));
 });
 
 afterEach(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
   vi.resetModules();
   for (const m of ['../utils/runDocker', '../services/fileLock', '../config', '../config/loader', '../services/app',
-    '../services/tenantTraefik', '../services/envVars', '../services/manifestExtractor']) vi.doUnmock(m);
+    '../services/tenantTraefik', '../services/envVars', '../services/manifestExtractor', '../adapters/database']) vi.doUnmock(m);
 });
 
 describe('updateTenant and the tenant .env', () => {

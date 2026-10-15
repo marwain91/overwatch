@@ -3,6 +3,7 @@ import { tenantAppDefMock } from './tenantAppDefMock';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { updateDbMethods } from './updateDbMock';
 
 const ONE_HOUR = 3_600_000;
 
@@ -80,6 +81,7 @@ beforeEach(async () => {
   }));
   vi.doMock('../adapters/database', () => ({
     getDatabaseAdapter: () => ({
+      ...updateDbMethods(),
       initialize: vi.fn(async () => undefined),
       getDatabaseName: (t: string) => `test_${t}`,
       databaseExists: vi.fn(async () => false),
