@@ -5,6 +5,7 @@ import { docker, extractContainerInfo, getManagedContainerNamePattern } from './
 import { eventBus, type HealthState as HealthStateName } from './eventBus';
 import { listApps } from './app';
 import { AppService } from '../models/app';
+import { createLimiter } from '../utils/limiter';
 
 interface HealthState {
   containerName: string;
@@ -21,26 +22,6 @@ let scheduledTask: ScheduledTask | null = null;
 let checking = false;
 const STALE_CONTAINER_MS = 10 * 60 * 1000;
 const MAX_CONCURRENT_CHECKS = 10;
-
-/** Run at most `max` tasks at once; later tasks wait for a free slot. */
-function createLimiter(max: number) {
-  let active = 0;
-  const waiting: Array<() => void> = [];
-  return async function run<T>(task: () => Promise<T>): Promise<T> {
-    if (active >= max) {
-      // The finishing task hands its slot over, so `active` never dips below the cap.
-      await new Promise<void>(resolve => waiting.push(resolve));
-    } else {
-      active++;
-    }
-    try {
-      return await task();
-    } finally {
-      const next = waiting.shift();
-      if (next) next(); else active--;
-    }
-  };
-}
 
 async function checkHTTP(host: string, port: number, path: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -137,6 +118,7 @@ async function runHealthChecks(): Promise<void> {
       const consecutiveFailures = isHealthy ? 0 : (currentState?.consecutiveFailures || 0) + 1;
       const newState: HealthState['state'] = isHealthy ? 'healthy' : 'unhealthy';
 
+      const lastCheck = new Date().toISOString();
       healthStates.set(name, {
         containerName: name,
         appId,
@@ -144,22 +126,14 @@ async function runHealthChecks(): Promise<void> {
         service: serviceName,
         state: newState,
         consecutiveFailures,
-        lastCheck: new Date().toISOString(),
+        lastCheck,
       });
 
-      // Emit state transition
-      if (previousState !== newState) {
-        eventBus.emit('health:change', {
-          containerName: name,
-          appId,
-          tenantId,
-          service: serviceName,
-          previousState,
-          newState,
-          consecutiveFailures,
-          lastCheck: new Date().toISOString(),
-        });
-      }
+      const event = { containerName: name, appId, tenantId, service: serviceName, previousState, newState, consecutiveFailures, lastCheck };
+      // Transitions only: relayed to the UI.
+      if (previousState !== newState) eventBus.emit('health:change', event);
+      // Every probe: the alert engine needs the count as it reaches the rule's threshold.
+      eventBus.emit('health:probe', event);
     });
 
     // Containers no longer checked go back to unknown (transition emitted);

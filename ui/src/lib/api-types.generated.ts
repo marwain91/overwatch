@@ -343,6 +343,18 @@ export interface NotificationChannel {
   config: WebhookConfig;
 }
 
+export interface AlertHistoryEntry {
+  id: string;
+  ruleId: string;
+  ruleName: string;
+  severity: string;
+  message: string;
+  tenantId?: string;
+  containerName?: string;
+  firedAt: string;
+  resolvedAt?: string;
+}
+
 export interface EnvVar {
   key: string;
   value: string;
@@ -350,4 +362,81 @@ export interface EnvVar {
   description?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ContainerInfo {
+  id: string;
+  name: string;
+  status: string;
+  state: string;
+  image: string;
+  created: string;
+  appId?: string;
+  tenantId?: string;
+  service?: string;
+}
+
+export interface TenantStatus {
+  appId: string;
+  tenantId: string;
+  domain: string;
+  version: string;
+  containers: ContainerInfo[];
+  runningContainers: number;
+  totalContainers: number;
+  healthy: boolean;
+}
+
+export interface ContainerMetrics {
+  containerId: string;
+  name: string;
+  appId: string;
+  tenantId: string;
+  service: string;
+  cpuPercent: number;
+  memUsage: number;
+  memLimit: number;
+  memPercent: number;
+  netRx: number;
+  netTx: number;
+  timestamp: string;
+}
+
+export interface TenantMetrics {
+  appId: string;
+  tenantId: string;
+  totalCpu: number;
+  totalMem: number;
+  totalMemLimit: number;
+  containerCount: number;
+}
+
+export type HealthStateName = 'healthy' | 'unhealthy' | 'unknown';
+
+export interface MetricsSnapshot {
+  containers: ContainerMetrics[];
+  tenants: TenantMetrics[];
+}
+
+export interface HealthState {
+  containerName: string;
+  appId: string;
+  tenantId: string;
+  service: string;
+  state: HealthStateName;
+  consecutiveFailures: number;
+  lastCheck: string | null;
+}
+
+export interface AuditEntry {
+  timestamp: string;
+  user: string;
+  action: string;
+  method: string;
+  path: string;
+  query?: Record<string, unknown>;
+  body?: Record<string, unknown>;
+  force?: boolean;
+  status: number;
+  ip: string;
 }

@@ -49,3 +49,66 @@ describe('JsonlLog prune on a bind-mounted file', () => {
     expect(await fs.readFile(file, 'utf-8')).toBe('a\nb\nc\n');
   });
 });
+
+describe('JsonlLog prune byte cap', () => {
+  it('keeps only the newest lines that fit in maxBytes, and the entry cap still applies', async () => {
+    const file = path.join(dir, 'audit.log');
+    await fs.writeFile(file, Array.from({ length: 10 }, (_, i) => `line-${i}`).join('\n') + '\n', { mode: 0o600 });
+    const { JsonlLog } = await import('../utils/jsonlLog');
+    const log = new JsonlLog(() => file, 'test');
+    expect(await log.prune(100, 22)).toBe(7); // 7 bytes per line: three fit
+    expect(await fs.readFile(file, 'utf-8')).toBe('line-7\nline-8\nline-9\n');
+    expect(await log.prune(2, 1000)).toBe(1);
+    expect(await fs.readFile(file, 'utf-8')).toBe('line-8\nline-9\n');
+    expect(await log.prune(100, 1000)).toBe(0);
+    expect(await fs.readFile(file, 'utf-8')).toBe('line-8\nline-9\n');
+  });
+
+  it('treats an entry cap of 0 as no entry cap, as before, while the byte cap still applies', async () => {
+    const file = path.join(dir, 'audit.log');
+    await fs.writeFile(file, 'a\nb\nc\n');
+    const { JsonlLog } = await import('../utils/jsonlLog');
+    const log = new JsonlLog(() => file, 'test');
+    expect(await log.prune(0)).toBe(0);
+    expect(await fs.readFile(file, 'utf-8')).toBe('a\nb\nc\n');
+    expect(await log.prune(0, 4)).toBe(1);
+    expect(await fs.readFile(file, 'utf-8')).toBe('b\nc\n');
+  });
+});
+
+describe('readLinesReverse', () => {
+  async function collect(content: string | Buffer, chunkSize: number) {
+    const file = path.join(dir, 'log');
+    await fs.writeFile(file, content);
+    const { readLinesReverse } = await import('../utils/jsonlLog');
+    const out: string[] = [];
+    for await (const line of readLinesReverse(file, chunkSize)) out.push(line);
+    return out;
+  }
+
+  it('yields lines newest first across chunk boundaries, including multi-byte text split by a chunk', async () => {
+    const lines = ['first', 'zweite \u00e9\u00e8 \u{1F600}', '', 'x'.repeat(50), 'last-no-newline'];
+    for (const chunk of [1, 2, 3, 7, 64, 4096]) {
+      expect(await collect(lines.join('\n'), chunk)).toEqual(['last-no-newline', 'x'.repeat(50), 'zweite \u00e9\u00e8 \u{1F600}', 'first']);
+    }
+    expect(await collect('a\nb\n\n', 2)).toEqual(['b', 'a']);
+    expect(await collect('', 8)).toEqual([]);
+  });
+
+  it('stops reading as soon as the caller stops iterating', async () => {
+    const file = path.join(dir, 'log');
+    await fs.writeFile(file, Array.from({ length: 1000 }, (_, i) => `l${i}`).join('\n') + '\n');
+    const { readLinesReverse } = await import('../utils/jsonlLog');
+    const seen: string[] = [];
+    for await (const line of readLinesReverse(file, 16)) {
+      seen.push(line);
+      if (seen.length === 3) break;
+    }
+    expect(seen).toEqual(['l999', 'l998', 'l997']);
+  });
+
+  it('throws ENOENT for a missing file', async () => {
+    const { readLinesReverse } = await import('../utils/jsonlLog');
+    await expect(readLinesReverse(path.join(dir, 'missing'))[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});

@@ -1,6 +1,31 @@
+import { useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
+import { useWindowActive } from './useWsPolling';
 import type { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess } from '../lib/types';
+
+/**
+ * Poll only while the tab is visible and focused: a Database page left open
+ * in an unfocused window otherwise queries the DB server around the clock.
+ * Catches up once when the window becomes active again.
+ */
+function useActivePolledQuery<T>(key: string, path: string, intervalMs: number) {
+  const windowActive = useWindowActive();
+  const query = useQuery({
+    queryKey: [key],
+    queryFn: () => api.get<T>(path),
+    refetchInterval: windowActive ? intervalMs : false,
+  });
+
+  const { refetch } = query;
+  const wasActive = useRef(windowActive);
+  useEffect(() => {
+    if (windowActive && !wasActive.current) void refetch();
+    wasActive.current = windowActive;
+  }, [windowActive, refetch]);
+
+  return query;
+}
 
 export function useDatabaseInfo() {
   return useQuery({
@@ -11,11 +36,7 @@ export function useDatabaseInfo() {
 }
 
 export function useDatabaseStats() {
-  return useQuery({
-    queryKey: ['database-stats'],
-    queryFn: () => api.get<DatabaseServerStats>('/database/stats'),
-    refetchInterval: 15_000,
-  });
+  return useActivePolledQuery<DatabaseServerStats>('database-stats', '/database/stats', 15_000);
 }
 
 export function useDatabaseList() {
@@ -27,11 +48,7 @@ export function useDatabaseList() {
 }
 
 export function useDatabaseProcesses() {
-  return useQuery({
-    queryKey: ['database-processes'],
-    queryFn: () => api.get<DatabaseProcess[]>('/database/processes'),
-    refetchInterval: 5_000,
-  });
+  return useActivePolledQuery<DatabaseProcess[]>('database-processes', '/database/processes', 10_000);
 }
 
 export function useKillProcess() {

@@ -65,10 +65,13 @@ export interface BroadcastEventMap {
 /**
  * Every bus event and its payload. `containers:existence` is internal (the
  * metrics collector tells the alert engine which containers exist; it names
- * every container on the host, so it is never broadcast).
+ * every container on the host, so it is never broadcast). `health:probe` is
+ * internal too: one per probe result, so the alert engine sees the failure
+ * count grow past the transition that `health:change` reports.
  */
 export interface EventMap extends BroadcastEventMap {
   'containers:existence': string[];
+  'health:probe': HealthChange;
 }
 
 export type BroadcastEvent = keyof BroadcastEventMap;

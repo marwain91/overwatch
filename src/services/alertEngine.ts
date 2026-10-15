@@ -7,7 +7,7 @@ import type { OverwatchConfig } from '../config';
 import { sendWebhook } from '../notifications/webhook';
 import { NotificationChannel, AlertHistoryEntry } from '../notifications/types';
 import { writeSecretFile } from '../utils/security';
-import { jsonlLogFor } from '../utils/jsonlLog';
+import { jsonlLogFor, readLinesReverse } from '../utils/jsonlLog';
 import { readJsonStrict } from '../utils/atomicJson';
 import { withFileLock } from './fileLock';
 
@@ -22,6 +22,13 @@ interface ActiveAlert {
 const cooldowns = new Map<string, number>(); // ruleId+scope -> lastFiredAt timestamp
 const activeAlerts = new Map<string, ActiveAlert>(); // ruleId+scope -> alert info
 const containerDownTimers = new Map<string, ReturnType<typeof setTimeout>>(); // ruleId:containerName -> pending down timeout
+// A requested stop is not an outage. `docker stop`, `compose stop|down` and
+// restarts emit kill, die, stop (then destroy on removal); `docker kill` and
+// `rm -f` emit kill, die. A crash emits die alone. `stop` and `destroy` cancel
+// the down timer whenever they arrive; a kill only marks the die that follows
+// shortly, so an earlier non-fatal signal (a HUP reload) cannot hide a crash.
+const KILL_TO_DIE_WINDOW_MS = 30_000;
+const stopRequestedAt = new Map<string, number>(); // containerName -> last kill/stop event
 // Keyed per rule so two rules of the same type (e.g. 80% warn / 95% critical)
 // don't reset each other's timer on every snapshot.
 const cpuThresholdTimers = new Map<string, number>(); // ruleId:containerName -> exceededSince timestamp
@@ -180,6 +187,7 @@ function evictStaleContainers(rules: AlertRule[], now: number): void {
       if (down) clearTimeout(down);
       containerDownTimers.delete(key);
     }
+    stopRequestedAt.delete(name);
     lastSeen.delete(name);
   }
 }
@@ -262,43 +270,70 @@ export function startAlertEngine(): void {
   });
 
   // Subscribe to container events for container_down alerts
+  const downRules = rules.filter(rule => rule.condition.type === 'container_down');
+  const cancelDownTimers = (name: string) => {
+    for (const rule of downRules) {
+      const key = `${rule.id}:${name}`;
+      const timer = containerDownTimers.get(key);
+      if (timer) clearTimeout(timer);
+      containerDownTimers.delete(key);
+    }
+  };
   subscribe('container:event', (data) => {
-    lastSeen.set(data.containerName, Date.now());
-    for (const rule of rules) {
-      if (rule.condition.type === 'container_down') {
-        const durationMs = parseDuration(rule.condition.duration || '5m');
-        const key = `${rule.id}:${data.containerName}`;
+    const name = data.containerName;
+    const now = Date.now();
+    lastSeen.set(name, now);
 
-        if (data.action === 'die' || data.action === 'stop') {
-          // die + stop both arrive for one outage: keep the first timer so the
-          // down duration counts from when the container actually went down.
+    switch (data.action) {
+      case 'kill':
+      case 'stop':
+        stopRequestedAt.set(name, now);
+        cancelDownTimers(name); // `stop` follows the `die` of a requested stop
+        break;
+      case 'destroy':
+        // Removed on purpose. A down alert that never fired is simply dropped,
+        // so eviction later has nothing to send a "Resolved" for.
+        stopRequestedAt.delete(name);
+        cancelDownTimers(name);
+        break;
+      case 'die': {
+        const requested = stopRequestedAt.get(name);
+        if (requested !== undefined && now - requested < KILL_TO_DIE_WINDOW_MS) break;
+        for (const rule of downRules) {
+          const key = `${rule.id}:${name}`;
+          // Keep the first timer so the down duration counts from when the
+          // container actually went down.
           if (containerDownTimers.has(key)) continue;
           const timer = setTimeout(() => {
             if (containerDownTimers.delete(key)) {
-              fireAlert(rule, data.containerName, `Container ${data.containerName} has been down for ${rule.condition.duration || '5m'}`, undefined, data.containerName);
+              fireAlert(rule, name, `Container ${name} has been down for ${rule.condition.duration || '5m'}`, undefined, name);
             }
-          }, durationMs);
+          }, parseDuration(rule.condition.duration || '5m'));
           timer.unref();
           containerDownTimers.set(key, timer);
-        } else if (data.action === 'start') {
-          const timer = containerDownTimers.get(key);
-          if (timer) clearTimeout(timer);
-          containerDownTimers.delete(key);
-          resolveAlert(rule, data.containerName);
         }
+        break;
       }
+      case 'start':
+        stopRequestedAt.delete(name);
+        cancelDownTimers(name);
+        for (const rule of downRules) resolveAlert(rule, name);
+        break;
     }
   });
 
-  // Subscribe to health changes for health_check_failed alerts
-  subscribe('health:change', (data) => {
-    // 'unknown' is the health checker evicting the container; don't resurrect its state.
-    if (data.newState !== 'unknown') lastSeen.set(data.containerName, Date.now());
+  // health_check_failed works off every probe result: `health:change` only
+  // reports the transition, whose failure count is always 1, so a threshold
+  // above 1 was never reached.
+  subscribe('health:probe', (data) => {
+    lastSeen.set(data.containerName, Date.now());
     for (const rule of rules) {
       if (rule.condition.type === 'health_check_failed') {
         const maxFailures = rule.condition.consecutive_failures || 3;
 
         if (data.newState === 'unhealthy' && data.consecutiveFailures >= maxFailures) {
+          // Once per outage: the probes that follow must not re-fire it each time the cooldown passes.
+          if (activeAlerts.has(`${rule.id}:${data.containerName}`)) continue;
           fireAlert(rule, data.containerName, `Health check failed ${data.consecutiveFailures} times for ${data.containerName}`, data.tenantId, data.containerName);
         } else if (data.newState === 'healthy') {
           resolveAlert(rule, data.containerName);
@@ -316,6 +351,7 @@ export function stopAlertEngine(): void {
   unsubscribe = [];
   for (const timer of containerDownTimers.values()) clearTimeout(timer);
   containerDownTimers.clear();
+  stopRequestedAt.clear();
   cooldowns.clear();
   activeAlerts.clear();
   cpuThresholdTimers.clear();
@@ -323,36 +359,48 @@ export function stopAlertEngine(): void {
   lastSeen.clear();
 }
 
+/** Newest first; reads backwards from the end of the file and stops at `limit`. */
 export async function getAlertHistory(limit: number = 50): Promise<AlertHistoryEntry[]> {
+  const entries: AlertHistoryEntry[] = [];
+  if (limit <= 0) return entries;
   try {
-    const content = await fs.readFile(getAlertHistoryFile(), 'utf-8');
-    const lines = content.trim().split('\n').filter(Boolean);
-    const entries = lines
-      .map(line => {
-        try { return JSON.parse(line); } catch { return null; }
-      })
-      .filter(Boolean) as AlertHistoryEntry[];
-    return entries.slice(-limit).reverse();
+    for await (const line of readLinesReverse(getAlertHistoryFile())) {
+      let entry: AlertHistoryEntry | null;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (!entry) continue;
+      entries.push(entry);
+      if (entries.length >= limit) break;
+    }
   } catch {
-    return [];
+    // No history yet, or unreadable: same as before, an empty list.
   }
+  return entries;
 }
 
 export async function getNotificationChannelsData(): Promise<NotificationChannel[]> {
   return loadNotificationChannels();
 }
 
-export async function saveNotificationChannels(channels: NotificationChannel[]): Promise<void> {
+/**
+ * Read-modify-write the channel list as one step under the lock, so two
+ * concurrent edits cannot both start from the same list and drop each other's
+ * change. `mutate` edits the array in place; if it throws, nothing is written.
+ */
+export async function updateNotificationChannels<T>(mutate: (channels: NotificationChannel[]) => T): Promise<T> {
   const dir = getDataDir();
   await fs.mkdir(dir, { recursive: true });
-  // The corruption check and the write are one step under the lock, so a
-  // concurrent writer (or the CLI) cannot slip a change in between.
-  await withFileLock('notification-channels', async () => {
+  return withFileLock('notification-channels', async () => {
     // Throws if the existing file is corrupt: overwriting would destroy the only
     // copy of the admin's channels (and their secrets) for an admin to repair.
-    await readChannelsStrict();
+    const channels = await readChannelsStrict();
+    const result = mutate(channels);
     await writeSecretFile(getNotificationChannelsFile(), JSON.stringify(channels, null, 2));
+    return result;
   });
+}
+
+export async function saveNotificationChannels(channels: NotificationChannel[]): Promise<void> {
+  await updateNotificationChannels((current) => { current.splice(0, current.length, ...channels); });
 }
 
 export async function sendTestNotification(channel: NotificationChannel): Promise<void> {

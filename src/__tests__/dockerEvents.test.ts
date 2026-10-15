@@ -68,6 +68,17 @@ async function setup(apps: Array<{ id: string }> = [{ id: 'finalio' }]) {
   return { mod, streams, seen, listApps, getEvents, off: () => eventBus.off('container:event', listener) };
 }
 
+describe('docker event subscription', () => {
+  it('subscribes to kill and destroy too, so deliberate stops and deletes can be told from crashes', async () => {
+    const { mod, getEvents, off } = await setup();
+    const filters = (getEvents.mock.calls[0][0] as any).filters;
+    expect(filters.type).toEqual(['container']);
+    expect([...filters.event].sort()).toEqual(['destroy', 'die', 'kill', 'start', 'stop']);
+    off();
+    mod.stopDockerEventListener();
+  });
+});
+
 describe('docker event stream framing', () => {
   it('reassembles an event split across chunks and parses several events in one chunk', async () => {
     const { mod, streams, seen, off } = await setup();

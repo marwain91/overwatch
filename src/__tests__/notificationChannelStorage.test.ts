@@ -68,4 +68,23 @@ describe('notification channel storage', () => {
     expect(events[3]).toBe(events[2].replace('start', 'end'));
     expect(events[2]).not.toBe(events[0]);
   });
+
+  it('updateNotificationChannels writes nothing when the mutator throws', async () => {
+    const dataDir = path.join(tmpRoot, 'data');
+    vi.doMock('../config', () => ({
+      getDataDir: () => dataDir,
+      loadConfig: () => ({ alert_rules: [] }),
+    }));
+    const { updateNotificationChannels, getNotificationChannelsData } = await import('../services/alertEngine');
+    const channel = {
+      id: '11111111-1111-4111-8111-111111111111', name: 'A', type: 'webhook', enabled: true,
+      config: { url: 'https://hooks.example.test/x' },
+    } as any;
+    expect(await updateNotificationChannels((channels) => { channels.push(channel); return 'added'; })).toBe('added');
+    await expect(updateNotificationChannels((channels) => {
+      channels.length = 0;
+      throw new Error('nope');
+    })).rejects.toThrow('nope');
+    expect(await getNotificationChannelsData()).toEqual([channel]);
+  });
 });

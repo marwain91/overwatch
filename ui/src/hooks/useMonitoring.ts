@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
 import { useWsAwareInterval } from './useWsPolling';
-import type { MetricsSnapshot, HealthState, AlertEntry, NotificationChannel } from '../lib/types';
+import type { MetricsSnapshot, HealthState, AlertHistoryEntry, NotificationChannel } from '../lib/types';
 
 export function useMetrics(appId?: string, tenantId?: string) {
   const url = appId && tenantId
@@ -28,7 +28,7 @@ export function useHealthStates(appId?: string) {
 export function useAlertHistory(limit = 50) {
   return useQuery({
     queryKey: ['alerts', limit],
-    queryFn: () => api.get<AlertEntry[]>(`/monitoring/alerts?limit=${limit}`),
+    queryFn: () => api.get<AlertHistoryEntry[]>(`/monitoring/alerts?limit=${limit}`),
   });
 }
 

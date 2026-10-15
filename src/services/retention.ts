@@ -6,6 +6,11 @@ import { pruneAuditLog } from './auditLog';
 
 let scheduledTask: ScheduledTask | null = null;
 
+// Alongside the entry caps: keeps prune and reads cheap even when old entries
+// are large (audit bodies were stored uncapped before 4 KB truncation). Far
+// above what the default entry caps produce.
+export const MAX_LOG_BYTES = 32 * 1024 * 1024;
+
 const logPruneFailure = (what: string) => (err: any): number => {
   console.error(`[Retention] Failed to prune ${what}: ${err?.message || err}`);
   return 0;
@@ -19,8 +24,8 @@ export async function runRetention(): Promise<void> {
   const maxAlerts = config.retention?.max_alert_entries ?? 10000;
   const maxAudit = config.retention?.max_audit_entries ?? 10000;
 
-  const alertPruned = await jsonlLogFor(path.join(dataDir, 'alert-history.jsonl'), 'AlertEngine').prune(maxAlerts).catch(logPruneFailure('alert history'));
-  const auditPruned = await pruneAuditLog(maxAudit).catch(logPruneFailure('audit log'));
+  const alertPruned = await jsonlLogFor(path.join(dataDir, 'alert-history.jsonl'), 'AlertEngine').prune(maxAlerts, MAX_LOG_BYTES).catch(logPruneFailure('alert history'));
+  const auditPruned = await pruneAuditLog(maxAudit, MAX_LOG_BYTES).catch(logPruneFailure('audit log'));
 
   if (alertPruned > 0 || auditPruned > 0) {
     console.log(`[Retention] Pruned ${alertPruned} alert(s), ${auditPruned} audit log(s)`);

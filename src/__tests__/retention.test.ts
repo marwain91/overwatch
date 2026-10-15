@@ -55,6 +55,22 @@ describe('retention', () => {
     }
   });
 
+  it('also caps each log at 32 MiB, keeping the newest entries', async () => {
+    configValue = { retention: { max_alert_entries: 1_000_000, max_audit_entries: 1_000_000 } };
+    const pad = 'x'.repeat(3000);
+    const n = 12_000; // ~36 MB
+    const body = Array.from({ length: n }, (_, i) => JSON.stringify({ user: 'u', action: `a${i}`, method: 'POST', path: '/p', status: 200, ip: 'x', pad })).join('\n') + '\n';
+    await fs.writeFile(path.join(dataDir, 'audit.log'), body, { mode: 0o600 });
+    const { runRetention } = await import('../services/retention');
+    await runRetention();
+    const file = path.join(dataDir, 'audit.log');
+    expect((await fs.stat(file)).size).toBeLessThanOrEqual(32 * 1024 * 1024);
+    const kept = await lines('audit.log');
+    expect(JSON.parse(kept[0]).action).toMatch(/^a\d+$/);
+    expect(JSON.parse(kept.at(-1)!).action).toBe(`a${n - 1}`);
+    expect(kept.length).toBeGreaterThan(10_000);
+  });
+
   it('leaves no temp files behind and tolerates missing files', async () => {
     const { runRetention } = await import('../services/retention');
     await runRetention();

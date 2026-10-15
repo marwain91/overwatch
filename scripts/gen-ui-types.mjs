@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Generate ui/src/lib/api-types.generated.ts from the backend Zod schemas (and
-// a few plain interfaces) so the React UI cannot drift from the API contract.
+// the plain interfaces the API returns) so the React UI cannot drift from the
+// API contract.
 //
 // Zod schemas are walked via their public `_def` (zod v3) and rendered as the
 // z.input shape: fields with defaults are optional, because that is what the
@@ -49,12 +50,20 @@ export const SCHEMA_SPECS = [
   ['TraefikTenant', 'models/traefik', 'TraefikTenantSchema'],
 ];
 
-// [file under src/, declaration names] copied verbatim (no Zod schema exists).
+// [file under src/, declarations] copied verbatim (no Zod schema exists). A
+// declaration is its name, or [name in src, name in the output] when two
+// source declarations share a name.
 export const SOURCE_SPECS = [
   ['services/users.ts', ['AdminRole', 'AdminUser']],
   ['services/backup.ts', ['BackupSnapshot', 'LockInfo']],
-  ['notifications/types.ts', ['WebhookConfig', 'NotificationChannel']],
+  ['notifications/types.ts', ['WebhookConfig', 'NotificationChannel', 'AlertHistoryEntry']],
   ['services/envVars.ts', ['EnvVar']],
+  ['services/docker.ts', ['ContainerInfo', 'TenantStatus']],
+  ['services/metricsCollector.ts', ['ContainerMetrics', 'TenantMetrics']],
+  // healthChecker.ts imports this union as HealthStateName; its own HealthState is the per-container record.
+  ['services/eventBus.ts', [['HealthState', 'HealthStateName'], 'MetricsSnapshot']],
+  ['services/healthChecker.ts', ['HealthState']],
+  ['services/auditLog.ts', ['AuditEntry']],
 ];
 
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -100,16 +109,23 @@ async function extractDeclarations(ts, srcRoot, file, wanted) {
   const full = path.join(srcRoot, file);
   const text = await fs.readFile(full, 'utf8');
   const sf = ts.createSourceFile(full, text, ts.ScriptTarget.ES2020, true);
+  const specs = wanted.map((w) => (Array.isArray(w) ? { from: w[0], to: w[1] } : { from: w, to: w }));
   const byName = new Map();
   for (const node of sf.statements) {
-    if ((ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) && wanted.includes(node.name.text)) {
-      const body = node.getText(sf);
-      byName.set(node.name.text, body.startsWith('export ') ? body : `export ${body}`);
+    if (!ts.isInterfaceDeclaration(node) && !ts.isTypeAliasDeclaration(node)) continue;
+    const spec = specs.find((sp) => sp.from === node.name.text);
+    if (!spec) continue;
+    const start = node.getStart(sf);
+    let body = node.getText(sf);
+    if (spec.to !== spec.from) {
+      const at = node.name.getStart(sf) - start;
+      body = body.slice(0, at) + spec.to + body.slice(at + spec.from.length);
     }
+    byName.set(spec.from, body.startsWith('export ') ? body : `export ${body}`);
   }
-  return wanted.map((name) => {
-    if (!byName.has(name)) throw new Error(`gen-ui-types: ${name} not found in src/${file}`);
-    return byName.get(name);
+  return specs.map(({ from }) => {
+    if (!byName.has(from)) throw new Error(`gen-ui-types: ${from} not found in src/${file}`);
+    return byName.get(from);
   });
 }
 

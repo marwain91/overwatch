@@ -64,6 +64,103 @@ describe('auditLog service', () => {
   });
 });
 
+describe('auditLog body hygiene', () => {
+  async function stored(body: Record<string, unknown>) {
+    const svc = await import('../services/auditLog');
+    svc.writeAuditEntry({ ...base, action: 'x', body });
+    await svc.flushAuditLog();
+    const raw = await fs.readFile(path.join(dataDir, 'audit.log'), 'utf-8');
+    return { raw, entry: JSON.parse(raw.trim().split('\n').at(-1)!) };
+  }
+
+  it('redacts basicAuth user lists and basicauth/digestauth raw labels (htpasswd hashes)', async () => {
+    const { raw, entry } = await stored({
+      middlewares: { auth: { type: 'basicAuth', users: ['admin:$apr1$SECRETHASH1'], realm: 'r' } },
+      raw_labels: {
+        web: {
+          'traefik.http.middlewares.a.basicauth.users': 'admin:$2y$SECRETHASH2',
+          'traefik.http.middlewares.d.digestAuth.users': 'admin:realm:SECRETHASH3',
+          'traefik.http.middlewares.d.digestauth.realm': 'SECRETREALM',
+          'traefik.http.routers.web.priority': '10',
+        },
+      },
+    });
+    expect(raw).not.toMatch(/SECRETHASH|SECRETREALM/);
+    expect(entry.body.middlewares.auth).toEqual({ type: 'basicAuth', users: '[redacted]', realm: 'r' });
+    expect(entry.body.raw_labels.web['traefik.http.routers.web.priority']).toBe('10');
+  });
+
+  it('caps a large body at 4 KB with a truncation marker', async () => {
+    const big = { name: 'svc', blob: 'a'.repeat(50_000), quoted: '"'.repeat(5_000) };
+    const { entry } = await stored(big);
+    expect(Buffer.byteLength(JSON.stringify(entry.body))).toBeLessThanOrEqual(4096);
+    expect(entry.body._truncated).toBe(true);
+    expect(entry.body._bytes).toBe(Buffer.byteLength(JSON.stringify(big)));
+    expect(entry.body._preview.startsWith('{"name":"svc","blob":"aaa')).toBe(true);
+  });
+
+  it('keeps a body under the cap as is, and redacts before measuring', async () => {
+    const { entry } = await stored({ name: 'n', password: 'p'.repeat(10_000) });
+    expect(entry.body).toEqual({ name: 'n', password: '[redacted]' });
+  });
+});
+
+/** Counts bytes read from disk through fs/promises (whole-file reads and handle reads alike). */
+function countDiskReads() {
+  const counter = { bytes: 0 };
+  vi.doMock('fs/promises', async (orig) => {
+    const actual = await orig<typeof import('fs/promises')>();
+    const open = async (...args: any[]) => {
+      const handle: any = await (actual.open as any)(...args);
+      const read = handle.read.bind(handle);
+      handle.read = async (...a: any[]) => {
+        const r = await read(...a);
+        counter.bytes += r.bytesRead;
+        return r;
+      };
+      return handle;
+    };
+    const readFile = async (...args: any[]) => {
+      const r = await (actual.readFile as any)(...args);
+      counter.bytes += Buffer.byteLength(r);
+      return r;
+    };
+    return { ...actual, default: { ...actual, open, readFile }, open, readFile };
+  });
+  return counter;
+}
+
+describe('audit log reads', () => {
+  afterEach(() => vi.doUnmock('fs/promises'));
+
+  const line = (i: number, user = 'u@example.test') => JSON.stringify({
+    timestamp: '2026-01-01T00:00:00.000Z', user, action: `a${i}`, method: 'POST', path: '/p', status: 200, ip: 'x',
+    body: { pad: 'x'.repeat(400) },
+  });
+
+  it('reads the newest entries from the tail of a large log instead of loading all of it', async () => {
+    const lines = Array.from({ length: 10_000 }, (_, i) => line(i)); // ~5 MB
+    await fs.writeFile(path.join(dataDir, 'audit.log'), lines.join('\n') + '\n');
+    const counter = countDiskReads();
+    const svc = await import('../services/auditLog');
+    const entries = await svc.readAuditEntries({ limit: 50 });
+    expect(entries.map(e => e.action)).toEqual(Array.from({ length: 50 }, (_, i) => `a${9999 - i}`));
+    expect(entries.every(e => !('body' in e))).toBe(true);
+    expect(counter.bytes).toBeLessThan(256 * 1024);
+  });
+
+  it('keeps scanning back for filtered matches and skips malformed lines', async () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => line(i));
+    lines[5] = line(5, 'rare@example.test');
+    lines[2990] = line(2990, 'rare@example.test');
+    lines.splice(2995, 0, '{"truncated', '');
+    await fs.writeFile(path.join(dataDir, 'audit.log'), lines.join('\n'));
+    const svc = await import('../services/auditLog');
+    expect((await svc.readAuditEntries({ limit: 10, user: 'RARE' })).map(e => e.action)).toEqual(['a2990', 'a5']);
+    expect((await svc.readAuditEntries({ limit: 2 })).map(e => e.action)).toEqual(['a2999', 'a2998']);
+  });
+});
+
 describe('flushAuditLog on an unwritable file', () => {
   it('gives up after its timeout so shutdown never waits for the forced exit', async () => {
     vi.useFakeTimers();

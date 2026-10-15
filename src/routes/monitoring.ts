@@ -6,15 +6,16 @@ import { getHealthStates } from '../services/healthChecker';
 import {
   getAlertHistory,
   getNotificationChannelsData,
-  saveNotificationChannels,
+  updateNotificationChannels,
   sendTestNotification,
 } from '../services/alertEngine';
+import type { NotificationChannel } from '../notifications/types';
 import { loadConfig } from '../config';
 import { SLUG_RE, CONTAINER_NAME_RE, UUID_RE } from '../utils/validators';
 import { queryString, queryInt } from '../utils/query';
 import { requireRole } from '../middleware/requireRole';
 import { assertPublicUrl } from '../utils/ssrf';
-import { ValidationError } from '../utils/httpErrors';
+import { NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const router = Router();
 
@@ -138,16 +139,14 @@ router.post('/notifications', requireRole('admin'), asyncHandler(async (req, res
     return;
   }
 
-  const channels = await getNotificationChannelsData();
-  const newChannel = {
+  const newChannel: NotificationChannel = {
     id: randomUUID(),
     name,
     type: type || 'webhook',
     enabled: enabled !== false,
     config: channelConfig,
   };
-  channels.push(newChannel);
-  await saveNotificationChannels(channels);
+  await updateNotificationChannels((channels) => { channels.push(newChannel); });
   res.json(newChannel);
 }));
 
@@ -169,24 +168,20 @@ router.put('/notifications/:id', requireRole('admin'), asyncHandler(async (req, 
     }
   }
 
-  const channels = await getNotificationChannelsData();
-  const index = channels.findIndex(c => c.id === id);
-
-  if (index === -1) {
-    res.status(404).json({ error: 'Channel not found' });
-    return;
-  }
-
-  channels[index] = {
-    ...channels[index],
-    name: name ?? channels[index].name,
-    type: type ?? channels[index].type,
-    enabled: enabled ?? channels[index].enabled,
-    config: channelConfig ?? channels[index].config,
-  };
-
-  await saveNotificationChannels(channels);
-  res.json(channels[index]);
+  // The lookup and the edit run on the list read under the lock.
+  const updated = await updateNotificationChannels((channels) => {
+    const index = channels.findIndex(c => c.id === id);
+    if (index === -1) throw new NotFoundError('Channel not found');
+    channels[index] = {
+      ...channels[index],
+      name: name ?? channels[index].name,
+      type: type ?? channels[index].type,
+      enabled: enabled ?? channels[index].enabled,
+      config: channelConfig ?? channels[index].config,
+    };
+    return channels[index];
+  });
+  res.json(updated);
 }));
 
 // DELETE /api/monitoring/notifications/:id — delete channel (admin-only)
@@ -196,15 +191,11 @@ router.delete('/notifications/:id', requireRole('admin'), asyncHandler(async (re
     res.status(400).json({ error: 'Invalid channel ID format' });
     return;
   }
-  const channels = await getNotificationChannelsData();
-  const filtered = channels.filter(c => c.id !== id);
-
-  if (filtered.length === channels.length) {
-    res.status(404).json({ error: 'Channel not found' });
-    return;
-  }
-
-  await saveNotificationChannels(filtered);
+  await updateNotificationChannels((channels) => {
+    const index = channels.findIndex(c => c.id === id);
+    if (index === -1) throw new NotFoundError('Channel not found');
+    channels.splice(index, 1);
+  });
   res.json({ success: true });
 }));
 

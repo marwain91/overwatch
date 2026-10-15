@@ -1,7 +1,6 @@
 import * as path from 'path';
-import * as fs from 'fs/promises';
 import { getDataDir } from '../config';
-import { jsonlLogFor } from '../utils/jsonlLog';
+import { jsonlLogFor, readLinesReverse } from '../utils/jsonlLog';
 
 export interface AuditEntry {
   timestamp: string;
@@ -24,7 +23,15 @@ function auditWriter() {
   return jsonlLogFor(getAuditLogFile(), 'audit');
 }
 
-const SENSITIVE_KEYS = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key'];
+// Substrings of a key (any depth, case-insensitive) whose value is never stored.
+// `users` is a basicAuth/digestAuth user list (htpasswd hashes); basicauth and
+// digestauth match the raw Traefik label keys that carry the same.
+const SENSITIVE_KEYS = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key', 'users', 'basicauth', 'digestauth'];
+
+// Bodies are kept for forensics, not replay. Uncapped, one large request (an
+// app definition, a pasted file; up to the 1 MB JSON limit) bloated every
+// later read and prune of the log.
+export const MAX_AUDIT_BODY_BYTES = 4096;
 
 function isPlainObject(v: unknown): boolean {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -69,6 +76,21 @@ export function sanitizeBody(body: Record<string, unknown> | undefined): Record<
   return sanitizeValue(body) as Record<string, unknown>;
 }
 
+/** A redacted body over the cap becomes a marker with its size and the start of its JSON. */
+function capBody(body: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!body) return undefined;
+  const json = JSON.stringify(body);
+  const bytes = Buffer.byteLength(json);
+  if (bytes <= MAX_AUDIT_BODY_BYTES) return body;
+  let preview = json.slice(0, MAX_AUDIT_BODY_BYTES);
+  // Re-encoding escapes quotes and multi-byte text, so shrink until it fits.
+  for (;;) {
+    const capped = { _truncated: true, _bytes: bytes, _preview: preview };
+    if (Buffer.byteLength(JSON.stringify(capped)) <= MAX_AUDIT_BODY_BYTES) return capped;
+    preview = preview.slice(0, Math.floor(preview.length * 0.8));
+  }
+}
+
 /**
  * Append an audit entry. Callable from HTTP middleware, the CLI and MCP tools;
  * sensitive body keys are redacted here, so callers cannot forget to. Writes go
@@ -82,7 +104,7 @@ export function writeAuditEntry(entry: Omit<AuditEntry, 'timestamp'> & { timesta
     method: entry.method,
     path: entry.path,
     query: entry.query ? (sanitizeValue(entry.query) as Record<string, unknown>) : undefined,
-    body: sanitizeBody(entry.body),
+    body: capBody(sanitizeBody(entry.body)),
     status: entry.status,
     ip: entry.ip,
     ...(entry.force ? { force: true } : {}),
@@ -110,34 +132,38 @@ export async function flushAuditLog(timeoutMs: number = 5000): Promise<void> {
   }
 }
 
-/** Keep the newest `maxEntries` entries; returns how many were dropped. */
-export function pruneAuditLog(maxEntries: number): Promise<number> {
-  return auditWriter().prune(maxEntries);
+/** Keep the newest `maxEntries` entries, at most `maxBytes` of them; returns how many were dropped. */
+export function pruneAuditLog(maxEntries: number, maxBytes?: number): Promise<number> {
+  return auditWriter().prune(maxEntries, maxBytes);
 }
 
-/** Newest-first entries matching the (case-insensitive substring) filters; request bodies are omitted. */
+/**
+ * Newest-first entries matching the (case-insensitive substring) filters;
+ * request bodies are omitted. Reads backwards from the end of the file and
+ * stops once `limit` entries matched.
+ */
 export async function readAuditEntries(opts: { limit: number; user?: string; action?: string }): Promise<Omit<AuditEntry, 'body'>[]> {
-  let content: string;
-  try {
-    content = await fs.readFile(getAuditLogFile(), 'utf-8');
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
-  }
-  const lines = content.trim().split('\n').filter(Boolean);
   const user = opts.user?.toLowerCase();
   const action = opts.action?.toLowerCase();
   const entries: Omit<AuditEntry, 'body'>[] = [];
-  for (let i = lines.length - 1; i >= 0 && entries.length < opts.limit; i--) {
-    try {
-      const entry: AuditEntry = JSON.parse(lines[i]);
-      if (user && !entry.user.toLowerCase().includes(user)) continue;
-      if (action && !entry.action.toLowerCase().includes(action)) continue;
+  if (opts.limit <= 0) return entries;
+  try {
+    for await (const line of readLinesReverse(getAuditLogFile())) {
+      let entry: AuditEntry;
+      try {
+        entry = JSON.parse(line);
+        if (user && !entry.user.toLowerCase().includes(user)) continue;
+        if (action && !entry.action.toLowerCase().includes(action)) continue;
+      } catch {
+        continue; // Skip malformed lines
+      }
       const { body: _body, ...safe } = entry;
       entries.push(safe);
-    } catch {
-      // Skip malformed lines
+      if (entries.length >= opts.limit) break;
     }
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
   }
   return entries;
 }

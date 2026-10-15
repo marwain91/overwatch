@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { z } from 'zod';
@@ -57,5 +58,34 @@ describe('gen-ui-types', () => {
     await expect(gen(z.object({ a: z.string() }).catchall(z.number()))).rejects.toThrow(/catchall/);
     await expect(gen(z.object({ a: z.string() }).strict())).rejects.toThrow(/strict/);
     await expect(gen(z.object({ n: z.object({ a: z.string() }).passthrough() }))).rejects.toThrow(/passthrough/);
+  });
+
+  it('copies the tenant, container, health, metrics, alert and audit types from the backend source', async () => {
+    const out: string = await generate(await loadSchemas(), { srcRoot: SRC_ROOT, ts });
+    const block = (name: string) => out.match(new RegExp(`export (?:interface|type) ${name}\\b[^]*?\\n\\}`))?.[0] ?? '';
+    // The UI had `service` as required; the backend leaves it optional.
+    expect(block('ContainerInfo')).toContain('service?: string;');
+    expect(block('TenantStatus')).toContain('containers: ContainerInfo[];');
+    expect(block('HealthState')).toContain('consecutiveFailures: number;');
+    expect(block('HealthState')).toContain('state: HealthStateName;');
+    expect(out).toContain("export type HealthStateName = 'healthy' | 'unhealthy' | 'unknown';");
+    expect(block('ContainerMetrics')).toContain('memPercent: number;');
+    expect(block('MetricsSnapshot')).toContain('tenants: TenantMetrics[];');
+    expect(block('AlertHistoryEntry')).toContain('resolvedAt?: string;');
+    expect(block('AuditEntry')).toContain('status: number;');
+  });
+
+  it('produces a file that type-checks on its own (no copied type refers to a missing name)', async () => {
+    const out: string = await generate(await loadSchemas(), { srcRoot: SRC_ROOT, ts });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overwatch-gen-ui-types-'));
+    try {
+      const file = path.join(dir, 'api-types.generated.ts');
+      fs.writeFileSync(file, out);
+      const program = ts.createProgram([file], { strict: true, noEmit: true, skipLibCheck: true, types: [], target: ts.ScriptTarget.ES2020 });
+      const diagnostics = ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+      expect(diagnostics).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

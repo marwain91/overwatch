@@ -191,6 +191,9 @@ alert_rules:
     severity: "info" | "warning" | "critical"  # Default: "warning"
 ```
 
+- `container_down` fires when a container that died on its own (a crash, an OOM kill) has not started again within `duration` (default "5m"). Requested stops (`docker stop`/`kill`, `docker compose stop`/`down`, a tenant stop, restart or delete from Overwatch) do not alert.
+- `health_check_failed` fires once per outage, on the probe where the failure count reaches `consecutive_failures` (default 3; probes run every 10s). It resolves on the next healthy probe.
+
 ### Retention Configuration
 
 ```yaml
@@ -199,7 +202,7 @@ retention:
   max_audit_entries: number       # Max audit log entries (default: 10000)
 ```
 
-Log files are pruned on startup and hourly.
+Log files are pruned on startup and hourly. Each file is also capped at 32 MB, keeping the newest entries. With typical entry sizes that is several times what the default entry caps keep. Audit entries store at most 4 KB of request body; a larger body is replaced by a truncation marker.
 
 ### MCP Server Configuration
 

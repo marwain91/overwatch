@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { EventEmitter } from 'events';
 import { containerEvent, metricsSnapshot } from './eventFixtures';
 
 let dataDir: string;
@@ -123,14 +124,95 @@ describe('alert engine container_down timers', () => {
   });
 });
 
+describe('alert engine container_down on deliberate stops', () => {
+  async function run(actions: string[], { gapMs = 0, waitMs = 120_000 } = {}) {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
+    const fired: any[] = [];
+    const resolved: any[] = [];
+    eventBus.on('alert:fired', (a) => fired.push(a));
+    eventBus.on('alert:resolved', (a) => resolved.push(a));
+    startAlertEngine();
+    for (const action of actions) {
+      eventBus.emit('container:event', containerEvent({ action, containerName: 'app-t1-web' }));
+      if (gapMs) await vi.advanceTimersByTimeAsync(gapMs);
+    }
+    await vi.advanceTimersByTimeAsync(waitMs);
+    return { eventBus, stopAlertEngine, fired, resolved };
+  }
+
+  it('does not alert for docker stop / compose stop (kill, die, stop)', async () => {
+    const { stopAlertEngine, fired } = await run(['kill', 'die', 'stop']);
+    stopAlertEngine();
+    expect(fired).toHaveLength(0);
+  });
+
+  it('does not alert when stop arrives after die without a kill first', async () => {
+    const { stopAlertEngine, fired } = await run(['die', 'stop']);
+    stopAlertEngine();
+    expect(fired).toHaveLength(0);
+  });
+
+  it('does not alert for docker kill (kill, die)', async () => {
+    const { stopAlertEngine, fired } = await run(['kill', 'die'], { gapMs: 2_000 });
+    stopAlertEngine();
+    expect(fired).toHaveLength(0);
+  });
+
+  it('sends neither a down alert nor a Resolved for a deleted tenant (compose down), even after eviction', async () => {
+    const { eventBus, stopAlertEngine, fired, resolved } = await run(['kill', 'die', 'stop', 'destroy']);
+    try {
+      eventBus.emit('containers:existence', []);
+      vi.setSystemTime(new Date('2026-01-01T00:30:00Z'));
+      eventBus.emit('containers:existence', []);
+      expect(fired).toHaveLength(0);
+      expect(resolved).toHaveLength(0);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('cancels the pending down timer of a crashed container that is then deleted', async () => {
+    const { eventBus, stopAlertEngine, fired, resolved } = await run(['die', 'destroy']);
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:30:00Z'));
+      eventBus.emit('containers:existence', []);
+      expect(fired).toHaveLength(0);
+      expect(resolved).toHaveLength(0);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('still alerts for a crash (die alone)', async () => {
+    const { stopAlertEngine, fired } = await run(['die']);
+    stopAlertEngine();
+    expect(fired).toHaveLength(1);
+  });
+
+  it('still alerts for a crash after a restart or an earlier non-fatal signal', async () => {
+    const restarted = await run(['kill', 'die', 'stop', 'start', 'die']);
+    restarted.stopAlertEngine();
+    expect(restarted.fired).toHaveLength(1);
+    vi.resetModules();
+
+    // e.g. `docker kill -s HUP` to reload, then a crash well after it
+    const reloaded = await run(['kill', 'die'], { gapMs: 5 * 60_000 });
+    reloaded.stopAlertEngine();
+    expect(reloaded.fired).toHaveLength(1);
+  });
+});
+
 describe('alert engine lifecycle', () => {
   it('removes its eventBus listeners on stop and restarts cleanly without double firing', async () => {
     vi.useFakeTimers();
     const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
-    const before = ['metrics:snapshot', 'containers:existence', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n));
+    const events = ['metrics:snapshot', 'containers:existence', 'container:event', 'health:change', 'health:probe'] as const;
+    const before = events.map(n => eventBus.listenerCount(n));
     startAlertEngine();
     stopAlertEngine();
-    expect(['metrics:snapshot', 'containers:existence', 'container:event', 'health:change'].map(n => eventBus.listenerCount(n))).toEqual(before);
+    expect(events.map(n => eventBus.listenerCount(n))).toEqual(before);
 
     const fired: any[] = [];
     eventBus.on('alert:fired', (a) => fired.push(a));
@@ -279,5 +361,142 @@ describe('alert notification channels', () => {
     } finally {
       stopAlertEngine();
     }
+  });
+});
+
+describe('alert engine health_check_failed', () => {
+  afterEach(() => {
+    for (const m of ['dockerode', 'net', 'node-cron', '../services/app']) vi.doUnmock(m);
+  });
+
+  // Drives the real health checker, so the test covers what it emits and when.
+  async function withHealthChecker(rules: unknown[]) {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const world = { healthy: false };
+    vi.doMock('node-cron', () => ({
+      default: { validate: () => true, schedule: (_e: string, fn: () => void) => { (globalThis as any).__hcTick = fn; return { stop: () => {} }; } },
+    }));
+    vi.doMock('dockerode', () => ({
+      default: class {
+        async listContainers() {
+          return [{
+            Id: 'abcdef123456', Names: ['/app-t1-web'],
+            Labels: { 'com.overwatch.managed': 'true', 'com.overwatch.app-id': 'app', 'com.overwatch.tenant-id': 't1', 'com.overwatch.service': 'web' },
+          }];
+        }
+      },
+    }));
+    vi.doMock('net', () => {
+      const createConnection = (_o: unknown, onConnect: () => void) => {
+        const socket = Object.assign(new EventEmitter(), { destroy: () => {} });
+        Promise.resolve().then(() => (world.healthy ? onConnect() : socket.emit('error', new Error('refused'))));
+        return socket;
+      };
+      return { default: { createConnection }, createConnection };
+    });
+    vi.doMock('../services/app', () => ({
+      listApps: vi.fn(async () => [{ id: 'app', services: [{ name: 'web', ports: { internal: 80 }, health_check: { type: 'tcp', port: 80 } }] }]),
+    }));
+    const loaded = await loadEngine(rules);
+    const fired: any[] = [];
+    const resolved: any[] = [];
+    const changes: any[] = [];
+    loaded.eventBus.on('alert:fired', (a) => fired.push(a));
+    loaded.eventBus.on('alert:resolved', (a) => resolved.push(a));
+    loaded.eventBus.on('health:change', (c) => changes.push(c));
+    loaded.startAlertEngine();
+    const hc = await import('../services/healthChecker');
+    hc.startHealthChecker();
+    await vi.advanceTimersByTimeAsync(0);
+    // Each probe is 10s apart and past the 1s cooldown, so only the engine's own logic limits firing.
+    const probe = async () => {
+      vi.setSystemTime(Date.now() + 10_000);
+      await (globalThis as any).__hcTick();
+    };
+    return { ...loaded, hc, world, fired, resolved, changes, probe };
+  }
+
+  const healthRule = (extra: Record<string, unknown> = {}) => ({
+    id: 'hc', name: 'Health', condition: { type: 'health_check_failed', ...extra }, cooldown: '1s', severity: 'critical',
+  });
+
+  it('fires once the failure count reaches the default threshold of 3, once per outage, and resolves on recovery', async () => {
+    const { hc, world, fired, resolved, changes, probe, stopAlertEngine } = await withHealthChecker([healthRule()]);
+    try {
+      expect(fired).toHaveLength(0); // failure 1
+      await probe(); // 2
+      expect(fired).toHaveLength(0);
+      await probe(); // 3
+      expect(fired).toHaveLength(1);
+      expect(fired[0]).toMatchObject({ ruleId: 'hc', containerName: 'app-t1-web', tenantId: 't1' });
+      expect(fired[0].message).toContain('3 times');
+
+      for (let i = 0; i < 4; i++) await probe(); // still failing: no repeat per probe
+      expect(fired).toHaveLength(1);
+      expect(resolved).toHaveLength(0);
+
+      world.healthy = true;
+      await probe();
+      expect(resolved.map(r => r.ruleId)).toEqual(['hc']);
+      await probe();
+      expect(resolved).toHaveLength(1);
+
+      world.healthy = false;
+      for (let i = 0; i < 3; i++) await probe();
+      expect(fired).toHaveLength(2); // a new outage alerts again
+
+      // The UI-facing transition event is unchanged: transitions only.
+      expect(changes.map(c => c.newState)).toEqual(['unhealthy', 'healthy', 'unhealthy']);
+    } finally {
+      hc.stopHealthChecker();
+      stopAlertEngine();
+    }
+  });
+
+  it('honours a custom consecutive_failures', async () => {
+    const { hc, fired, probe, stopAlertEngine } = await withHealthChecker([healthRule({ consecutive_failures: 5 })]);
+    try {
+      for (let i = 0; i < 3; i++) await probe(); // failures 2..4
+      expect(fired).toHaveLength(0);
+      await probe(); // 5
+      expect(fired).toHaveLength(1);
+    } finally {
+      hc.stopHealthChecker();
+      stopAlertEngine();
+    }
+  });
+});
+
+describe('alert history reads', () => {
+  afterEach(() => vi.doUnmock('fs/promises'));
+
+  it('returns the newest entries first, reading only the tail of a large history', async () => {
+    const lines = Array.from({ length: 20_000 }, (_, i) => JSON.stringify({
+      id: `h${i}`, ruleId: 'r', ruleName: 'cpu', severity: 'warning', message: 'm'.repeat(200), firedAt: '2026-01-01T00:00:00.000Z',
+    }));
+    lines.splice(19_998, 0, 'not json');
+    await fs.writeFile(path.join(dataDir, 'alert-history.jsonl'), lines.join('\n') + '\n');
+    const counter = { bytes: 0 };
+    vi.doMock('fs/promises', async (orig) => {
+      const actual = await orig<typeof import('fs/promises')>();
+      const open = async (...args: any[]) => {
+        const handle: any = await (actual.open as any)(...args);
+        const read = handle.read.bind(handle);
+        handle.read = async (...a: any[]) => { const r = await read(...a); counter.bytes += r.bytesRead; return r; };
+        return handle;
+      };
+      const readFile = async (...args: any[]) => { const r = await (actual.readFile as any)(...args); counter.bytes += Buffer.byteLength(r); return r; };
+      return { ...actual, default: { ...actual, open, readFile }, open, readFile };
+    });
+    const { getAlertHistory } = await loadEngine([]);
+    const history = await getAlertHistory(3);
+    expect(history.map(h => h.id)).toEqual(['h19999', 'h19998', 'h19997']);
+    expect(counter.bytes).toBeLessThan(256 * 1024);
+  });
+
+  it('returns no entries when there is no history yet', async () => {
+    const { getAlertHistory } = await loadEngine([]);
+    expect(await getAlertHistory(5)).toEqual([]);
   });
 });
