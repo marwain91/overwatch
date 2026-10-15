@@ -45,7 +45,7 @@
     "dockerode": "^5.0.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "google-auth-library": "^10.6.2",
+    "google-auth-library": "^11.2.0",
     "inquirer": "^13.4.3",
     "js-yaml": "^4.1.0",
     "jsonwebtoken": "^9.0.2",
