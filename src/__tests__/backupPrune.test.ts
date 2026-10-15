@@ -35,7 +35,7 @@ vi.mock('child_process', () => ({
   spawn: vi.fn(),
 }));
 
-import { pruneBackups } from '../services/backup';
+import { pruneBackups, unlockRepository } from '../services/backup';
 
 const snap = (id: string, time: string, tags: string[]) => ({ id: id.repeat(8), short_id: id, time, tags, paths: ['/tmp/x'] });
 
@@ -90,5 +90,21 @@ describe('pruneBackups', () => {
     expect(r.remove).toEqual([
       { id: 'bbbbbbbb'.repeat(8), shortId: 'bbbbbbbb', time: '2026-01-01T00:00:00Z', tenantId: 't1', tags: ['app:gadgets', 'tenant:t1'] },
     ]);
+  });
+});
+
+describe('unlockRepository', () => {
+  beforeEach(() => { execCalls.length = 0; });
+
+  // --remove-all also deletes the locks of a backup or prune that is running
+  // right now; plain unlock only removes stale ones.
+  it('removes only stale locks by default', async () => {
+    expect(await unlockRepository('gadgets')).toEqual({ success: true });
+    expect(execCalls.find(a => a[0] === 'unlock')).toEqual(['unlock']);
+  });
+
+  it('removes all locks only when forced', async () => {
+    await unlockRepository('gadgets', { force: true });
+    expect(execCalls.find(a => a[0] === 'unlock')).toEqual(['unlock', '--remove-all']);
   });
 });

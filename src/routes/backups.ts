@@ -78,10 +78,12 @@ router.post('/init', requireRole('admin'), asyncHandler(async (req, res) => {
   res.json({ success: true, message: 'Repository initialized' });
 }));
 
-// Unlock repository — admin (break-glass operation).
+// Unlock repository — admin. Removes stale locks; `force: true` also removes
+// live ones (break-glass: it breaks a backup or prune that is still running).
 router.post('/unlock', requireRole('admin'), asyncHandler(async (req, res) => {
   const { appId } = (req.params as Record<string, string>);
-  const result = await unlockRepository(appId);
+  const force = req.body?.force === true;
+  const result = await unlockRepository(appId, { force });
   if (result.success) {
     res.json({ success: true, message: 'Repository unlocked' });
   } else {

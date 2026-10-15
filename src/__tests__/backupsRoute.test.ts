@@ -72,3 +72,17 @@ describe('POST /backups/prune', () => {
     expect(r.body).toMatchObject({ dryRun: true, removeCount: 1, keepCount: 2, remove: [{ id: 'a' }] });
   });
 });
+
+describe('POST /backups/unlock', () => {
+  beforeEach(() => { svc.unlockRepository.mockResolvedValue({ success: true }); });
+
+  it('removes stale locks only unless force is true', async () => {
+    const app = await mount();
+    await request(app).post('/api/apps/shop/backups/unlock').send({}).expect(200);
+    expect(svc.unlockRepository).toHaveBeenLastCalledWith('shop', { force: false });
+    await request(app).post('/api/apps/shop/backups/unlock').send({ force: 'yes' }).expect(200);
+    expect(svc.unlockRepository).toHaveBeenLastCalledWith('shop', { force: false });
+    await request(app).post('/api/apps/shop/backups/unlock').send({ force: true }).expect(200);
+    expect(svc.unlockRepository).toHaveBeenLastCalledWith('shop', { force: true });
+  });
+});

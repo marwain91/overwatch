@@ -191,12 +191,16 @@ export async function initializeRepository(appId: string): Promise<void> {
   invalidateBackupCache(appId);
 }
 
-export async function unlockRepository(appId: string): Promise<{ success: boolean; error?: string }> {
+/**
+ * Remove stale repository locks. `force` also removes live ones (`--remove-all`),
+ * which breaks a backup or prune that is running right now: break-glass only.
+ */
+export async function unlockRepository(appId: string, options: { force?: boolean } = {}): Promise<{ success: boolean; error?: string }> {
   const app = await getApp(appId);
   if (!app) return { success: false, error: `App '${appId}' not found` };
 
   try {
-    await execFileAsync('restic', ['unlock', '--remove-all'], { env: getResticEnv(app), timeout: 30000 });
+    await execFileAsync('restic', options.force ? ['unlock', '--remove-all'] : ['unlock'], { env: getResticEnv(app), timeout: 30000 });
     invalidateBackupCache(appId);
     return { success: true };
   } catch (error: any) {
