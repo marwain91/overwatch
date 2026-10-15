@@ -1,6 +1,6 @@
 import { fetchNoRedirect } from './safeFetch';
-import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
+import { dockerLogin } from './login';
 
 /**
  * Docker Hub registry adapter
@@ -12,6 +12,10 @@ export class DockerHubAdapter implements RegistryAdapter {
     this.config = config;
   }
 
+  hasCredentials(): boolean {
+    return !!(this.config.username && this.config.token);
+  }
+
   async login(): Promise<void> {
     if (!this.config.username || !this.config.token) {
       console.log('Docker Hub credentials not configured, skipping registry login');
@@ -21,14 +25,7 @@ export class DockerHubAdapter implements RegistryAdapter {
     try {
       console.log('Authenticating with Docker Hub...');
 
-      const result = spawnSync(
-        'docker', ['login', '-u', this.config.username, '--password-stdin'],
-        { input: this.config.token, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-
-      if (result.status !== 0) {
-        throw new Error(result.stderr?.toString() || 'docker login failed');
-      }
+      await dockerLogin(undefined, this.config.username, this.config.token);
 
       console.log('Successfully logged in to Docker Hub');
     } catch (error) {

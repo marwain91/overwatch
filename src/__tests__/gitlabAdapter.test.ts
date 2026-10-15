@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const spawnSyncMock = vi.fn();
-vi.mock('child_process', () => ({
-  spawnSync: (...args: any[]) => spawnSyncMock(...args),
+const runDockerMock = vi.fn();
+vi.mock('../utils/runDocker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/runDocker')>()),
+  runDocker: (...args: any[]) => runDockerMock(...args),
 }));
 
 const validateRegistryUrlMock = vi.fn();
@@ -31,7 +32,7 @@ const baseSelfHosted = {
 
 describe('GitLabAdapter — login()', () => {
   beforeEach(() => {
-    spawnSyncMock.mockReset();
+    runDockerMock.mockReset();
     fetchMock.mockReset();
     validateRegistryUrlMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);
@@ -41,38 +42,38 @@ describe('GitLabAdapter — login()', () => {
     vi.unstubAllGlobals();
   });
 
-  it('shells out with -u oauth2 and pipes the token via --password-stdin', async () => {
-    spawnSyncMock.mockReturnValue({ status: 0, stderr: Buffer.from('') });
+  it('shells out with username oauth2 and pipes the token via --password-stdin', async () => {
+    runDockerMock.mockResolvedValue({ stdout: '', stderr: '' });
     const adapter = new GitLabAdapter(baseSaaS);
 
     await adapter.login();
 
-    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-    const [cmd, args, opts] = spawnSyncMock.mock.calls[0];
+    expect(runDockerMock).toHaveBeenCalledTimes(1);
+    const [cmd, args, opts] = runDockerMock.mock.calls[0];
     expect(cmd).toBe('docker');
-    expect(args).toEqual(['login', 'registry.gitlab.com', '-u', 'oauth2', '--password-stdin']);
+    expect(args).toEqual(['login', '--username=oauth2', '--password-stdin', '--', 'registry.gitlab.com']);
     expect(opts.input).toBe('glpat_abc');
   });
 
   it('uses the operator-supplied registry URL on self-hosted', async () => {
-    spawnSyncMock.mockReturnValue({ status: 0, stderr: Buffer.from('') });
+    runDockerMock.mockResolvedValue({ stdout: '', stderr: '' });
     const adapter = new GitLabAdapter(baseSelfHosted);
 
     await adapter.login();
 
-    const [, args] = spawnSyncMock.mock.calls[0];
-    expect(args).toEqual(['login', 'registry.acme.com:5050', '-u', 'oauth2', '--password-stdin']);
+    const [, args] = runDockerMock.mock.calls[0];
+    expect(args).toEqual(['login', '--username=oauth2', '--password-stdin', '--', 'registry.acme.com:5050']);
   });
 
   it('skips login (does not throw) when no token is configured', async () => {
     const adapter = new GitLabAdapter({ ...baseSaaS, token: undefined });
 
     await expect(adapter.login()).resolves.toBeUndefined();
-    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(runDockerMock).not.toHaveBeenCalled();
   });
 
   it('propagates docker login failures', async () => {
-    spawnSyncMock.mockReturnValue({ status: 1, stderr: Buffer.from('unauthorized') });
+    runDockerMock.mockRejectedValue(new Error('docker login failed: unauthorized'));
     const adapter = new GitLabAdapter(baseSaaS);
 
     await expect(adapter.login()).rejects.toThrow(/unauthorized/);
@@ -81,7 +82,7 @@ describe('GitLabAdapter — login()', () => {
 
 describe('GitLabAdapter — getImageTags()', () => {
   beforeEach(() => {
-    spawnSyncMock.mockReset();
+    runDockerMock.mockReset();
     fetchMock.mockReset();
     validateRegistryUrlMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);

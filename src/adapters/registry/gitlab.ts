@@ -1,7 +1,7 @@
 import { fetchNoRedirect } from './safeFetch';
-import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 import { validateRegistryUrl } from './urlValidation';
+import { dockerLogin } from './login';
 
 interface GitLabTag {
   name: string;
@@ -42,6 +42,10 @@ export class GitLabAdapter implements RegistryAdapter {
     );
   }
 
+  hasCredentials(): boolean {
+    return !!this.config.token;
+  }
+
   async login(): Promise<void> {
     if (!this.config.token) {
       console.log('GitLab token not configured, skipping registry login');
@@ -50,15 +54,7 @@ export class GitLabAdapter implements RegistryAdapter {
 
     try {
       console.log(`Authenticating with GitLab Container Registry at ${this.config.url}...`);
-      const result = spawnSync(
-        'docker',
-        ['login', this.config.url, '-u', 'oauth2', '--password-stdin'],
-        { input: this.config.token, stdio: ['pipe', 'pipe', 'pipe'] },
-      );
-
-      if (result.status !== 0) {
-        throw new Error(result.stderr?.toString() || 'docker login failed');
-      }
+      await dockerLogin(this.config.url, 'oauth2', this.config.token);
 
       console.log(`Successfully logged in to ${this.config.url}`);
     } catch (error) {

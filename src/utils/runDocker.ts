@@ -45,6 +45,8 @@ export interface RunDockerOptions {
   timeoutMs?: number;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  /** Written to the child's stdin, which is then closed (`login --password-stdin`). */
+  input?: string;
 }
 
 export type DockerErrorKind = 'timeout' | 'cli_missing' | 'daemon_unreachable' | 'unknown_container' | 'permission' | 'unknown';
@@ -140,5 +142,10 @@ export async function runDocker(
     // Ensure child is killed on external signals — node's timeout does this, but
     // be explicit so callers who set shorter timeouts still get cleanup.
     child.on('error', () => {});
+    if (opts.input !== undefined && child.stdin) {
+      // The CLI may exit before reading stdin; its exit status reports the failure.
+      child.stdin.on('error', () => {});
+      child.stdin.end(opts.input);
+    }
   });
 }

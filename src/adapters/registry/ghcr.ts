@@ -1,6 +1,6 @@
 import { fetchNoRedirect } from './safeFetch';
-import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
+import { dockerLogin } from './login';
 
 interface GitHubTag {
   name: string;
@@ -28,6 +28,10 @@ export class GHCRAdapter implements RegistryAdapter {
     this.config = config;
   }
 
+  hasCredentials(): boolean {
+    return !!this.config.token;
+  }
+
   async login(): Promise<void> {
     const token = this.config.token;
 
@@ -40,14 +44,7 @@ export class GHCRAdapter implements RegistryAdapter {
       console.log('Authenticating with GitHub Container Registry...');
       const username = this.config.username || 'x-access-token';
 
-      const result = spawnSync(
-        'docker', ['login', this.config.url, '-u', username, '--password-stdin'],
-        { input: token, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-
-      if (result.status !== 0) {
-        throw new Error(result.stderr?.toString() || 'docker login failed');
-      }
+      await dockerLogin(this.config.url, username, token);
 
       console.log(`Successfully logged in to ${this.config.url}`);
     } catch (error) {
