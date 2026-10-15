@@ -1,6 +1,28 @@
-import { Pool } from 'pg';
-import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
+import { Pool, type PoolClient } from 'pg';
+import { randomBytes } from 'crypto';
+import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult, DatabaseResetRefusedError } from './types';
 import { BaseDatabaseAdapter } from './base';
+
+/**
+ * Fails the restore transaction when a restored table, view or sequence is not
+ * owned by `role`. Dumps from older versions carry OWNER TO statements naming
+ * the dumped tenant's role: into that tenant they are fine, but into another
+ * tenant they would leave its tables owned by (and only usable by) the first
+ * tenant's role. `role` is a validated identifier.
+ */
+function ownedByTenantCheck(role: string): string {
+  return `DO $ow$ DECLARE owners text; BEGIN
+  SELECT string_agg(DISTINCT pg_get_userbyid(c.relowner), ', ') INTO owners
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+    AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_toast%'
+    AND c.relowner <> '${role}'::regrole
+    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e');
+  IF owners IS NOT NULL THEN
+    RAISE EXCEPTION 'restored objects are owned by role(s) % instead of ${role}', owners;
+  END IF;
+END $ow$`;
+}
 
 /**
  * PostgreSQL database adapter
@@ -157,57 +179,70 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
   }
 
   async resetDatabase(tenantId: string): Promise<void> {
-    if (!this.pool) {
-      await this.initialize();
-    }
-
     const dbName = this.getDatabaseName(tenantId);
     const userName = this.getUserName(tenantId);
-    this.validateIdentifiers(dbName, userName);
     const safeDb = dbName.replace(/"/g, '""');
     const safeUser = userName.replace(/"/g, '""');
     const literal = (v: string) => `'${String(v).replace(/'/g, "''")}'`;
+    const refused = (error: any) => new DatabaseResetRefusedError(`Database ${dbName} was not reset: ${error?.message || error}`, { cause: error });
 
-    const client = await this.pool!.connect();
-    let releaseError: Error | undefined;
-
+    let client: PoolClient;
     try {
-      // The admin pool's 30s statement_timeout must not cut off a large DROP
-      await client.query('SET statement_timeout = 0');
-
-      // The new database is owned by the tenant role; without it CREATE would
-      // fail after the DROP and leave no database at all.
-      const role = await client.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [userName]);
-      if (role.rows.length === 0) {
-        throw new Error(`Refusing to reset database ${dbName}: its role ${userName} does not exist`);
+      this.validateIdentifiers(dbName, userName);
+      if (!this.pool) {
+        await this.initialize();
       }
+      client = await this.pool!.connect();
+    } catch (error) {
+      throw refused(error);
+    }
 
-      // Keep the database's encoding and locale: a dump made from it may not
-      // load into a database with another encoding. Only a database that
-      // differs from template1 needs template0 to set them.
-      const { rows } = await client.query(
-        `SELECT datname, pg_encoding_to_char(encoding) AS enc, datcollate, datctype
-         FROM pg_database WHERE datname IN ($1, 'template1')`,
-        [dbName]
-      );
-      const current = rows.find((r: any) => r.datname === dbName);
-      const template = rows.find((r: any) => r.datname === 'template1');
-      const keepLocale = current && template
-        && (current.enc !== template.enc || current.datcollate !== template.datcollate || current.datctype !== template.datctype);
+    let releaseError: Error | undefined;
+    let dropped = false;
+    try {
+      try {
+        // The admin pool's 30s statement_timeout must not cut off a large DROP
+        await client.query('SET statement_timeout = 0');
 
-      await client.query(`
-        SELECT pg_terminate_backend(pg_stat_activity.pid)
-        FROM pg_stat_activity
-        WHERE pg_stat_activity.datname = $1
-        AND pid <> pg_backend_pid()
-      `, [dbName]);
-      await client.query(`DROP DATABASE IF EXISTS "${safeDb}"`);
+        // The new database is owned by the tenant role; without it CREATE would
+        // fail after the DROP and leave no database at all.
+        const role = await client.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [userName]);
+        if (role.rows.length === 0) {
+          throw new Error(`its role ${userName} does not exist`);
+        }
 
-      let create = `CREATE DATABASE "${safeDb}" OWNER "${safeUser}"`;
-      if (keepLocale) {
-        create += ` TEMPLATE template0 ENCODING ${literal(current.enc)} LC_COLLATE ${literal(current.datcollate)} LC_CTYPE ${literal(current.datctype)}`;
+        // Keep the database's encoding and locale: a dump made from it may not
+        // load into a database with another encoding. Only a database that
+        // differs from template1 needs template0 to set them.
+        const { rows } = await client.query(
+          `SELECT datname, pg_encoding_to_char(encoding) AS enc, datcollate, datctype
+           FROM pg_database WHERE datname IN ($1, 'template1')`,
+          [dbName]
+        );
+        const current = rows.find((r: any) => r.datname === dbName);
+        const template = rows.find((r: any) => r.datname === 'template1');
+        const keepLocale = current && template
+          && (current.enc !== template.enc || current.datcollate !== template.datcollate || current.datctype !== template.datctype);
+
+        await client.query(`
+          SELECT pg_terminate_backend(pg_stat_activity.pid)
+          FROM pg_stat_activity
+          WHERE pg_stat_activity.datname = $1
+          AND pid <> pg_backend_pid()
+        `, [dbName]);
+        // DROP DATABASE either drops it or fails with it intact (e.g. a new
+        // session connected in the meantime).
+        await client.query(`DROP DATABASE IF EXISTS "${safeDb}"`);
+        dropped = true;
+
+        let create = `CREATE DATABASE "${safeDb}" OWNER "${safeUser}"`;
+        if (keepLocale) {
+          create += ` TEMPLATE template0 ENCODING ${literal(current.enc)} LC_COLLATE ${literal(current.datcollate)} LC_CTYPE ${literal(current.datctype)}`;
+        }
+        await client.query(create);
+      } catch (error) {
+        throw dropped ? error : refused(error);
       }
-      await client.query(create);
       // The same access createDatabase sets up: only the tenant role connects.
       await client.query(`GRANT ALL PRIVILEGES ON DATABASE "${safeDb}" TO "${safeUser}"`);
       await client.query(`REVOKE CONNECT ON DATABASE "${safeDb}" FROM PUBLIC`);
@@ -241,6 +276,7 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
 
   async dumpDatabase(tenantId: string, outputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
     // --no-owner/--no-privileges: the dump must not name the source tenant's
     // role, or a restore into another tenant hands that role the objects.
     // PGPASSWORD is named in argv but its value comes from the spawned process
@@ -257,18 +293,27 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     const dbName = this.getDatabaseName(tenantId);
     const role = this.getUserName(tenantId);
     this.validateIdentifiers(dbName, role);
-    // ON_ERROR_STOP + one transaction: without them psql reports success after
-    // SQL errors and leaves a half-applied dump. A --no-owner dump's objects
-    // belong to whoever creates them, so the dump runs as the tenant's role
-    // (SET ROLE inside the same transaction). Dumps from older versions carry
-    // OWNER TO statements naming the dumped tenant's role, which that same role
-    // may run on its own objects; one naming another tenant's role fails.
+    // A --no-owner dump's objects belong to whoever creates them. The dump runs
+    // as a temporary superuser role, so it can create what the old root restore
+    // could (superuser-only extensions among them); everything that role
+    // created then goes to the tenant role and the role is dropped again.
+    // REASSIGN OWNED is safe here because the role is new and owns nothing
+    // else. ON_ERROR_STOP + one transaction: psql no longer reports success
+    // after SQL errors, and a failure leaves neither objects nor the role.
+    const tmpRole = `ow_restore_${randomBytes(6).toString('hex')}`;
     return this.runRestoreFromFile({
       execOptions: ['-e', 'PGPASSWORD'],
       argv: [
         'psql', '-U', this.config.rootUser, '-d', dbName,
         '-v', 'ON_ERROR_STOP=1', '--single-transaction',
-        '-c', `SET ROLE "${role}"`, '-f', '-',
+        '-c', `CREATE ROLE "${tmpRole}" SUPERUSER NOLOGIN`,
+        '-c', `SET ROLE "${tmpRole}"`,
+        '-f', '-',
+        '-c', 'RESET ROLE',
+        '-c', `REASSIGN OWNED BY "${tmpRole}" TO "${role}"`,
+        '-c', `DROP OWNED BY "${tmpRole}"`,
+        '-c', `DROP ROLE "${tmpRole}"`,
+        '-c', ownedByTenantCheck(role),
       ],
       env: { PGPASSWORD: this.config.rootPassword },
       label: 'psql restore',

@@ -189,12 +189,15 @@ export abstract class BaseDatabaseAdapter implements DatabaseAdapter {
 
     return new Promise<void>((resolve, reject) => {
       const proc = spawn('docker', args, { env: this.clientEnv(run) });
+      const input = createReadStream(inputPath);
 
       let settled = false;
       const done = (err?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        // A client that stopped early leaves the dump half read: close the file.
+        input.destroy();
         if (err) reject(err); else resolve();
       };
       const timer = this.armLocalTimeout(proc, run, done);
@@ -202,7 +205,6 @@ export abstract class BaseDatabaseAdapter implements DatabaseAdapter {
       // Both streams need error listeners: an unhandled stream error is
       // uncaught and kills the process. The client closes stdin early when it
       // stops at a SQL error (EPIPE here; its exit code and stderr say why).
-      const input = createReadStream(inputPath);
       input.on('error', (err) => { proc.kill(); done(err); });
       proc.stdin!.on('error', () => {});
       input.pipe(proc.stdin!);

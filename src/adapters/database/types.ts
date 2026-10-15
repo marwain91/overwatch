@@ -43,6 +43,17 @@ export interface CreateDatabaseResult {
 }
 
 /**
+ * resetDatabase failed before it changed anything (a precondition failed, or
+ * the drop was refused): the database is exactly as it was.
+ */
+export class DatabaseResetRefusedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'DatabaseResetRefusedError';
+  }
+}
+
+/**
  * Interface for database adapters.
  * Each adapter handles database operations for a specific database engine.
  */
@@ -84,9 +95,9 @@ export interface DatabaseAdapter {
    * Drop the tenant's database and create it again, empty. The tenant user and
    * its access to the database stay as they are, and so do the database's
    * character set/collation (MySQL) or encoding/locale (Postgres). A missing
-   * database is created. Callers stop whatever writes to it first (Postgres
-   * terminates the remaining connections; MySQL cannot drop a database other
-   * sessions hold locks in).
+   * database is created. Callers stop whatever writes to it first; remaining
+   * sessions on the database are ended. Throws DatabaseResetRefusedError when
+   * it failed before changing anything.
    */
   resetDatabase(tenantId: string): Promise<void>;
 

@@ -5,7 +5,7 @@ vi.mock('mysql2/promise', () => ({ default: { createPool: vi.fn(() => ({ end: vi
 
 import { MySQLAdapter } from '../adapters/database/mysql';
 import { PostgresAdapter } from '../adapters/database/postgres';
-import type { DatabaseAdapterConfig } from '../adapters/database/types';
+import { DatabaseResetRefusedError, type DatabaseAdapterConfig } from '../adapters/database/types';
 
 function cfg(type: 'mariadb' | 'postgres'): DatabaseAdapterConfig {
   return { type, host: 'db', port: 1, rootUser: 'root', rootPassword: 'x', containerName: 'dbc', dbPrefix: 'p' };
@@ -61,6 +61,26 @@ describe('mysql resetDatabase', () => {
     await expect(make(conn).resetDatabase('T1;drop')).rejects.toThrow(/Unsafe/);
     expect(conn.queries).toEqual([]);
   });
+
+  // DROP waits on metadata locks with no limit: a forgotten session must not hang a restore.
+  it('ends other sessions on the database and bounds the lock wait, then restores the default', async () => {
+    const conn = fakeConn(sql => (sql.includes('PROCESSLIST') ? [{ id: 41 }, { id: 42 }] : []));
+    await make(conn).resetDatabase('t1');
+    const q = conn.queries;
+    expect(conn.params[q.findIndex(x => x.includes('PROCESSLIST'))]).toEqual(['p_t1']);
+    expect(conn.params.filter((_p, i) => q[i] === 'KILL ?')).toEqual([[41], [42]]);
+    const drop = q.indexOf('DROP DATABASE IF EXISTS `p_t1`');
+    expect(q.indexOf('SET SESSION lock_wait_timeout = 60')).toBeLessThan(drop);
+    expect(q.lastIndexOf('KILL ?')).toBeLessThan(drop);
+    expect(q[q.length - 1]).toBe('SET SESSION lock_wait_timeout = DEFAULT');
+  });
+
+  it('reports a failure before the DROP as "nothing changed", and one after it as a plain error', async () => {
+    await expect(make(fakeConn(() => [], 'information_schema.SCHEMATA')).resetDatabase('t1')).rejects.toBeInstanceOf(DatabaseResetRefusedError);
+    const after = make(fakeConn(() => [], 'CREATE DATABASE')).resetDatabase('t1');
+    await expect(after).rejects.toThrow('boom');
+    await expect(after).rejects.not.toBeInstanceOf(DatabaseResetRefusedError);
+  });
 });
 
 describe('postgres resetDatabase', () => {
@@ -84,8 +104,16 @@ describe('postgres resetDatabase', () => {
   // would fail after the DROP and leave the tenant with no database at all.
   it('refuses before dropping anything when the tenant role does not exist', async () => {
     const conn = fakeConn(catalog(tpl, true));
-    await expect(make(conn).resetDatabase('t1')).rejects.toThrow(/role/);
+    await expect(make(conn).resetDatabase('t1')).rejects.toBeInstanceOf(DatabaseResetRefusedError);
     expect(conn.queries.some(q => q.startsWith('DROP') || q.includes('pg_terminate_backend'))).toBe(false);
+  });
+
+  // DROP DATABASE either drops or leaves the database intact (e.g. a session reconnected).
+  it('reports a refused DROP as "nothing changed", and a failed CREATE after it as a plain error', async () => {
+    await expect(make(fakeConn(catalog(tpl), 'DROP DATABASE')).resetDatabase('t1')).rejects.toBeInstanceOf(DatabaseResetRefusedError);
+    const after = make(fakeConn(catalog(tpl), 'CREATE DATABASE')).resetDatabase('t1');
+    await expect(after).rejects.toThrow('boom');
+    await expect(after).rejects.not.toBeInstanceOf(DatabaseResetRefusedError);
   });
 
   it('terminates connections, drops and recreates the database owned by the tenant role', async () => {

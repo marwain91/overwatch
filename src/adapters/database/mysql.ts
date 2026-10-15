@@ -1,5 +1,5 @@
 import mysql from 'mysql2/promise';
-import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult } from './types';
+import { DatabaseServerInfo, DatabaseServerStats, DatabaseDetail, DatabaseProcess, CreateDatabaseResult, DatabaseResetRefusedError } from './types';
 import { BaseDatabaseAdapter } from './base';
 
 /**
@@ -135,15 +135,16 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
   }
 
   async resetDatabase(tenantId: string): Promise<void> {
-    if (!this.pool) {
-      await this.initialize();
-    }
-
     const dbName = this.getDatabaseName(tenantId);
-    this.validateIdentifiers(dbName, this.getUserName(tenantId));
-
-    const connection = await this.pool!.getConnection();
+    let dropIssued = false;
+    let connection: mysql.PoolConnection | undefined;
     try {
+      this.validateIdentifiers(dbName, this.getUserName(tenantId));
+      if (!this.pool) {
+        await this.initialize();
+      }
+      connection = await this.pool!.getConnection();
+
       // Recreate with the database's own defaults: a dump made from it may not
       // load into one with another character set (migrated tenants may differ
       // from what createDatabase uses).
@@ -157,12 +158,33 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
       if (!/^[A-Za-z0-9_]+$/.test(charset) || !/^[A-Za-z0-9_]+$/.test(collation)) {
         throw new Error(`Unexpected character set/collation for ${dbName}: ${charset}/${collation}`);
       }
+
+      // DROP waits on metadata locks of other sessions: end the ones on this
+      // database and bound the wait, so a stray session cannot hang the reset.
+      const [sessions] = await connection.query(
+        'SELECT ID AS id FROM information_schema.PROCESSLIST WHERE DB = ? AND ID <> CONNECTION_ID()',
+        [dbName]
+      );
+      for (const { id } of sessions as any[]) {
+        await connection.query('KILL ?', [id]).catch(() => {}); // already gone
+      }
+      await connection.query('SET SESSION lock_wait_timeout = 60');
+
       // Database-level grants live in mysql.db and survive DROP DATABASE, so
       // the tenant user keeps its access without re-granting.
+      dropIssued = true;
       await connection.query(`DROP DATABASE IF EXISTS \`${dbName}\``);
       await connection.query(`CREATE DATABASE \`${dbName}\` CHARACTER SET ${charset} COLLATE ${collation}`);
+    } catch (error: any) {
+      // MySQL drops table by table: once DROP was sent, the database may be changed.
+      if (!dropIssued) throw new DatabaseResetRefusedError(`Database ${dbName} was not reset: ${error?.message || error}`, { cause: error });
+      throw error;
     } finally {
-      connection.release();
+      if (connection) {
+        // Back to the server default before the connection returns to the pool.
+        await connection.query('SET SESSION lock_wait_timeout = DEFAULT').catch(() => {});
+        connection.release();
+      }
     }
   }
 
@@ -181,6 +203,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
 
   async dumpDatabase(tenantId: string, outputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
     // --routines/--events: stored procedures, functions and events are not
     // dumped by default (triggers are). MYSQL_PWD is named in argv but its
     // value comes from the spawned process env, so it never shows up in `ps`.
@@ -194,6 +217,7 @@ export class MySQLAdapter extends BaseDatabaseAdapter {
 
   async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
+    this.validateIdentifiers(dbName, this.getUserName(tenantId));
     // spawn (no shell) with stdin pipe; password goes via env, not argv
     return this.runRestoreFromFile({
       execOptions: ['-e', 'MYSQL_PWD'],

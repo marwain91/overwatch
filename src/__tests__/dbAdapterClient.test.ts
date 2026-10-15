@@ -11,6 +11,19 @@ vi.mock('child_process', async (orig) => {
   const actual = await orig<typeof import('child_process')>();
   return { ...actual, spawn: spawnMock, execFile: execFileMock };
 });
+// Every dump file read stream, to check it is closed when a restore fails.
+const readStreams = vi.hoisted(() => [] as Array<{ destroyed: boolean }>);
+vi.mock('fs', async (orig) => {
+  const actual = await orig<typeof import('fs')>();
+  return {
+    ...actual,
+    createReadStream: (...a: Parameters<typeof actual.createReadStream>) => {
+      const s = actual.createReadStream(...a);
+      readStreams.push(s);
+      return s;
+    },
+  };
+});
 vi.mock('pg', () => ({ Pool: class { on() {} end = vi.fn(async () => {}); } }));
 vi.mock('mysql2/promise', () => ({ default: { createPool: vi.fn(() => ({ end: vi.fn(async () => {}) })) } }));
 
@@ -118,14 +131,25 @@ describe.each(adapters)('%s client processes', (_name, make, pwVar) => {
     expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
   });
 
-  it('kill a hung restore locally and reject', async () => {
+  it('kill a hung restore locally, reject and close the dump file', async () => {
     const a = make() as any;
     a.clientTimeoutMs = 20;
     a.localKillGraceMs = 10;
     const proc = hungProc();
     spawnMock.mockImplementation(() => proc);
+    readStreams.length = 0;
+    // Large enough that the pipe is still waiting on the (hung) client.
+    await fs.writeFile(sqlFile, 'insert into t values (1);\n'.repeat(200_000));
     await expect(a.restoreDatabase('t1', sqlFile)).rejects.toThrow(/timed out/);
     expect(proc.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(readStreams).toHaveLength(1);
+    expect(readStreams[0].destroyed).toBe(true);
+  });
+
+  it('refuse an unsafe database identifier without starting a client', async () => {
+    await expect(make().dumpDatabase('T1;x', path.join(tmpDir, 'out.sql'))).rejects.toThrow(/Unsafe/);
+    await expect(make().restoreDatabase('T1;x', sqlFile)).rejects.toThrow(/Unsafe/);
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 });
 
@@ -143,17 +167,38 @@ describe('client arguments', () => {
     expect(argsOf(0)).toEqual(expect.arrayContaining(['pg_dump', '--no-owner', '--no-privileges', '-d', 'p_t1']));
   });
 
-  // Without ON_ERROR_STOP psql reports success after SQL errors. The objects of
-  // a --no-owner dump belong to whoever creates them, so the restore runs as
-  // the tenant's role; dumps from older versions name that same role in their
-  // OWNER TO statements, which the role may run on its own objects.
-  it('psql stops at the first error, in one transaction, as the tenant role', async () => {
+  // Without ON_ERROR_STOP psql reports success after SQL errors. A --no-owner
+  // dump's objects belong to whoever creates them: the dump runs as a
+  // temporary superuser role (so it can still create superuser-only
+  // extensions), whose objects are then handed to the tenant role, all in the
+  // one transaction (a failure leaves neither the objects nor the role).
+  it('psql stops at the first error, in one transaction, and hands the objects to the tenant role', async () => {
     await new PostgresAdapter(cfg('postgres')).restoreDatabase('t1', sqlFile);
     const args = argsOf(0);
     expect(args).toEqual(expect.arrayContaining(['psql', '-v', 'ON_ERROR_STOP=1', '--single-transaction', '-d', 'p_t1']));
-    const c = args.indexOf('-c');
-    expect(args[c + 1]).toBe('SET ROLE "p_t1"');
-    expect(args.slice(args.indexOf('-f'))).toEqual(['-f', '-']);
-    expect(c).toBeLessThan(args.indexOf('-f'));
+    const commands = args.flatMap((a, i) => (args[i - 1] === '-c' ? [a] : a === '-f' ? ['<dump>'] : []));
+    const role = /^CREATE ROLE "(ow_restore_[0-9a-f]{12})" SUPERUSER NOLOGIN$/.exec(commands[0])?.[1];
+    expect(role).toBeDefined();
+    expect(commands.slice(0, 7)).toEqual([
+      `CREATE ROLE "${role}" SUPERUSER NOLOGIN`,
+      `SET ROLE "${role}"`,
+      '<dump>',
+      'RESET ROLE',
+      `REASSIGN OWNED BY "${role}" TO "p_t1"`,
+      `DROP OWNED BY "${role}"`,
+      `DROP ROLE "${role}"`,
+    ]);
+    // Dumps from older versions name an owner; one naming another tenant's role is refused.
+    expect(commands[7]).toMatch(/^DO \$ow\$[\s\S]*relowner <> 'p_t1'::regrole[\s\S]*RAISE EXCEPTION 'restored objects are owned by/);
+    expect(commands).toHaveLength(8);
+    expect(args[args.indexOf('-f') + 1]).toBe('-');
+  });
+
+  it('uses a new temporary role for every restore', async () => {
+    const a = new PostgresAdapter(cfg('postgres'));
+    await a.restoreDatabase('t1', sqlFile);
+    await a.restoreDatabase('t1', sqlFile);
+    const roleOf = (call: number) => argsOf(call)[argsOf(call).indexOf('-c') + 1];
+    expect(roleOf(0)).not.toBe(roleOf(1));
   });
 });
