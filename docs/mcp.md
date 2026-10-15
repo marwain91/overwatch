@@ -77,6 +77,15 @@ on every request, so removing an admin revokes MCP access immediately.
   issued to (a refresh token presented by another client is revoked). A
   `resource` parameter, if sent, must be `<public_url>/mcp`; anything else is
   rejected with `invalid_target`. `expires_in` reflects `access_token_ttl`.
+- **Refresh token rotation.** Every refresh returns a new refresh token and
+  retires the old one. All tokens descending from one sign-in form a family:
+  presenting a retired token again (more than 10 seconds after it was
+  rotated) is treated as theft, revokes the whole family and is written to the
+  audit log, so the client has to sign in again. A refresh is also refused when
+  the grant is older than the admin's current entry in `admin-users.json`, so
+  removing an admin and adding them back does not revive their old MCP grants.
+  Refresh tokens issued before this check existed are accepted once and then
+  rotate into a family.
 - **Store hygiene.** Expired auth codes and refresh tokens are swept every 10
   minutes from `data/mcp-oauth.json`.
 

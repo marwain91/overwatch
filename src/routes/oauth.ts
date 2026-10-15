@@ -6,9 +6,10 @@ import { authorizationServerMetadata, protectedResourceMetadata } from '../oauth
 import {
   registerClient, getClient, touchClient, ClientLimitError, putAuthCode, consumeAuthCode,
   putConsentNonce, consumeConsentNonce, startOAuthSweeper,
-  saveRefreshToken, consumeRefreshToken, revokeRefreshToken,
+  saveRefreshToken, redeemRefreshToken, revokeRefreshToken,
 } from '../oauth/store';
-import { isAdminEmail, getUserRole, normaliseRole } from '../services/users';
+import { isAdminEmail, getUserRole, normaliseRole, listAdminUsers } from '../services/users';
+import { writeAuditEntry } from '../services/auditLog';
 import { resolveGoogleAdmin } from '../services/identity';
 import { issueAccessToken, generateRefreshToken, mcpResourceUrl } from '../oauth/tokens';
 import { verifyPkceS256 } from '../oauth/pkce';
@@ -69,6 +70,18 @@ function isInsecureRemote(redirectUri: string): boolean {
     const p = new URL(redirectUri);
     return p.protocol !== 'https:' && !LOOPBACK_HOSTS.has(p.hostname);
   } catch { return true; }
+}
+
+function auditOAuth(req: Request, entry: { user: string; action: string; status: number; details?: Record<string, unknown> }): void {
+  writeAuditEntry({
+    user: entry.user,
+    action: entry.action,
+    method: req.method,
+    path: req.baseUrl + req.path,
+    body: entry.details,
+    status: entry.status,
+    ip: req.ip || req.socket.remoteAddress || 'unknown',
+  });
 }
 
 function htmlEscape(s: string): string {
@@ -301,7 +314,10 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
 
       const access_token = issueAccessToken({ email: rec.email, role: rec.role, issuer, ttl: accessTtl });
       const refresh_token = generateRefreshToken();
-      await saveRefreshToken(refresh_token, { client_id: rec.client_id, email: rec.email, expires_at: Date.now() + refreshTtlMs });
+      const now = Date.now();
+      await saveRefreshToken(refresh_token, {
+        client_id: rec.client_id, email: rec.email, expires_at: now + refreshTtlMs, family_id: randomUUID(), granted_at: now,
+      });
       await touchClient(rec.client_id);
       return res.json(tokenResponse(access_token, refresh_token));
     }
@@ -311,13 +327,33 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
       if (!clientId) return res.status(400).json({ error: 'invalid_grant', error_description: 'client_id required' });
       const presented = req.body?.refresh_token;
       if (typeof presented !== 'string' || !presented) return res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token required' });
-      const rec = await consumeRefreshToken(presented, clientId);
-      if (!rec) return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown, expired or mismatched refresh token' });
-      if (!(await isAdminEmail(rec.email))) return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
-      const role = normaliseRole(await getUserRole(rec.email));
+      const redeemed = await redeemRefreshToken(presented, clientId);
+      if (!redeemed.ok) {
+        if (redeemed.reason === 'reused') {
+          console.warn(`[oauth] refresh token reuse for ${redeemed.email} (client ${redeemed.client_id}); grant revoked`);
+          auditOAuth(req, { user: redeemed.email, action: 'oauth refresh token reuse: grant revoked', status: 400, details: { client_id: redeemed.client_id } });
+        }
+        return res.status(400).json({ error: 'invalid_grant', error_description: 'unknown, expired or mismatched refresh token' });
+      }
+      const rec = redeemed.record;
+      // One read for membership, role and addedAt.
+      const user = (await listAdminUsers()).find(u => u.email.toLowerCase() === rec.email.toLowerCase());
+      if (!user) return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
+      // Records from before families have no granted_at; their last rotation
+      // time is expires_at - TTL (exact unless the TTL has changed since).
+      const grantedAt = rec.granted_at ?? rec.expires_at - refreshTtlMs;
+      const addedAt = Date.parse(user.addedAt);
+      // A grant from before the admin's current membership must not survive a remove + re-add.
+      if (!Number.isNaN(addedAt) && grantedAt < addedAt) {
+        return res.status(400).json({ error: 'invalid_grant', error_description: 'account no longer authorized' });
+      }
+      const role = normaliseRole(user.role);
       const access_token = issueAccessToken({ email: rec.email, role, issuer, ttl: accessTtl });
       const refresh_token = generateRefreshToken(); // rotation
-      await saveRefreshToken(refresh_token, { client_id: rec.client_id, email: rec.email, expires_at: Date.now() + refreshTtlMs });
+      await saveRefreshToken(refresh_token, {
+        client_id: rec.client_id, email: rec.email, expires_at: Date.now() + refreshTtlMs,
+        family_id: rec.family_id ?? randomUUID(), granted_at: grantedAt, rotated: rec.rotated,
+      });
       await touchClient(rec.client_id);
       return res.json(tokenResponse(access_token, refresh_token));
     }

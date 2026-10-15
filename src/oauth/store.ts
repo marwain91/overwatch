@@ -140,7 +140,19 @@ export function consumeAuthCode(code: string): AuthCode | undefined {
 }
 
 // ---- Refresh tokens (persisted hashed, rotating) ----
-export async function saveRefreshToken(token: string, rec: Omit<RefreshTokenRecord, 'token_hash'>): Promise<void> {
+// A rotated-out token presented again means the family leaked; the whole
+// family is revoked. A replay within the grace window is a client racing
+// itself (parallel refreshes) and is only refused.
+export const REFRESH_REUSE_GRACE_MS = 10_000;
+const MAX_ROTATED_REMEMBERED = 5;
+
+export type RefreshGrant = Omit<RefreshTokenRecord, 'token_hash'>;
+export type RefreshRedemption =
+  | { ok: true; record: RefreshGrant }
+  | { ok: false; reason: 'unknown' | 'expired' }
+  | { ok: false; reason: 'reused'; family_id: string; client_id: string; email: string };
+
+export async function saveRefreshToken(token: string, rec: RefreshGrant): Promise<void> {
   return withFileLock('mcp-oauth', async () => {
     const state = await readFileState();
     state.refreshTokens.push({ token_hash: sha256(token), ...rec });
@@ -148,23 +160,39 @@ export async function saveRefreshToken(token: string, rec: Omit<RefreshTokenReco
   });
 }
 
-// Returns the record and removes it (rotation). Expired/unknown -> undefined.
-// With expectedClientId, a token owned by another client is left untouched (returns undefined)
-// so a third party can't revoke a session just by presenting its token.
-export async function consumeRefreshToken(token: string, expectedClientId?: string): Promise<Omit<RefreshTokenRecord, 'token_hash'> | undefined> {
+// Removes the record (rotation) and returns it with its own hash appended to
+// `rotated`, ready to be carried into the successor. With expectedClientId,
+// a token owned by another client is left untouched so a third party can't
+// revoke a session just by presenting its token.
+export async function redeemRefreshToken(token: string, expectedClientId?: string): Promise<RefreshRedemption> {
   return withFileLock('mcp-oauth', async () => {
     const state = await readFileState();
     const hash = sha256(token);
+    const now = Date.now();
     const idx = state.refreshTokens.findIndex(t => t.token_hash === hash);
-    if (idx === -1) return undefined;
-    if (expectedClientId !== undefined && state.refreshTokens[idx].client_id !== expectedClientId) return undefined;
+    if (idx === -1) {
+      const family = state.refreshTokens.find(t => t.family_id && t.rotated?.some(r => r.token_hash === hash));
+      if (!family || (expectedClientId !== undefined && family.client_id !== expectedClientId)) return { ok: false, reason: 'unknown' };
+      const rotatedAt = family.rotated!.find(r => r.token_hash === hash)!.at;
+      if (now - rotatedAt < REFRESH_REUSE_GRACE_MS) return { ok: false, reason: 'unknown' };
+      state.refreshTokens = state.refreshTokens.filter(t => t.family_id !== family.family_id);
+      await writeFileState(state);
+      return { ok: false, reason: 'reused', family_id: family.family_id!, client_id: family.client_id, email: family.email };
+    }
+    if (expectedClientId !== undefined && state.refreshTokens[idx].client_id !== expectedClientId) return { ok: false, reason: 'unknown' };
     // Splice + persist unconditionally so an expired token can't be replayed.
     const [rec] = state.refreshTokens.splice(idx, 1);
     await writeFileState(state);
-    if (rec.expires_at < Date.now()) return undefined; // consumed but expired
-    const { token_hash, ...rest } = rec;
-    return rest;
+    if (rec.expires_at < now) return { ok: false, reason: 'expired' };
+    const { token_hash, rotated, ...rest } = rec;
+    return { ok: true, record: { ...rest, rotated: [...(rotated ?? []), { token_hash, at: now }].slice(-MAX_ROTATED_REMEMBERED) } };
   });
+}
+
+// Returns the record and removes it (rotation). Expired/unknown/reused -> undefined.
+export async function consumeRefreshToken(token: string, expectedClientId?: string): Promise<RefreshGrant | undefined> {
+  const r = await redeemRefreshToken(token, expectedClientId);
+  return r.ok ? r.record : undefined;
 }
 
 export async function revokeRefreshToken(token: string): Promise<void> {
