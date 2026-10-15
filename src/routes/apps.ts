@@ -9,9 +9,10 @@ import { requireConfirmId } from '../middleware/confirmDestructive';
 import { requireRole } from '../middleware/requireRole';
 import { getCurrentUserEmail } from '../utils/jwt';
 import { getAppTraefik, updateAppTraefik } from '../services/traefikConfig';
-import { assertAppRawLabelsOwned } from '../services/traefikLabels';
+import { assertAppRawLabelsOwned, assertNoGlobalMiddlewareShadowing } from '../services/traefikLabels';
 import { redactAppDefinition, redactAppTraefik, assertNoMaskedCredentials } from '../services/traefikRedaction';
 import { assertServiceNamesValid, assertHealthcheckDurationsValid } from '../utils/validators';
+import { loadConfig } from '../config';
 
 const router = Router();
 
@@ -62,6 +63,7 @@ router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   assertServiceNamesValid(parseResult.data.services);
   assertHealthcheckDurationsValid(parseResult.data.services);
   assertAppRawLabelsOwned(parseResult.data.id, parseResult.data.services);
+  assertNoGlobalMiddlewareShadowing(parseResult.data.traefik, loadConfig().traefik);
   assertNoMaskedCredentials(parseResult.data);
   const app = await createApp(parseResult.data);
   res.status(201).json(app);
@@ -90,6 +92,7 @@ router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (r
   assertServiceNamesValid(parseResult.data.services);
   assertHealthcheckDurationsValid(parseResult.data.services);
   assertAppRawLabelsOwned(appId, parseResult.data.services);
+  assertNoGlobalMiddlewareShadowing(parseResult.data.traefik, loadConfig().traefik);
   assertNoMaskedCredentials(parseResult.data);
   const app = await updateApp(parseResult.data);
   res.json(app);

@@ -143,6 +143,8 @@ Define middlewares once on the app, then reference them from any service:
 
 The app definition rides in the app's frozen tenant snapshot (v1.5.5), so middleware library changes only affect a tenant on the next `tenant update`.
 
+An app middleware may not use a name that the global `traefik.middlewares` library also defines: saving one is refused with HTTP 400. Global names are what `traefik.default_middlewares` refers to, so an app library must not be able to redefine, say, the global auth gate. An app definition stored before this check keeps loading; when its labels are generated the global definition is used for that name, with an `ignored app middleware` warning, and `overwatch config traefik doctor` reports it.
+
 ## Per-tenant overrides
 
 ```yaml
@@ -252,6 +254,7 @@ overwatch config traefik doctor
 Reports errors (exit 1) and warnings (exit 0) for:
 
 - Middleware references that don't resolve in any of `traefik.middlewares`, `app.traefik.middlewares` (per-app library), or tenant `middleware_overrides`.
+- App middlewares named like a global middleware (warning: the global definition is used).
 - Tenant `cert_resolver` overrides that point to a resolver name that isn't defined.
 - Cert-resolver `env: { KEY: ${VAR} }` entries where `VAR` is missing from the deploy `.env` and `process.env`.
 - `tls_termination: upstream` on the global config when the chosen `upstream_entrypoint` either isn't defined or has no `forwarded_headers.trusted_ips` configured.

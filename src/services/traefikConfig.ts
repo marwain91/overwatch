@@ -17,7 +17,7 @@ import type { TraefikTenant } from '../models/traefik';
 import { NotFoundError } from '../utils/httpErrors';
 import { tenantDir } from './tenantStore';
 import * as fs from 'fs/promises';
-import { assertTenantRawLabelsOwned } from './traefikLabels';
+import { assertTenantRawLabelsOwned, assertNoGlobalMiddlewareShadowing } from './traefikLabels';
 import {
   restoreMiddlewareCredentials,
   restoreRoutingCredentials,
@@ -164,10 +164,11 @@ export async function updateAppTraefik(appId: string, body: unknown): Promise<Tr
   const parsed = TraefikAppSchema.parse(body);
   const app = await getApp(appId);
   if (!app) throw new NotFoundError(`App '${appId}' not found`);
+  assertNoGlobalMiddlewareShadowing(parsed, loadConfig().traefik);
   const { createdAt: _c, updatedAt: _u, ...staticPart } = app;
   void _c; void _u;
-  // A non-admin editor saves what the masked read returned; the stored hashes are
-  // restored inside applyApp's lock so a concurrent rotation is not reverted.
+  // A body built from a masked (non-admin) read carries the placeholder; the stored
+  // hashes are restored inside applyApp's lock so a concurrent rotation is not reverted.
   const { app: saved } = await applyApp({ ...staticPart, traefik: parsed }, 'api:traefik-update', {
     restore: (candidate, stored) => {
       const t = (candidate as { traefik: TraefikApp }).traefik;

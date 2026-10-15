@@ -117,6 +117,11 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
     }
     expandMiddleware(name, spec, app, traefik, expanded);
   }
+  for (const name of expanded.keys()) {
+    if (hasOwn(app.traefik?.middlewares, name) && hasOwn(traefik?.middlewares, name)) {
+      console.warn(`[traefik] ignored app middleware "${name}" of ${app.id} on ${routerName}: the global middleware of the same name is used`);
+    }
+  }
 
   // Optional auto strip-prefix
   let stripPrefixName: string | null = null;
@@ -231,12 +236,33 @@ function resolveServiceMiddlewareNames(
   return out;
 }
 
+const hasOwn = (lib: Record<string, MiddlewareSpec> | undefined, name: string) =>
+  !!lib && Object.prototype.hasOwnProperty.call(lib, name);
+
+// Global first: global default_middlewares name admin-required middlewares (an
+// auth or ipAllowList gate), which an app library must not redefine. Writes
+// refuse such a name; this covers definitions stored before that check.
 function lookupMiddleware(
   name: string,
   app: AppDefinition,
   traefik: TraefikGlobal | undefined,
 ): MiddlewareSpec | undefined {
-  return app.traefik?.middlewares?.[name] ?? traefik?.middlewares?.[name];
+  if (hasOwn(traefik?.middlewares, name)) return traefik!.middlewares![name];
+  return hasOwn(app.traefik?.middlewares, name) ? app.traefik!.middlewares![name] : undefined;
+}
+
+/** Save-time check for an app middleware library: a name the global library also defines is refused. */
+export function assertNoGlobalMiddlewareShadowing(
+  appTraefik: { middlewares?: Record<string, unknown> } | undefined,
+  traefik: TraefikGlobal | undefined,
+): void {
+  for (const name of Object.keys(appTraefik?.middlewares ?? {})) {
+    if (hasOwn(traefik?.middlewares, name)) {
+      throw new ValidationError(
+        `App middleware "${name}" has the same name as a global middleware, which would be used instead; rename it`,
+      );
+    }
+  }
 }
 
 /** Recursively expand a middleware (incl. chain references) into the unique set needed. */
