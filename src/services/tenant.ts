@@ -10,6 +10,7 @@ import { getApp, applyApp } from './app';
 import { generateComposeFile, readComposeNames, protectUnownedVolumes } from './composeGenerator';
 import { ensureExternalVolumes } from './docker';
 import { readManifestFromAppImage, resolveManifestImageRef } from './manifestExtractor';
+import { ensureRegistryLogin, withRegistryLogin } from '../adapters/registry';
 import { applyManifestPolicy, manifestPolicyBaseline } from './manifestPolicy';
 import { writeTenantAppDef, resolveTenantApp, overlayGlobalApp } from './tenantAppDef';
 import { describeFailedInitContainers } from './initContainerDiagnostics';
@@ -314,6 +315,7 @@ export async function createTenantLocked(input: CreateTenantInput): Promise<Tena
 
     // Create external volumes and start tenant
     await ensureExternalVolumes(composePath);
+    await ensureRegistryLogin(app);
     upAttempted = true;
     await execDocker(
       ['compose', '--project-directory', tenantPath, '-f', composePath, input.start === false ? 'create' : 'up', ...(input.start === false ? [] : ['-d'])],
@@ -713,7 +715,7 @@ async function updateTenantLocked(
   // not found') leaves the tenant exactly as it was.
   emit('pull', 'started');
   try {
-    await execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull'], COMPOSE_LONG_TIMEOUT_MS);
+    await withRegistryLogin(app, () => execDocker(['compose', '--project-directory', tenantPath, '-f', composePath, 'pull'], COMPOSE_LONG_TIMEOUT_MS));
     await ensureExternalVolumes(composePath);
     emit('pull', 'completed');
   } catch (error: any) {

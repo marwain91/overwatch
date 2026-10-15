@@ -9,6 +9,12 @@ export interface RegistryAdapter {
   login(): Promise<void>;
 
   /**
+   * True when the adapter has credentials to log in with. Without them no login
+   * happens and pulls use whatever docker login state exists.
+   */
+  hasCredentials(): boolean;
+
+  /**
    * Get available image tags from the registry
    */
   getImageTags(): Promise<string[]>;

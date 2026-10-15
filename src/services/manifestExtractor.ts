@@ -1,12 +1,17 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import { constants as fsConstants } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { AppDefinition } from '../models/app';
+import { ensureRegistryLogin } from '../adapters/registry';
+import { assertRegistryUsable } from '../adapters/registry/validation';
+import { DockerCommandError, runDocker } from '../utils/runDocker';
+import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 
-const execFileAsync = promisify(execFile);
+// The caller holds the tenant lock: a hung daemon or registry must not pin it.
+// Every step but the pull is local to the daemon.
+const DOCKER_STEP_TIMEOUT_MS = 60_000;
 
 // A manifest is a small JSON app definition; anything larger is not one, and the
 // image is not trusted to keep Overwatch from reading an arbitrarily large file.
@@ -20,27 +25,38 @@ const MAX_MANIFEST_BYTES = 1024 * 1024;
  *
  * Failures other than "file not found" throw — they usually mean the image
  * can't be resolved, docker isn't reachable, or the path is malformed.
+ *
+ * `app`, when given, is the app whose registry login a pull needs.
  */
 export async function extractFileFromImage(
   imageRef: string,
   pathInImage: string,
+  app?: AppDefinition,
 ): Promise<string | null> {
+  // `--` already ends the options; this keeps a malformed reference from docker entirely.
+  if (/^-|[\u0000-\u0020\u007f]/.test(imageRef)) {
+    throw new Error(`Refusing to extract a manifest from malformed image reference ${JSON.stringify(imageRef)}`);
+  }
   try {
-    await execFileAsync('docker', ['image', 'inspect', imageRef]);
-  } catch {
+    await runDocker('docker', ['image', 'inspect', '--', imageRef], { timeoutMs: DOCKER_STEP_TIMEOUT_MS });
+  } catch (err) {
+    // A pull would hit the same unreachable or hung daemon, for up to an hour.
+    if (err instanceof DockerCommandError && (err.kind === 'timeout' || err.kind === 'daemon_unreachable')) throw err;
     // Image not locally present — pull it.
-    await execFileAsync('docker', ['pull', imageRef]);
+    if (app) await ensureRegistryLogin(app);
+    await runDocker('docker', ['pull', '--', imageRef], { timeoutMs: COMPOSE_LONG_TIMEOUT_MS });
   }
 
   // A private directory, so nothing else can pre-create or swap the target path.
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ow-manifest-'));
-  let cid: string | undefined;
+  // Named rather than identified by the ID `create` prints: if `create` times
+  // out after the daemon made the container, the name still finds it.
+  const container = `ow-manifest-${crypto.randomBytes(8).toString('hex')}`;
   try {
-    const { stdout: createOut } = await execFileAsync('docker', ['create', imageRef]);
-    cid = createOut.trim();
+    await runDocker('docker', ['create', '--name', container, '--', imageRef], { timeoutMs: DOCKER_STEP_TIMEOUT_MS });
     const tmpFile = path.join(tmpDir, 'manifest.json');
     try {
-      await execFileAsync('docker', ['cp', `${cid}:${pathInImage}`, tmpFile]);
+      await runDocker('docker', ['cp', `${container}:${pathInImage}`, tmpFile], { timeoutMs: DOCKER_STEP_TIMEOUT_MS });
     } catch (err: any) {
       const msg = `${err?.stderr || ''} ${err?.message || ''}`;
       if (/no such file|could not find|not found|does not exist/i.test(msg)) {
@@ -78,7 +94,10 @@ export async function extractFileFromImage(
     }
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    if (cid) await execFileAsync('docker', ['rm', '-f', cid]).catch(() => {});
+    await runDocker('docker', ['rm', '-f', container], { timeoutMs: DOCKER_STEP_TIMEOUT_MS }).catch((err) => {
+      if (err instanceof DockerCommandError && err.kind === 'unknown_container') return;
+      console.warn(`[manifest] Could not remove temporary container ${container}: ${err?.message || err}`);
+    });
   }
 }
 
@@ -113,13 +132,22 @@ export async function readManifestFromAppImage(
 ): Promise<unknown | null> {
   const imageRef = resolveManifestImageRef(app, imageTag);
   if (!imageRef) return null;
+  assertRegistryUsable(app, 'pull');
   const pathInImage = resolveManifestPathInImage(app);
-  const raw = await extractFileFromImage(imageRef, pathInImage);
+  const raw = await extractFileFromImage(imageRef, pathInImage, app);
   if (raw === null) return null;
+  let manifest: unknown;
   try {
-    return JSON.parse(raw);
+    manifest = JSON.parse(raw);
   } catch {
     // The parser's message quotes the input; keep file content out of errors and logs.
     throw new Error(`Manifest at ${imageRef}:${pathInImage} is not valid JSON`);
   }
+  // Where to pull from is the app's decision, not the image's: tenant update
+  // replaces this block anyway, and an image built with an older registry
+  // config must not fail manifest validation over it.
+  if (manifest && typeof manifest === 'object' && !Array.isArray(manifest) && 'registry' in manifest) {
+    return { ...manifest, registry: app.registry };
+  }
+  return manifest;
 }

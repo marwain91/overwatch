@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const spawnSyncMock = vi.fn();
-vi.mock('child_process', () => ({
-  spawnSync: (...args: any[]) => spawnSyncMock(...args),
+const runDockerMock = vi.fn();
+vi.mock('../utils/runDocker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/runDocker')>()),
+  runDocker: (...args: any[]) => runDockerMock(...args),
 }));
 
 import { GHCRAdapter } from '../adapters/registry/ghcr';
@@ -11,7 +12,7 @@ const fetchMock = vi.fn();
 
 describe('GHCRAdapter — PAT (token) auth path', () => {
   beforeEach(() => {
-    spawnSyncMock.mockReset();
+    runDockerMock.mockReset();
     fetchMock.mockReset();
     vi.stubGlobal('fetch', fetchMock);
   });
@@ -21,16 +22,16 @@ describe('GHCRAdapter — PAT (token) auth path', () => {
   });
 
   it('docker login uses the static token', async () => {
-    spawnSyncMock.mockReturnValue({ status: 0, stderr: Buffer.from('') });
+    runDockerMock.mockResolvedValue({ stdout: '', stderr: '' });
     const adapter = new GHCRAdapter({
       type: 'ghcr', url: 'ghcr.io', repository: 'org/repo', token: 'pat_abc',
     });
 
     await adapter.login();
 
-    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-    const [, args, opts] = spawnSyncMock.mock.calls[0];
-    expect(args).toEqual(['login', 'ghcr.io', '-u', 'x-access-token', '--password-stdin']);
+    expect(runDockerMock).toHaveBeenCalledTimes(1);
+    const [, args, opts] = runDockerMock.mock.calls[0];
+    expect(args).toEqual(['login', '--username=x-access-token', '--password-stdin', '--', 'ghcr.io']);
     expect(opts.input).toBe('pat_abc');
   });
 
@@ -56,7 +57,7 @@ describe('GHCRAdapter — PAT (token) auth path', () => {
       type: 'ghcr', url: 'ghcr.io', repository: 'org/repo',
     });
     await adapter.login();
-    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(runDockerMock).not.toHaveBeenCalled();
   });
 
   it('error message references PAT scope (no longer mentions GitHub App, removed in v1.6.7)', async () => {

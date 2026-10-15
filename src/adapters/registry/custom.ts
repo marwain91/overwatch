@@ -1,7 +1,7 @@
 import { fetchNoRedirect } from './safeFetch';
-import { spawnSync } from 'child_process';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 import { validateRegistryUrl } from './urlValidation';
+import { dockerLogin } from './login';
 
 /**
  * Custom/self-hosted registry adapter
@@ -14,6 +14,10 @@ export class CustomRegistryAdapter implements RegistryAdapter {
     this.config = config;
   }
 
+  hasCredentials(): boolean {
+    return !!(this.config.username && this.config.token);
+  }
+
   async login(): Promise<void> {
     if (!this.config.username || !this.config.token) {
       console.log('Custom registry credentials not configured, skipping login');
@@ -23,14 +27,7 @@ export class CustomRegistryAdapter implements RegistryAdapter {
     try {
       console.log(`Authenticating with custom registry ${this.config.url}...`);
 
-      const result = spawnSync(
-        'docker', ['login', this.config.url, '-u', this.config.username, '--password-stdin'],
-        { input: this.config.token, stdio: ['pipe', 'pipe', 'pipe'] }
-      );
-
-      if (result.status !== 0) {
-        throw new Error(result.stderr?.toString() || 'docker login failed');
-      }
+      await dockerLogin(this.config.url, this.config.username, this.config.token);
 
       console.log(`Successfully logged in to ${this.config.url}`);
     } catch (error) {

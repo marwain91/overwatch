@@ -18,15 +18,79 @@ export const AppRegistryAuthSchema = z.object({
   aws_region_env: z.string().optional(),
 });
 
+// `url` and `repository` become `docker login/pull/create` arguments and image
+// references, and parts of registry API URLs. Each piece must start with a
+// letter or digit (never `-`, so never an option) and use the reference
+// charset, which also rules out whitespace and URL syntax. Case is not
+// checked: docker refuses uppercase repositories itself, and older images
+// embed such values in their manifests.
+const REGISTRY_PATH_COMPONENT = '[A-Za-z0-9][A-Za-z0-9._-]*';
+const REGISTRY_URL_RE = new RegExp(
+  `^(?:[A-Za-z0-9][A-Za-z0-9._-]*|\\[[0-9A-Fa-f:.]+\\])(?::[0-9]{1,5})?(?:/${REGISTRY_PATH_COMPONENT})*$`,
+);
+const REGISTRY_REPOSITORY_RE = new RegExp(`^${REGISTRY_PATH_COMPONENT}(?:/${REGISTRY_PATH_COMPONENT})*$`);
+
+// An http(s) URL, or a bare host as validateRegistryUrl accepts, with no
+// credentials, query or fragment.
+function isRegistryApiUrl(value: string): boolean {
+  if (value.startsWith('-') || /[\u0000-\u0020\u007f]/.test(value) || /[?#]/.test(value)) return false;
+  let url: URL;
+  try {
+    url = new URL(value.includes('://') ? value : `https://${value}`);
+  } catch {
+    return false;
+  }
+  return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password;
+}
+
+export type RegistryField = 'url' | 'repository' | 'api_url';
+
+const REGISTRY_FIELD_CHECKS: Record<RegistryField, { valid: (value: string) => boolean; message: string }> = {
+  url: {
+    valid: v => REGISTRY_URL_RE.test(v),
+    message: 'must be a registry host with optional port and path, e.g. ghcr.io or registry.acme.com:5050',
+  },
+  repository: {
+    valid: v => REGISTRY_REPOSITORY_RE.test(v),
+    message: 'must be a repository path such as org/app: letters, digits, ".", "_" and "-", separated by "/"',
+  },
+  api_url: {
+    valid: isRegistryApiUrl,
+    message: 'must be an http(s) URL without credentials, query or fragment, e.g. https://gitlab.acme.com',
+  },
+};
+
+/**
+ * Format problems of the registry fields, as `registry.<field>: <message>`.
+ * The schema only trims these fields, so stored definitions written before the
+ * formats existed keep loading; new input is checked on write (services/app.ts)
+ * and every value is checked again right before docker or a registry API sees it.
+ */
+export function registryFieldErrors(
+  registry: { url: string; repository: string; api_url?: string },
+  fields: RegistryField[] = ['url', 'repository', 'api_url'],
+): string[] {
+  const errors: string[] = [];
+  for (const field of fields) {
+    const value = registry[field];
+    if (value === undefined && field === 'api_url') continue;
+    if (typeof value !== 'string' || !REGISTRY_FIELD_CHECKS[field].valid(value)) {
+      errors.push(`registry.${field}: ${REGISTRY_FIELD_CHECKS[field].message}`);
+    }
+  }
+  return errors;
+}
+
 // Registry configuration for app.
 // `api_url` is required for self-hosted GitLab where the registry host
 // (e.g. registry.acme.com:5050) and the REST API host (gitlab.acme.com)
 // differ. Unused (and unset) for GHCR/DockerHub/ECR/Custom.
+// Surrounding whitespace is trimmed: a pasted value then still works.
 export const AppRegistrySchema = z.object({
   type: z.enum(['ghcr', 'dockerhub', 'ecr', 'custom', 'gitlab']),
-  url: z.string(),
-  api_url: z.string().optional(),
-  repository: z.string(),
+  url: z.string().trim(),
+  api_url: z.string().trim().optional(),
+  repository: z.string().trim(),
   auth: AppRegistryAuthSchema,
   tag_pattern: z.string().optional(),
 });
