@@ -105,11 +105,17 @@ async function migrateLegacyTenant(opts: {
   // Tenant .env holds the DB password: 0600 + atomic, as tenant.ts writes it.
   await writeSecretFile(envPath, envContent);
 
-  // Regenerate docker-compose.yml with new container naming
+  // Regenerate docker-compose.yml with new container naming. The copied file
+  // is passed in so the tenant keeps the volume names that hold its data.
   const domain = tenantDomainFromEnv(envContent);
   if (domain) {
-    const composeContent = generateComposeFile({ app: opts.app, tenantId, domain, config: opts.config });
-    await fs.writeFile(path.join(newPath, 'docker-compose.yml'), composeContent);
+    const composePath = path.join(newPath, 'docker-compose.yml');
+    const existingCompose = await fs.readFile(composePath, 'utf-8').catch((err: any) => {
+      if (err?.code === 'ENOENT') return undefined;
+      throw err;
+    });
+    const composeContent = generateComposeFile({ app: opts.app, tenantId, domain, config: opts.config, existingCompose });
+    await fs.writeFile(composePath, composeContent);
   }
 }
 

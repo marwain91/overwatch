@@ -118,6 +118,23 @@ describe('runMigration — marker only on success, quoting-aware .env edits', ()
     expect(fsSync.existsSync(marker())).toBe(false);
   });
 
+  it('keeps the volume names the legacy tenant already uses, so its data is not left behind', async () => {
+    await legacyTenant('t1', 'TENANT_DOMAIN=t1.example.com\n');
+    // Legacy services only had backup paths, mounted as an unscoped `<service>-<local>` volume.
+    await fs.writeFile(path.join(tenantsDir(), 't1', 'docker-compose.yml'),
+      'services:\n  web:\n    image: x\n    volumes:\n      - web-uploads:/data\nvolumes:\n  web-uploads:\n    name: web-uploads\n');
+    await fs.writeFile(configPath, yaml.dump({
+      ...LEGACY_YAML, data_dir: dataDir,
+      services: [{ name: 'web', image_suffix: '-web', backup: { enabled: true, paths: [{ container: '/data', local: 'uploads' }] } }],
+    }));
+    const { runMigration } = await import('../services/migration');
+    await runMigration();
+
+    const compose = yaml.load(fsSync.readFileSync(path.join(tmpRoot, 'apps', 'acme', 'tenants', 't1', 'docker-compose.yml'), 'utf-8')) as any;
+    expect(compose.services.web.volumes).toEqual(['web-uploads:/data']);
+    expect(compose.volumes).toEqual({ 'web-uploads': { external: true } });
+  });
+
   it('reads a quoted TENANT_DOMAIN and adds APP_ID even when another key ends in APP_ID', async () => {
     await legacyTenant('t1', "SOME_APP_ID=other\nTENANT_DOMAIN='shop.example.com'\n");
     // A routed service, so the regenerated compose carries the tenant's Host rule.
