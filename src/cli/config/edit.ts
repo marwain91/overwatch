@@ -1,7 +1,7 @@
 import inquirer from 'inquirer';
 import { loadConfig, loadRawConfig, findConfigPath } from '../../config/loader';
-import { writeOverwatchConfig, ConfigValidationError } from '../../config/writer';
-import { header, success, warn, fail, info, BOLD, DIM, GREEN, RED, NC } from './utils';
+import { updateOverwatchConfig, ConfigValidationError } from '../../config/writer';
+import { header, success, warn, fail, info, restartNotice, BOLD, DIM, GREEN, RED, NC } from './utils';
 
 const EDITABLE_SECTIONS = [
   'project',
@@ -206,20 +206,20 @@ export async function runConfigEdit(args: string[]): Promise<void> {
     return;
   }
 
-  // Apply changes to raw config
-  if (!rawConfig[section] || typeof rawConfig[section] !== 'object') {
-    rawConfig[section] = {};
-  }
-
-  for (const [key, value] of Object.entries(changes)) {
-    // key is relative to section, e.g. "host" or "auth.type"
-    setNestedValue(rawConfig[section] as Record<string, unknown>, key, value);
-  }
-
-  // The writer validates before touching the file.
+  // Apply only the changed keys to the file as it is now, under the config lock:
+  // the prompts can take minutes, and the UI may have saved other sections
+  // (e.g. Traefik) meanwhile. The writer validates before touching the file.
   warn('YAML comments will not be preserved.');
   try {
-    await writeOverwatchConfig(rawConfig);
+    await updateOverwatchConfig(raw => {
+      if (!raw[section] || typeof raw[section] !== 'object') {
+        raw[section] = {};
+      }
+      for (const [key, value] of Object.entries(changes)) {
+        // key is relative to section, e.g. "host" or "auth.type"
+        setNestedValue(raw[section] as Record<string, unknown>, key, value);
+      }
+    });
   } catch (err: any) {
     if (err instanceof ConfigValidationError) {
       fail('Validation failed with the new values:');
@@ -237,5 +237,6 @@ export async function runConfigEdit(args: string[]): Promise<void> {
   }
 
   success(`Configuration saved to ${getConfigPath()}`);
+  restartNotice();
   console.log('');
 }

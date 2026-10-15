@@ -30,3 +30,8 @@ export function fail(msg: string): void {
 export function info(msg: string): void {
   console.log(`  ${DIM}${msg}${NC}`);
 }
+
+/** The server caches overwatch.yaml for its lifetime; CLI edits reach it only on restart. */
+export function restartNotice(): void {
+  warn('The running Overwatch server reads overwatch.yaml only at startup. Run `overwatch recreate` to apply this change.');
+}

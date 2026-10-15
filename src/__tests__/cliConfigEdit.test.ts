@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as yaml from 'js-yaml';
@@ -11,6 +12,8 @@ let configPath: string;
 let dataDir: string;
 let answers: string[];
 let output: string[];
+// Runs before each input prompt is answered (simulates another writer meanwhile).
+let onInputPrompt: (() => void) | undefined;
 
 const BASE = {
   project: { name: 'Acme', prefix: 'acme', db_prefix: 'acme' },
@@ -22,6 +25,7 @@ vi.mock('inquirer', () => ({
     prompt: async (qs: any[]) => {
       const q = qs[0];
       if (q.type === 'confirm') return { [q.name]: true };
+      onInputPrompt?.();
       // Answer in order; an unset entry keeps the default.
       const next = answers.shift();
       return { [q.name]: next === undefined || next === '' ? q.default : next };
@@ -38,6 +42,7 @@ beforeEach(async () => {
   await fs.writeFile(configPath, yaml.dump({ ...BASE, data_dir: dataDir }));
   process.env.OVERWATCH_CONFIG = configPath;
   output = [];
+  onInputPrompt = undefined;
   vi.spyOn(console, 'log').mockImplementation((...a: any[]) => { output.push(a.join(' ')); });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -76,7 +81,8 @@ describe('overwatch config edit', () => {
     answers = ['Renamed'];
     vi.doMock('../config/writer', async () => {
       const actual = await vi.importActual<any>('../config/writer');
-      return { ...actual, writeOverwatchConfig: async () => { throw Object.assign(new Error('EACCES: cannot take lock'), { code: 'EACCES' }); } };
+      const fail = async () => { throw Object.assign(new Error('EACCES: cannot take lock'), { code: 'EACCES' }); };
+      return { ...actual, writeOverwatchConfig: fail, updateOverwatchConfig: fail };
     });
     const { runConfigEdit } = await import('../cli/config/edit');
     await runConfigEdit(['project']);
@@ -85,5 +91,31 @@ describe('overwatch config edit', () => {
     expect(text).toContain('EACCES');
     expect(text).not.toContain('Fix the values');
     expect(text).toContain('not saved');
+  });
+});
+
+describe('overwatch config edit — concurrent writers and restart notice', () => {
+  it('keeps a change another writer (the UI) made to overwatch.yaml while the prompts were open', async () => {
+    answers = ['Renamed'];
+    let touched = false;
+    onInputPrompt = () => {
+      if (touched) return;
+      touched = true;
+      const raw = yaml.load(fsSync.readFileSync(configPath, 'utf-8')) as any;
+      raw.traefik = { cert_resolvers: [{ name: 'le', challenge: 'http', acme_email: 'a@b.co', entrypoint: 'web' }] };
+      fsSync.writeFileSync(configPath, yaml.dump(raw));
+    };
+    const { runConfigEdit } = await import('../cli/config/edit');
+    await runConfigEdit(['project']);
+    const saved = yaml.load(await fs.readFile(configPath, 'utf-8')) as any;
+    expect(saved.project.name).toBe('Renamed');
+    expect(saved.traefik?.cert_resolvers?.[0]?.name).toBe('le');
+  });
+
+  it('says the running server needs a restart to pick up the change', async () => {
+    answers = ['Renamed'];
+    const { runConfigEdit } = await import('../cli/config/edit');
+    await runConfigEdit(['project']);
+    expect(output.join('\n')).toMatch(/restart|recreate/i);
   });
 });
