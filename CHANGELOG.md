@@ -7,21 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-10-15
+
+A security and reliability release from a whole-app audit. Read the **Upgrade notes** before upgrading: some editor permissions are tightened, the restore API needs a confirmation header, and installs should be checked for tenant volumes shared between tenants.
+
 ### Security
 
-- **An unauthenticated client can no longer crash Overwatch through `/ws`.** A WebSocket upgrade whose request target does not parse, a `Host` header that is not a valid URL host (`host:x`), or a first frame over the 4 KB payload limit each raised an uncaught error and took the whole process down: UI, API, MCP and any tenant update or restore in flight.
-- **Editing a tenant override without re-sending `sensitive` no longer unmasks it.** An omitted flag keeps the stored one, and a new override of a sensitive global variable inherits its flag; previously both defaulted to non-sensitive and the value became visible to viewers.
-- **Deleting a backup snapshot checks that it belongs to the app.** Apps may share a restic repository, and `restic forget <id>` removed any snapshot in it, so an admin deleting through app A could remove app B's backup. An id that is not tagged for the app now answers `404`.
-- **A tenant can no longer claim the admin UI host on installs routed by the legacy `OVERWATCH_ADMIN_HOST` labels.** That host is now reserved like `traefik.overwatch.host`, so an editor cannot create a tenant on it or add it as an alias.
-- **Client registration caps each `redirect_uris` entry at 2048 characters.** Registration is unauthenticated and every client is persisted, so one request could add about 1 MB to the OAuth store.
+- **An unauthenticated client can no longer crash Overwatch through `/ws`.** A WebSocket upgrade whose request target does not parse, a `Host` header that is not a valid URL host (`host:x`), or a first frame over the 4 KB payload limit each raised an uncaught error and took the whole process down: UI, API, MCP and any tenant update or restore in flight. Upgrades are now also rate-limited per IP, unauthenticated sockets are capped per IP (the oldest unauthenticated socket is evicted at the global ceiling), and a socket that fails or times out authentication is freed at once.
+- **Tenants no longer share Docker volumes.** A `volumes[]` entry without `name_template`, and a backup path no volume already mounts, became one Docker volume used by every tenant of every app with that service: tenants saw each other's files, every backup held every tenant's files, a restore wrote into the shared volume, and deleting one tenant could remove everyone's data. New tenants get `<app>-<tenant>-<name>` volumes. Existing tenants keep the names their compose file already uses, now declared external so a delete never removes them (see Upgrade notes).
+- **Editing an app's Traefik config is admin-only.** An editor could add a `forwardAuth` default middleware that sent every tenant user's `Cookie` and `Authorization` headers to any URL. App middlewares can no longer redefine a global middleware, global `default_middlewares` always apply to tenant routers (tenant `middleware_overrides` and raw labels can neither drop nor redefine them), and tenant raw labels can no longer redirect users off the tenant's hosts, forge identity headers (`Authorization`, `X-Forwarded-User`, `Remote-*`, …), empty CSP/HSTS/X-Frame-Options, or allow credentialed CORS from any origin.
+- **Only admins can set, delete or read tenant admin-token secrets.** Editors could set `AUTH_SERVICE_SECRET` or an app's `admin_access.secret_env` as a variable or tenant override; `shared.env` beats `.env` and the image ENV, so they could sign their own tenant system-admin token. Non-admins now get `403` for those keys and always see them masked.
+- **`X-Forwarded-For` is honoured only from the Traefik container.** Tenants share Overwatch's Docker network, so a compromised tenant could forge client IPs to dodge per-IP limits (including client registration) and fake audit-log IPs. Set `OVERWATCH_TRUST_PROXY_HOST` (default `<project.prefix>-traefik`) for another proxy.
+- **Postgres restores run with only the tenant's privileges.** The restore connects as the tenant's database role, so neither a crafted dump nor index or CHECK expressions in tenant data run as superuser, and a dump cannot switch back to the superuser. Dumps are taken with `--no-owner --no-privileges`; older dumps still restore. The MySQL restore still runs as the DB root user.
+- **Restoring and deleting backups is checked and confirmed.** A restore or snapshot delete only accepts a snapshot tagged for the app and, in place, for the target tenant (a cross-tenant restore is an explicit opt-in); restore requires `X-Confirm-Id` with the target tenant, and the UI asks for the tenant id before restoring and confirms before deleting a snapshot. Before, an app's delete could remove another app's snapshot in a shared repository, and one click could restore one customer's data into another tenant.
+- **Child processes no longer inherit Overwatch's secrets.** Database dump/restore clients, registry logins, manifest extraction, `infra deploy` and the Traefik reload run with an allowlisted environment instead of the full process env (which held `JWT_SECRET`, the DB root password and registry tokens). A test now fails if a new module spawns processes outside this boundary.
+- **A tenant can no longer claim the admin UI host** on installs routed by the legacy `OVERWATCH_ADMIN_HOST` labels; it is reserved like `traefik.overwatch.host`. Host-alias writes are now serialised with tenant creation, so two tenants can no longer claim the same host concurrently.
+- **Volume names that would mount a host path are refused.** A volume `name` or `name_template` starting with `/` or `.`, or containing `:`, became a host bind mount (for example `/var/run/docker.sock`). Saving one now fails; stored definitions still load, with a warning.
+- **Registry `url`, `repository` and `api_url` are validated before use.** A value starting with `-` reached `docker login`/`pull`/`create` as an option. New or changed values must follow the registry reference format; stored values that don't still load with a warning, but Overwatch refuses to pull, log in or list tags for that app until they are fixed. Docker calls end their options with `--`.
+- **MCP OAuth hardening.** Reusing a rotated refresh token revokes the whole grant; a removed and re-added admin no longer gets old grants back; client registration has its own stricter per-IP limit and caps each `redirect_uris` entry at 2048 characters; the consent page shows the full redirect URI; consent, token issuance, refresh, revoke and web sign-ins are audit-logged.
+- **Signing out revokes the session on the server.** Sessions carry an id that sign-out records until the token expires; the API and the WebSocket refuse it.
+- **MCP tool roles are enforced centrally** and role denials are audit-logged, like REST `403`s.
+- **Container logs require the editor role.** Tenant logs can hold PII and tokens; viewers no longer see them.
+- **Backup restore, backup prune and DB process kill count against the destructive rate limit,** and `/api/monitoring` and `/api/database` are now covered by it. Classification follows Express routing exactly (case-insensitive paths cannot bypass it).
+- **Secrets stay masked for non-admins.** Editing a tenant override without re-sending `sensitive` keeps the stored flag (a new override of a sensitive global variable inherits it); every cert-resolver env value is masked; static `env_mapping` values in app definitions are masked. Saving a masked value back keeps the stored one.
+- **The audit log no longer stores credentials.** Traefik-bearing request bodies (global, app and tenant Traefik config, app definitions) are masked before auditing, and basicAuth/digestAuth `users` lists are redacted.
+- **Config snapshots are safer.** Restore reads only real files inside `.snapshots` (no symlinks, no path names) and is atomic and locked; snapshots no longer include `audit.log` or the MCP OAuth store, so restoring an old one cannot revive revoked grants.
+- **Browser hardening.** CSP `connect-src` is pinned to `'self'` (no longer any `wss:` host), and HSTS is sent over HTTPS.
+- **MySQL database-level grants escape `_` and `%`,** so a tenant grant no longer matches other databases whose names differ only in those positions.
+- **Release images and CLI binaries carry signed build-provenance attestations,** and the image's base is pinned by digest (see [updating.md](docs/updating.md) to verify).
 
 ### Fixed
 
-- **A database restore that stops early no longer crashes Overwatch.** When the `mysql`/`psql` client exits at the first SQL error while the dump is still streaming (EPIPE), or the dump file cannot be read, the restore now fails with the client's error instead of an uncaught exception that killed the process mid-restore (and skipped create-from-backup rollback).
-- **A database dump resolves only once the file is fully written**, so a failed final flush fails the backup instead of archiving a truncated dump; a dump whose output cannot be written also stops the dump client.
-- **Expired, malformed or revoked MCP access tokens get `401` with `WWW-Authenticate`** instead of a `500`, so MCP clients refresh their token instead of failing.
-- **`/oauth/token` and `/oauth/revoke` answer a missing or repeated token parameter** with `invalid_request` / `200` instead of a `500`.
-- **Adding an admin user with an email the user store rejects (for example `a..b@example.com`) is refused with `400`.** It was saved, after which every read of the store failed and every user was locked out until the file was edited by hand.
+- **Backup retention now deletes old snapshots.** `restic forget` grouped by host and path, and every snapshot had its own path, so nothing was ever pruned. It now groups by tag within the app's own snapshots; `dryRun: true` shows what would go.
+- **Backups no longer fail silently.** A run that cannot list its tenants (for example with Docker down) is a failed run, a backup whose file copies failed is reported incomplete, failures go to the error log, and the new `backup_failed` and `backup_stale` alert rules report them.
+- **In-place restore is safe.** It stops the tenant, takes a `pre-restore` snapshot, resets the database so tables that exist only in the live database do not survive, imports, copies files, and rolls back to the pre-restore copy if anything fails. Postgres restores abort on the first SQL error instead of reporting success.
+- **A failed tenant update restores its database.** The database is dumped right before the new version starts; if the restart fails, the database is put back before the previous version starts again (if the dump cannot be taken, the update stops with nothing changed).
+- **A database restore that stops early no longer crashes Overwatch** (an unhandled EPIPE killed the process mid-restore and skipped create-from-backup rollback), and a dump resolves only once its file is fully written.
+- **Dumps, restores, registry calls and manifest extraction have timeouts,** so a hung client can no longer block every later scheduled backup or hold a tenant lock forever; the dump/restore timeout is enforced inside the DB container.
+- **A backup can no longer capture a half-restored database:** backups take the tenant lock. Backups include stored routines and events (`mysqldump --routines --events`), staging directories can no longer collide and are swept at startup, scheduled backups of different apps run one at a time, and `restic unlock` no longer removes live locks unless forced.
+- **"Keep data" delete keeps the tenant's volumes and saves its `.env`** (with the database password) under `data/deleted-tenants/`; it used to delete the volumes. Re-creating over a kept database explains what to do.
+- **Start and restart apply tenant routing changes.** Host aliases and middleware overrides were only applied on the next image update, although the UI said a restart applies them.
+- **Hyphenated app and tenant ids can create tenants,** and a tenant whose compose project, container, database or volume names would collide with another tenant's is refused. The MySQL 32-character user-name limit is checked up front.
+- **Deleting a trashed app's tenant drops its real database** (it guessed the name from the project default prefix and orphaned the database), and fails closed when the name cannot be determined.
+- **Image cleanup keeps tags another tenant still uses,** so a stopped tenant can always start again.
+- **An update without an `IMAGE_TAG` line in the tenant `.env` fails** instead of reporting a success that never happened.
+- **Overwatch logs in to an app's registry before each pull,** not only at boot: apps added later, rotated tokens and expired ECR tokens work without a restart, and apps sharing a registry host with different credentials no longer overwrite each other's login mid-pull. ECR tag listing no longer blocks the server and reports errors instead of an empty list.
+- **A lost, legacy or mismatched env store no longer empties tenants' `shared.env`.** A missing `env-vars.json` or `tenant-env-overrides.json` is no longer recreated empty while tenants still have variables, the legacy array format is refused instead of read as empty, and regeneration keeps a tenant's file when no store knows its app.
+- **Env values containing ` #`, a leading quote or a trailing backslash are quoted,** so compose no longer truncates them or fails to parse the tenant's env file.
+- **One malformed admin email can no longer lock every user out,** and `ALLOWED_ADMIN_EMAILS` now seeds an empty `admin-users.json`, so the first sign-in after `overwatch init` works.
+- **`health_check_failed` alerts fire** once per outage when consecutive failures reach `consecutive_failures` (they could never fire), and **`container_down` no longer alerts for deliberate stops and deletes.**
+- **A hung `docker stats` call no longer freezes metrics and CPU/memory alerts;** stats calls time out after 10 s and at most 10 run at once.
+- **Concurrent notification-channel edits are no longer lost.**
+- **Expired, malformed or revoked MCP access tokens get `401` with `WWW-Authenticate`** instead of `500`, so MCP clients refresh; `/oauth/token` and `/oauth/revoke` answer malformed token parameters with `400`/`200` instead of `500`.
+- **A crash loop can no longer rotate out the pre-incident config snapshots;** boot snapshots are deduplicated and capped on their own, and `snapshot prune --keep 0` is rejected.
+- **Migrations are safe to re-run** after a partial failure, `OVERWATCH_AUTO_MIGRATE=1` really runs them, markers are written only on success, and a migrated legacy tenant keeps the volume names that hold its data.
+- **`overwatch config edit` no longer overwrites concurrent UI changes,** and `config traefik doctor` on the host sees tenant overrides.
+- **File locks can no longer be stolen from a live holder** (including a host CLI) or double-held after a reclaim race.
+- **Every app write path enforces the same checks** (REST, `overwatch apps apply`, image manifests); creating an app with an id in the trash, or purging an app whose tenants still exist, is refused.
+- **The saved theme applies before first paint again** (its inline script was blocked by the CSP), and **a crash is logged with its cause** before the process exits.
+
+### Changed
+
+- **New alert rules `backup_failed` and `backup_stale`** (with `max_age_hours`, default 26).
+- **Start and restart regenerate the tenant compose file** from its definition and current overrides; hand edits to a tenant `docker-compose.yml` are overwritten.
+- **Tenant updates dump the database before the new version starts,** so an update takes longer for a large database and needs temporary disk space for the dump.
+- **Audit entries keep at most 4 KB of request body,** audit and alert logs are capped at 32 MB on prune, and history is read from the end of the file.
+- **Faster listings:** admin users are cached by file signature (revocation still applies on the next request), tenant listings read `.env` files in parallel and only for the requested app, and the Database page polls only while its window is active.
+- **The UI's tenant, container, health, metrics, alert and audit types are generated from the backend.**
+- **CLI config commands say the server needs `overwatch recreate`** to pick up `overwatch.yaml` changes.
+
+### Upgrade notes
+
+- **Check each host for shared legacy volumes** before relying on tenant isolation: [troubleshooting.md](docs/troubleshooting.md#shared-legacy-volumes) has the detection commands and a per-tenant migration. Existing tenants keep their current volumes (now external), so nothing moves on upgrade; separating files that are already mixed needs knowledge of the app.
+- **The first backup prune after upgrading removes the whole backlog** older versions never pruned. Run it with `dryRun: true` first; its exclusive lock blocks other apps that share the repository while it runs.
+- **The restore API requires `X-Confirm-Id`** with the target tenant id; update any scripts that call it.
+- **Editors lose some access:** editing an app's Traefik config, setting `AUTH_SERVICE_SECRET` or any app's `admin_access.secret_env`. Viewers can no longer read container logs.
+- **Check the startup log for `[proxy-trust]`.** It should say `X-Forwarded-For trusted only from '<prefix>-traefik'`. Behind another proxy, set `OVERWATCH_TRUST_PROXY` to its IP/CIDR, or `OVERWATCH_TRUST_PROXY_HOST`; `OVERWATCH_TRUST_PROXY_HOST=none` restores the previous behaviour.
+- **Tenant raw labels that drop or redefine a global default middleware,** redirect off the tenant's hosts, forge identity headers, empty security headers or allow credentialed wildcard CORS are dropped with a `[traefik] dropped raw label` warning at the next compose regeneration (now also on start/restart). An app middleware named like a global one is ignored in favour of the global one. Check the logs after upgrading.
+- **Health-check alerts will start arriving** with your existing `health_check_failed` rules. Once you add `backup_failed`/`backup_stale` rules, a downgrade to 1.8.2 fails config validation until they are removed.
+- **Postgres:** a backup that needs a superuser-only (untrusted) extension, such as PostGIS, restores only once that extension is installed on the server. **MySQL/MariaDB:** `mysqldump --routines --events` needs the DB root user to have the EVENT and SHOW_ROUTINE privileges (root has them by default).
+- **The first log prune trims `audit.log` and `alert-history.jsonl` larger than 32 MB,** dropping the oldest entries; copy them first if you need the full history. Entries and snapshots written before the upgrade can still contain basicAuth hashes, so consider rotating those credentials.
+- **Private registries:** the `/root/.docker` mount is read only when Overwatch runs as root (`OVERWATCH_UID=0`); set the app's registry `token_env` instead. A stored registry value with an invalid format logs `App '<id>' has an invalid registry.<field>` at start and blocks pulls for that app until fixed.
+- **`overwatch infra deploy` no longer passes shell-exported variables** to compose; put them in `infrastructure/.env`.
+- **To purge a trashed app, restore it and delete its tenants first.**
+- **Downgrading to 1.8.2:** tenants created on 1.9.0 use tenant-scoped volume names (`<app>-<tenant>-<name>`). 1.8.2 regenerates a tenant's compose file on update with the old shared names, which would point the tenant at a different, possibly empty volume, so do not update such tenants on 1.8.2. Remove any `backup_failed`/`backup_stale` alert rules first.
+- **Sessions issued before the upgrade** cannot be revoked by signing out and stay valid until they expire (at most 24 h). MCP refresh tokens issued before the upgrade keep working and rotate into the new format.
 
 ## [1.8.2] — 2026-10-14
 
