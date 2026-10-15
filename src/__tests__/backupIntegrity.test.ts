@@ -154,7 +154,7 @@ describe('backup/restore integrity', () => {
   it('restores a migrated tenant into its DB_NAME', async () => {
     const r = await restoreBackup('gadgets', 'abcd1234', 't1');
     expect(r.success).toBe(true);
-    expect(mockRestore).toHaveBeenCalledWith('proj_t1', expect.any(String));
+    expect(mockRestore).toHaveBeenCalledWith('proj_t1', expect.any(String), expect.any(Object));
   });
 
   it('records a path that could not be copied (container removed) as an incomplete path', async () => {

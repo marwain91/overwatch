@@ -8,53 +8,88 @@ import { BaseDatabaseAdapter } from './base';
 const OWNER_STATEMENT = /^\s*ALTER\s+[A-Z][A-Z ]*\s+.*\sOWNER\s+TO\s+\S.*;\s*$/i;
 /** A dollar-quote delimiter, e.g. `$$` or `$body$` (what pg_dump wraps function bodies in). */
 const DOLLAR_TAG = /\$([A-Za-z_][A-Za-z0-9_]*)?\$/g;
+/** Start of a pg_dump COPY data block; its rows run to a lone `\.` line. */
+const COPY_START = /^COPY\s.*\sFROM stdin;\s*$/i;
+/**
+ * A line this long cannot be an ownership statement, so it is streamed through
+ * without being buffered whole. Bounds memory against a single huge COPY value
+ * (a multi-hundred-MB bytea/text row) that would otherwise be held entirely.
+ */
+export const OWNER_FILTER_LINE_CAP = 64 * 1024;
 
 /**
  * A stream that drops pg_dump's top-level `ALTER ... OWNER TO <role>;` lines.
- * Dumps from before this change were taken with owners, and those lines would
- * fail (or reassign to the wrong tenant) when the dump runs as the target
- * tenant role. The restore runs under `SET ROLE <tenant>`, so everything it
- * creates is owned by the tenant already; the OWNER TO lines are redundant.
+ * Dumps from before this change were taken with owners, and those lines fail
+ * (or reassign to the wrong tenant) when the dump runs as the target tenant
+ * role. The restore runs as the tenant, so everything it creates is owned by
+ * the tenant already; the OWNER TO lines are redundant.
  *
- * Dollar-quoted function bodies are tracked across lines, so a body that merely
- * contains the text `OWNER TO` is never touched. Streams line by line; the
- * whole dump is never held in memory.
+ * COPY data blocks (`COPY ... FROM stdin;` … `\.`) pass through untouched: no
+ * matching and no dollar tracking, so a data value that looks like an ownership
+ * statement is never dropped and `$$` in data never desyncs the parser. Lines
+ * longer than OWNER_FILTER_LINE_CAP are streamed through in pieces rather than
+ * buffered, so one huge row cannot exhaust memory. Dollar-quoted function
+ * bodies are tracked across lines, so a body that merely contains the text
+ * `OWNER TO` is never touched.
  */
-function stripOwnerStatements(): Transform {
+export function stripOwnerStatements(): Transform {
   const decoder = new StringDecoder('utf8');
   let buf = '';
   let openTag: string | null = null;
+  let inCopy = false;
+  // The current physical line already passed the cap and is being streamed raw.
+  let overflow = false;
 
-  const emitLine = (line: string, push: (chunk: string) => void): void => {
-    // Only a real top-level statement is dropped: not a line inside a dollar
-    // body, and never one that itself contains a dollar delimiter.
+  const handleLine = (line: string, push: (chunk: string) => void): void => {
+    if (inCopy) {
+      push(line + '\n');
+      if (line === '\\.') inCopy = false; // end of the COPY block
+      return;
+    }
+    // Only a real top-level statement is dropped: not inside a dollar body,
+    // and never a line that itself contains a dollar delimiter.
     if (openTag === null && !line.includes('$') && OWNER_STATEMENT.test(line)) return;
+    push(line + '\n');
+    if (openTag === null && COPY_START.test(line)) { inCopy = true; return; }
     DOLLAR_TAG.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = DOLLAR_TAG.exec(line)) !== null) {
       if (openTag === null) openTag = m[0];
       else if (m[0] === openTag) openTag = null;
     }
-    push(line + '\n');
   };
 
   return new Transform({
     transform(chunk: Buffer, _enc, cb) {
       buf += decoder.write(chunk);
-      const lines = buf.split('\n');
-      buf = lines.pop() ?? '';
-      for (const line of lines) emitLine(line, (c) => this.push(c));
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (overflow) { this.push(line + '\n'); overflow = false; } // tail of a long line
+        else handleLine(line, (c) => this.push(c));
+      }
+      // No newline yet and already too long to be an ownership statement:
+      // stream it now instead of growing the buffer without bound.
+      if (buf.length > OWNER_FILTER_LINE_CAP) {
+        this.push(buf);
+        buf = '';
+        overflow = true;
+      }
       cb();
     },
     flush(cb) {
       buf += decoder.end();
-      if (buf.length > 0) emitLine(buf, (c) => this.push(c));
+      if (overflow) { if (buf.length > 0) this.push(buf); }
+      else if (buf.length > 0) handleLine(buf, (c) => this.push(c));
       cb();
     },
   });
 }
 
 /**
+ * PostgreSQL database adapter
+ *//**
  * PostgreSQL database adapter
  *//**
  * PostgreSQL database adapter
@@ -321,30 +356,36 @@ export class PostgresAdapter extends BaseDatabaseAdapter {
     }, outputPath);
   }
 
-  async restoreDatabase(tenantId: string, inputPath: string): Promise<void> {
+  async restoreDatabase(tenantId: string, inputPath: string, options: { password?: string } = {}): Promise<void> {
     const dbName = this.getDatabaseName(tenantId);
     const role = this.getUserName(tenantId);
     this.validateIdentifiers(dbName, role);
-    // Run the dump as the tenant role, NOT as a superuser: the dump is the
-    // tenant's own data and can carry index expressions and CHECK constraints
-    // that call the tenant's functions, which Postgres runs as the object's
-    // owner while the data is loaded and indexes are built. The database was
-    // reset owned by the tenant role, so a --no-owner dump's objects are owned
-    // by, and its code runs as, that tenant role. ON_ERROR_STOP + one
+    // Connect AS the tenant role, not as the superuser with SET ROLE: a
+    // tampered dump could `RESET ROLE` / `SET SESSION AUTHORIZATION` back to the
+    // superuser for the rest of the file. As the tenant role there is no
+    // superuser session to fall back to, so the dump can only ever run with the
+    // tenant's own rights. The database was reset owned by this role, so a
+    // --no-owner dump's objects are owned by it. ON_ERROR_STOP + one
     // transaction: psql no longer reports success after SQL errors, and a
-    // failure leaves nothing behind. Superuser-only (untrusted) extensions can
-    // no longer be created by the restore and must be installed out of band;
-    // trusted extensions (pgcrypto, uuid-ossp, …) still work.
+    // failure leaves nothing behind. Superuser-only ("untrusted") extensions
+    // can no longer be created by the restore and must be installed out of
+    // band; trusted extensions (pgcrypto, uuid-ossp, …) still work.
+    //
+    // The DB container's local socket (docker exec) uses `trust` in the
+    // official image, so no password is needed; a `password` is still passed
+    // via env for containers that require one.
+    const env: Record<string, string> = {};
+    if (options.password) env.PGPASSWORD = options.password;
     return this.runRestoreFromFile({
-      execOptions: ['-e', 'PGPASSWORD'],
+      execOptions: options.password ? ['-e', 'PGPASSWORD'] : [],
       argv: [
-        'psql', '-U', this.config.rootUser, '-d', dbName,
-        '-v', 'ON_ERROR_STOP=1', '--single-transaction',
-        '-c', `SET ROLE "${role}"`, '-f', '-',
+        'psql', '-U', role, '-d', dbName,
+        '-v', 'ON_ERROR_STOP=1', '--single-transaction', '-f', '-',
       ],
-      env: { PGPASSWORD: this.config.rootPassword },
+      env,
       label: 'psql restore',
-      // Old dumps carry `ALTER ... OWNER TO <role>` lines that fail under SET ROLE.
+      // Old dumps carry `ALTER ... OWNER TO <role>` lines; drop them (the objects
+      // are already owned by the connecting tenant role).
       transformInput: stripOwnerStatements,
     }, inputPath);
   }

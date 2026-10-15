@@ -233,7 +233,7 @@ export abstract class BaseDatabaseAdapter implements DatabaseAdapter {
   abstract resetDatabase(tenantId: string): Promise<void>;
   abstract listDatabases(): Promise<string[]>;
   abstract dumpDatabase(tenantId: string, outputPath: string): Promise<void>;
-  abstract restoreDatabase(tenantId: string, inputPath: string): Promise<void>;
+  abstract restoreDatabase(tenantId: string, inputPath: string, options?: { password?: string }): Promise<void>;
   abstract getServerInfo(): Promise<DatabaseServerInfo>;
   abstract getServerStats(): Promise<DatabaseServerStats>;
   abstract getDatabasesWithDetails(): Promise<DatabaseDetail[]>;

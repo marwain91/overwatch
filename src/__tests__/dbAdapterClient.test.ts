@@ -28,7 +28,7 @@ vi.mock('pg', () => ({ Pool: class { on() {} end = vi.fn(async () => {}); } }));
 vi.mock('mysql2/promise', () => ({ default: { createPool: vi.fn(() => ({ end: vi.fn(async () => {}) })) } }));
 
 import { MySQLAdapter } from '../adapters/database/mysql';
-import { PostgresAdapter } from '../adapters/database/postgres';
+import { PostgresAdapter, stripOwnerStatements, OWNER_FILTER_LINE_CAP } from '../adapters/database/postgres';
 import type { DatabaseAdapterConfig } from '../adapters/database/types';
 
 function cfg(type: 'mariadb' | 'postgres'): DatabaseAdapterConfig {
@@ -93,7 +93,8 @@ describe.each(adapters)('%s client processes', (_name, make, pwVar) => {
     process.env.JWT_SECRET = 'jwt-secret-value';
     const a = make();
     await a.dumpDatabase('t1', path.join(tmpDir, 'out.sql'));
-    await a.restoreDatabase('t1', sqlFile);
+    // Pass a password so the restore's password-via-env path is exercised for both engines.
+    await a.restoreDatabase('t1', sqlFile, { password: 'pw' });
     for (const [, , opts] of spawnMock.mock.calls) {
       expect(opts.env.JWT_SECRET).toBeUndefined();
       expect(opts.env[pwVar]).toBe('pw');
@@ -171,15 +172,23 @@ describe('client arguments', () => {
   // run as the tenant role, not a superuser: a --no-owner dump's objects then
   // belong to (and its index/CHECK code runs as) the tenant, so tenant content
   // cannot execute with superuser rights.
-  it('psql stops at the first error, in one transaction, and runs the dump as the tenant role', async () => {
+  it('connects as the tenant role (not a superuser), in one transaction with ON_ERROR_STOP', async () => {
     await new PostgresAdapter(cfg('postgres')).restoreDatabase('t1', sqlFile);
     const args = argsOf(0);
-    expect(args).toEqual(expect.arrayContaining(['psql', '-v', 'ON_ERROR_STOP=1', '--single-transaction', '-d', 'p_t1']));
-    const commands = args.flatMap((a, i) => (args[i - 1] === '-c' ? [a] : a === '-f' ? ['<dump>'] : []));
-    expect(commands).toEqual(['SET ROLE "p_t1"', '<dump>']);
-    // No superuser role is created, anywhere in the argv.
-    expect(args.join(' ')).not.toMatch(/SUPERUSER|CREATE ROLE/i);
-    expect(args[args.indexOf('-f') + 1]).toBe('-');
+    // psql logs in AS the tenant role: no superuser session, no SET ROLE to escape from.
+    expect(args).toEqual(expect.arrayContaining(['psql', '-U', 'p_t1', '-d', 'p_t1', '-v', 'ON_ERROR_STOP=1', '--single-transaction', '-f', '-']));
+    expect(args.join(' ')).not.toMatch(/SET ROLE|SET SESSION|SUPERUSER|CREATE ROLE/i);
+    expect(args).not.toContain('-c');
+    // Without a password the container's local trust auth is used; no env is leaked.
+    expect(spawnMock.mock.calls[0][2].env.PGPASSWORD).toBeUndefined();
+  });
+
+  it('passes the tenant DB password via env, not argv, when one is given', async () => {
+    await new PostgresAdapter(cfg('postgres')).restoreDatabase('t1', sqlFile, { password: 'tenant-pw' });
+    const [, args, opts] = spawnMock.mock.calls[0];
+    expect(args).toContain('PGPASSWORD');
+    expect(args.join(' ')).not.toContain('tenant-pw');
+    expect(opts.env.PGPASSWORD).toBe('tenant-pw');
   });
 
 });
@@ -242,5 +251,104 @@ describe('Postgres restore strips OWNER TO lines from old dumps', () => {
   it('a --no-owner dump (no OWNER TO lines) passes through unchanged', async () => {
     const dump = 'CREATE TABLE t (id int);\nINSERT INTO t VALUES (1);\n';
     expect(await restoreOf(dump)).toBe(dump);
+  });
+});
+
+
+
+describe('stripOwnerStatements (COPY-aware, memory-bounded owner filter)', () => {
+  /** Run `input` through the filter and return everything it emits. */
+  function through(chunks: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const t = stripOwnerStatements();
+      let out = '';
+      t.on('data', (d: Buffer) => { out += d.toString(); });
+      t.on('end', () => resolve(out));
+      t.on('error', reject);
+      for (const c of chunks) t.write(c);
+      t.end();
+    });
+  }
+
+  it('drops top-level OWNER TO lines and keeps everything else', async () => {
+    const out = await through([
+      'CREATE TABLE public.items (id integer);\n',
+      'ALTER TABLE public.items OWNER TO alice;\n',
+      'ALTER SEQUENCE public.s OWNER TO alice;\n',
+      'INSERT INTO public.items VALUES (1);\n',
+    ]);
+    expect(out).not.toMatch(/OWNER TO/);
+    expect(out).toContain('CREATE TABLE public.items (id integer);');
+    expect(out).toContain('INSERT INTO public.items VALUES (1);');
+  });
+
+  it('leaves OWNER TO inside a dollar-quoted function body untouched', async () => {
+    const dump = [
+      'CREATE FUNCTION public.note() RETURNS text LANGUAGE plpgsql AS $body$',
+      'BEGIN',
+      "  RETURN 'ALTER TABLE y OWNER TO mallory;';",
+      'END',
+      '$body$;',
+      'ALTER FUNCTION public.note() OWNER TO alice;',
+    ].join('\n') + '\n';
+    const out = await through([dump]);
+    expect(out).toContain("RETURN 'ALTER TABLE y OWNER TO mallory;';");
+    expect(out).not.toMatch(/ALTER FUNCTION public\.note\(\) OWNER TO alice;/);
+  });
+
+  it('passes COPY data through untouched: a row that looks like an owner statement is kept', async () => {
+    const dump = [
+      'COPY public.t (body) FROM stdin;',
+      'ALTER TABLE public.t OWNER TO alice;',
+      '\\.',
+      'ALTER TABLE public.t OWNER TO alice;',
+    ].join('\n') + '\n';
+    const out = await through([dump]);
+    expect(out).toContain('COPY public.t (body) FROM stdin;');
+    expect(out.match(/ALTER TABLE public\.t OWNER TO alice;/g)).toHaveLength(1);
+    expect(out).toContain('\\.\n');
+  });
+
+  it('does not track dollar quotes inside COPY data (a $$ in a row cannot desync the parser)', async () => {
+    const dump = [
+      'COPY public.t (body) FROM stdin;',
+      'a value with $$ in it',
+      '\\.',
+      'ALTER TABLE public.t OWNER TO alice;',
+    ].join('\n') + '\n';
+    const out = await through([dump]);
+    expect(out).toContain('a value with $$ in it');
+    expect(out).not.toMatch(/OWNER TO/);
+  });
+
+  it('streams a huge single COPY row without buffering it whole', async () => {
+    const t = stripOwnerStatements();
+    let emitted = 0;
+    t.on('data', (d: Buffer) => { emitted += d.length; });
+    const drained = new Promise((r) => t.on('end', r));
+
+    t.write('COPY public.t (body) FROM stdin;\n');
+    const CHUNK = 64 * 1024;
+    const ROW_BYTES = 50 * 1024 * 1024;
+    const piece = 'x'.repeat(CHUNK);
+    for (let written = 0; written < ROW_BYTES; written += CHUNK) t.write(piece);
+    // The row's newline has NOT been written yet: a buffering filter would be
+    // holding all 50 MB. Assert it already streamed almost all of it out.
+    expect(emitted).toBeGreaterThan(ROW_BYTES - 4 * OWNER_FILTER_LINE_CAP);
+
+    t.write('\n\\.\n');
+    t.end();
+    await drained;
+  });
+
+  it('a long non-COPY line is streamed through, not dropped', async () => {
+    const long = 'SELECT ' + "'" + 'a'.repeat(OWNER_FILTER_LINE_CAP * 2) + "'" + ';';
+    const out = await through([long + '\n']);
+    expect(out.length).toBeGreaterThanOrEqual(long.length);
+  });
+
+  it('a --no-owner dump passes through unchanged', async () => {
+    const dump = 'CREATE TABLE t (id int);\nINSERT INTO t VALUES (1);\n';
+    expect(await through([dump])).toBe(dump);
   });
 });

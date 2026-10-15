@@ -86,15 +86,32 @@ describe('root password never appears in docker exec argv', () => {
       expect(opts.env[envVar]).toBe(SECRET);
     });
 
-    it(`${name} restore passes ${envVar} by name and supplies the value via env`, async () => {
+    it(`${name} restore passes a password by name and supplies the value via env, never in argv`, async () => {
       const f = path.join(tmpDir, 'restore.sql');
       await fs.writeFile(f, 'select 1;');
-      await make().restoreDatabase('t1', f);
+      // MySQL restores as root (the config password); Postgres restores as the
+      // tenant role, so it is given the tenant's own password, not the root one.
+      const pw = type === 'postgres' ? 'tenant-db-pw' : SECRET;
+      await make().restoreDatabase('t1', f, { password: 'tenant-db-pw' });
       const [, args, opts] = spawnMock.mock.calls[0];
       expect(args.join(' ')).not.toContain(SECRET);
+      expect(args.join(' ')).not.toContain(pw);
       expect(args).toContain(envVar);
-      expect(opts.env[envVar]).toBe(SECRET);
+      expect(opts.env[envVar]).toBe(pw);
     });
+
+    if (type === 'postgres') {
+      it('postgres restore logs in as the tenant role, not the superuser', async () => {
+        const f = path.join(tmpDir, 'restore.sql');
+        await fs.writeFile(f, 'select 1;');
+        await make().restoreDatabase('t1', f);
+        const [, args] = spawnMock.mock.calls[0];
+        // -U names the tenant role (p_t1), never the configured root user.
+        expect(args[args.indexOf('-U') + 1]).toBe('p_t1');
+        expect(args).not.toContain('root');
+        expect(args.join(' ')).not.toMatch(/SET ROLE|SET SESSION|SUPERUSER/i);
+      });
+    }
   }
 });
 

@@ -11,7 +11,7 @@ import { getApp } from './app';
 import { readTenantAppDef } from './tenantAppDef';
 import { AppDefinition } from '../models/app';
 import { assertWithinDir } from '../utils/security';
-import { tenantDir, listTenantDirs } from './tenantStore';
+import { tenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { writeJsonAtomic } from '../utils/atomicJson';
 import { invalidateBackupCache } from './backupCache';
 import { resolveTenantDbId } from './tenantDb';
@@ -34,6 +34,15 @@ const execFileAsync = (cmd: string, args: string[], opts: Record<string, unknown
 // docker gets the same allowlisted env as runDocker, not Overwatch's secrets.
 const dockerExec = (args: string[], opts: Record<string, unknown> = {}) =>
   execFileAsync('docker', args, { env: getDockerEnv(), ...opts });
+
+/** The tenant's DB password from its .env, for logging the restore in as the tenant role. Absent is fine (trust auth). */
+async function readTenantDbPassword(appId: string, tenantId: string): Promise<string | undefined> {
+  try {
+    return (await readTenantEnv(appId, tenantId)).DB_PASSWORD || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Validate that a path is safe for use in docker exec/cp (no shell metacharacters, no traversal) */
 function isValidContainerPath(p: string): boolean {
@@ -864,6 +873,8 @@ interface RestoreTarget {
   tenantId: string;
   db: ReturnType<typeof getDatabaseAdapter>;
   dbName: string;
+  /** The tenant's DB password, so the import can log in as the tenant role (least privilege). */
+  dbPassword?: string;
   backupServices: Array<{ name: string; paths: Array<{ container: string; local: string }> }>;
 }
 
@@ -904,7 +915,7 @@ async function applySnapshot(
     }
   }
   try {
-    await db.restoreDatabase(dbName, path.join(staged.tenantDir, 'database.sql'));
+    await db.restoreDatabase(dbName, path.join(staged.tenantDir, 'database.sql'), { password: target.dbPassword });
   } catch (error: any) {
     console.error(`[Backup] Failed to restore the database of ${appId}/${tenantId}:`, error?.message || error);
     throw new RestoreStepError(describeImportError(error));
@@ -1038,6 +1049,7 @@ export async function restoreBackupLocked(
       tenantId: targetTenantId,
       db: getDatabaseAdapter(app),
       dbName: await resolveTenantDbId(appId, targetTenantId, app),
+      dbPassword: await readTenantDbPassword(appId, targetTenantId),
       backupServices: app.services
         .filter(s => s.backup?.enabled && s.backup?.paths?.length)
         .map(s => ({ name: s.name, paths: s.backup!.paths! })),
