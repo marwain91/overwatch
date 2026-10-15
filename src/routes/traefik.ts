@@ -26,14 +26,14 @@ const execFileAsync = promisify(execFile);
 const router = Router();
 
 // Reads are open to every role, but inline credentials (basicAuth hashes, auth
-// URLs, secret headers) are for admins, the only role that can edit them.
-// Explicit check: a missing role must not read as admin.
+// URLs, secret headers, cert-resolver env values) are for admins, the only role
+// that can edit them. Explicit check: a missing role must not read as admin.
 const isAdmin = (res: Response) => res.locals.user?.role === 'admin';
 
 // ─── Full config ────────────────────────────────────────────────────────────
 
 router.get('/', asyncHandler(async (_req: Request, res: Response) => {
-  const t = await getTraefikConfig();
+  const t = await getTraefikConfig({ maskAllEnv: !isAdmin(res) });
   res.json((isAdmin(res) ? t : redactTraefikCredentials(t)) ?? null);
 }));
 
@@ -58,7 +58,7 @@ router.post('/validate', asyncHandler(async (req: Request, res: Response) => {
 // ─── Cert resolvers ─────────────────────────────────────────────────────────
 
 router.get('/cert-resolvers', asyncHandler(async (_req: Request, res: Response) => {
-  res.json(await listCertResolvers());
+  res.json(await listCertResolvers({ maskAllEnv: !isAdmin(res) }));
 }));
 
 router.post('/cert-resolvers/:name', requireRole('admin'), asyncHandler(async (req: Request, res: Response) => {

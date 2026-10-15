@@ -285,6 +285,23 @@ export function restoreTenantTraefik<T extends TraefikTenant>(incoming: T, store
   };
 }
 
+/** Cert-resolver env: a masked value keeps the stored value of the same resolver and key. */
+export function restoreCertResolverEnv<T extends { name: string; challenge: string; env?: Record<string, string> }>(
+  incoming: T,
+  stored: { env?: unknown } | undefined,
+): T {
+  if (!incoming.env) return incoming;
+  const old = stored?.env && typeof stored.env === 'object' ? stored.env as Record<string, unknown> : {};
+  const env = { ...incoming.env };
+  for (const [k, v] of Object.entries(env)) {
+    if (!carriesMask(v)) continue;
+    const kept = old[k];
+    if (v !== MASK || typeof kept !== 'string' || carriesMask(kept)) throw refuse(`cert_resolvers.${incoming.name}.env.${k}`);
+    env[k] = kept;
+  }
+  return { ...incoming, env };
+}
+
 /** Refuse (no stored value to fall back on) any placeholder in an app definition. */
 export function assertNoMaskedCredentials(app: { traefik?: TraefikApp; services?: any[] }): void {
   restoreMiddlewareCredentials(app.traefik?.middlewares, undefined, 'traefik.middlewares');

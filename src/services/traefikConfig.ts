@@ -20,6 +20,8 @@ import { withFileLock } from './fileLock';
 import * as fs from 'fs/promises';
 import { assertTenantRawLabelsOwned, assertNoGlobalMiddlewareShadowing, globalDefaultMiddlewares } from './traefikLabels';
 import {
+  MASK,
+  restoreCertResolverEnv,
   restoreMiddlewareCredentials,
   restoreRoutingCredentials,
   restoreTenantTraefik,
@@ -28,29 +30,34 @@ import {
 const SECRET_HINTS = /(_TOKEN|_KEY|_SECRET|_PASSWORD)$/;
 
 /**
- * Mask sensitive cert-resolver env values for read APIs. Mirrors the masking
- * pattern used by EnvironmentPage: keys that look secret have their value
- * replaced with bullets in the response body.
+ * Mask cert-resolver env values for read APIs. By default (admins, the CLI)
+ * keys that look secret have their value replaced with bullets. `all` masks
+ * every value, for non-admins: provider variable names do not reliably say
+ * which values are secret (GCE_SERVICE_ACCOUNT, HURRICANE_TOKENS, EPIK_SIGNATURE).
  */
-export function maskTraefikSecrets(t: TraefikGlobal | undefined): TraefikGlobal | undefined {
+export function maskTraefikSecrets(t: TraefikGlobal | undefined, opts: { all?: boolean } = {}): TraefikGlobal | undefined {
   if (!t?.cert_resolvers) return t;
   const masked: TraefikGlobal = JSON.parse(JSON.stringify(t));
-  for (const r of masked.cert_resolvers ?? []) {
-    if (r.challenge !== 'dns' || !r.env) continue;
-    for (const k of Object.keys(r.env)) {
-      if (SECRET_HINTS.test(k)) {
-        r.env[k] = '••••••••';
-      }
-    }
-  }
+  masked.cert_resolvers = masked.cert_resolvers!.map(r => maskResolverEnv(r, opts.all));
   return masked;
+}
+
+function maskResolverEnv(r: CertResolver, all = false): CertResolver {
+  if (r.challenge !== 'dns' || !r.env) return r;
+  return { ...r, env: Object.fromEntries(Object.entries(r.env).map(([k, v]) => [k, all || SECRET_HINTS.test(k) ? MASK : v])) };
 }
 
 // ─── Global Traefik config ──────────────────────────────────────────────────
 
-export async function getTraefikConfig(opts: { unmask?: boolean } = {}): Promise<TraefikGlobal | undefined> {
+export async function getTraefikConfig(opts: { unmask?: boolean; maskAllEnv?: boolean } = {}): Promise<TraefikGlobal | undefined> {
   const cfg = loadConfig();
-  return opts.unmask ? cfg.traefik : maskTraefikSecrets(cfg.traefik);
+  return opts.unmask ? cfg.traefik : maskTraefikSecrets(cfg.traefik, { all: opts.maskAllEnv });
+}
+
+/** Restore masked env values against the stored (raw, uninterpolated) resolver of the same name. */
+function restoreResolvers(incoming: CertResolver[], stored: unknown): CertResolver[] {
+  const list = Array.isArray(stored) ? stored : [];
+  return incoming.map(r => restoreCertResolverEnv(r, list.find(s => s?.name === r.name)));
 }
 
 export async function updateTraefikConfig(patch: TraefikGlobal): Promise<TraefikGlobal> {
@@ -59,13 +66,16 @@ export async function updateTraefikConfig(patch: TraefikGlobal): Promise<Traefik
   if (validated.middlewares) validated.middlewares = restoreMiddlewareCredentials(validated.middlewares, stored?.middlewares);
   if (validated.overwatch) validated.overwatch = restoreRoutingCredentials(validated.overwatch, stored?.overwatch);
   if (validated.dashboard) validated.dashboard = restoreRoutingCredentials(validated.dashboard, stored?.dashboard);
-  await updateOverwatchConfig(raw => { raw.traefik = validated; });
-  return validated;
+  await updateOverwatchConfig(raw => {
+    if (validated.cert_resolvers) validated.cert_resolvers = restoreResolvers(validated.cert_resolvers, raw.traefik?.cert_resolvers);
+    raw.traefik = validated;
+  });
+  return maskTraefikSecrets(validated)!;
 }
 
 // ─── Cert resolvers ─────────────────────────────────────────────────────────
 
-export async function listCertResolvers(opts: { unmask?: boolean } = {}): Promise<CertResolver[]> {
+export async function listCertResolvers(opts: { unmask?: boolean; maskAllEnv?: boolean } = {}): Promise<CertResolver[]> {
   const t = await getTraefikConfig(opts);
   return t?.cert_resolvers ?? [];
 }
@@ -74,18 +84,20 @@ export async function upsertCertResolver(name: string, body: unknown): Promise<C
   // Force the URL-path name onto the body to avoid mismatches.
   const bodyWithName = { ...(body as Record<string, unknown>), name };
   const validated = CertResolverSchema.parse(bodyWithName);
-  await updateOverwatchConfig(raw => {
+  const saved = await updateOverwatchConfig(raw => {
     raw.traefik = raw.traefik ?? {};
     const list: CertResolver[] = raw.traefik.cert_resolvers ?? [];
+    const [resolver] = restoreResolvers([validated], list);
     const idx = list.findIndex(r => r.name === name);
     if (idx >= 0) {
-      list[idx] = validated;
+      list[idx] = resolver;
     } else {
-      list.push(validated);
+      list.push(resolver);
     }
     raw.traefik.cert_resolvers = list;
+    return resolver;
   });
-  return validated;
+  return maskResolverEnv(saved);
 }
 
 export async function deleteCertResolver(name: string): Promise<void> {
