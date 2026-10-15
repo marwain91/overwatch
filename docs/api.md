@@ -38,7 +38,7 @@ Destructive endpoints marked `confirm` require either an `X-Confirm-Id` header o
 | `GET` | `/api/apps/:appId/tags` | `auth` | List available image tags from registry; registry failures return `{ tags: [], error }` |
 | `POST` | `/api/apps/:appId/registry/test` | `editor` | Test registry connection |
 | `GET` | `/api/apps/:appId/traefik` | `auth` | Get app-scoped Traefik middleware/defaults |
-| `PUT` | `/api/apps/:appId/traefik` | `editor` | Update app-scoped Traefik middleware/defaults |
+| `PUT` | `/api/apps/:appId/traefik` | `admin` | Update app-scoped Traefik middleware/defaults (editors cannot change app Traefik config) |
 
 **Create app request:**
 ```json
@@ -200,7 +200,7 @@ All env var endpoints are scoped to an app: `/api/apps/:appId/env-vars`.
 | `GET` | `/api/status/config` | `auth` | Get project configuration |
 | `GET` | `/api/status/tenants` | `auth` | List all tenants across all apps |
 | `GET` | `/api/status/containers` | `auth` | List managed containers |
-| `GET` | `/api/status/containers/:containerId/logs` | `auth` | Get container logs (readable by every role, including `viewer`) |
+| `GET` | `/api/status/containers/:containerId/logs` | `editor` | Get container logs (not readable by `viewer`; logs can hold PII and tokens) |
 | `POST` | `/api/status/containers/:containerId/restart` | `admin` | Restart a specific container |
 
 ## Monitoring
@@ -248,7 +248,7 @@ Query parameters: `?limit=50&user=email&action=create`
 
 ## Read scope of the `viewer` role
 
-`viewer` is the read-only support role. Container logs (`GET /api/status/containers/:containerId/logs`) and tenant update progress (REST and WebSocket `tenant:update:progress` events) are deliberately readable by viewers so they can diagnose problems; logs and progress detail are not redacted. Credential-bearing fields are redacted for every role below `admin`: notification channel webhook URLs and headers, the text of database processes, and the inline credentials in the global Traefik configuration (see below).
+`viewer` is the read-only support role. Tenant update progress (REST and WebSocket `tenant:update:progress` events) is readable by viewers so they can diagnose problems; progress detail is not redacted. Container logs (`GET /api/status/containers/:containerId/logs`) require the `editor` role, because they can hold PII and tokens. Credential-bearing fields are redacted for every role below `admin`: notification channel webhook URLs and headers, the text of database processes, and the inline credentials in the global Traefik configuration (see below).
 
 ## Traefik
 
