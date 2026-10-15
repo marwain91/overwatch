@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { resolveGoogleAdmin } from '../services/identity';
 import { signSession, type Session } from '../auth/session';
+import { revokeSession } from '../auth/sessionRevocations';
 import { authMiddleware, type AuthUser } from '../middleware/auth';
 import { getUserRole } from '../services/users';
 import { asyncHandler } from '../utils/asyncHandler';
@@ -72,6 +73,16 @@ router.get('/verify', authMiddleware, (_req: Request, res: Response) => {
     },
   });
 });
+
+// Server-side logout: the session token is revoked until it would have
+// expired. Sessions issued before tokens carried a jti cannot be revoked and
+// stay valid until their expiry.
+router.post('/logout', authMiddleware, asyncHandler(async (req: Request, res: Response) => {
+  const session = res.locals.session as Session;
+  if (session.jti) await revokeSession(session.jti, session.exp);
+  auditAuth(req, session.email, 'logout', 200);
+  res.json({ success: true });
+}));
 
 // Get Google Client ID for frontend
 router.get('/config', (_req: Request, res: Response) => {

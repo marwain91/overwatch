@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
 import { eventBus, type BroadcastEvent } from '../services/eventBus';
 import { verifySession } from '../auth/session';
+import { isSessionRevoked } from '../auth/sessionRevocations';
 import { isAdminEmail } from '../services/users';
 import { createWSMessage, WSMessage } from './types';
 
@@ -47,6 +48,7 @@ const connectionsByUser = new Map<string, number>();
 interface SocketState {
   authenticated: boolean;
   userEmail?: string;
+  sessionId?: string;
   expiryTimer?: ReturnType<typeof setTimeout>;
   released?: boolean;
   isAlive?: boolean;
@@ -61,16 +63,17 @@ const stateOf = (ws: WebSocket): SocketState => {
   return state;
 };
 
-type AuthResult = { valid: true; email: string; exp: number } | { valid: false };
+type AuthResult = { valid: true; email: string; exp: number; jti?: string } | { valid: false };
 
-// Valid session token AND the user is still an admin user (any role: viewers get
-// the read-only socket).
+// Valid, not logged-out session token AND the user is still an admin user
+// (any role: viewers get the read-only socket).
 async function authenticate(token: unknown): Promise<AuthResult> {
   if (typeof token !== 'string') return { valid: false };
   try {
     const session = verifySession(token);
+    if (session.jti && (await isSessionRevoked(session.jti))) return { valid: false };
     if (!(await isAdminEmail(session.email))) return { valid: false };
-    return { valid: true, email: session.email, exp: session.exp };
+    return { valid: true, email: session.email, exp: session.exp, jti: session.jti };
   } catch {
     return { valid: false };
   }
@@ -161,8 +164,13 @@ async function recheckMembership(readTimeoutMs: number): Promise<void> {
 async function recheckAll(readTimeoutMs: number): Promise<void> {
   const verdicts = new Map<string, boolean>();
   for (const ws of [...clients]) {
-    const email = stateOf(ws).userEmail;
+    const { userEmail: email, sessionId } = stateOf(ws);
     if (!email) continue;
+    // Logged out elsewhere (another tab, or the token was revoked): the session is over.
+    if (sessionId && (await isSessionRevoked(sessionId))) {
+      ws.close(4401, 'Session ended');
+      continue;
+    }
     let member = verdicts.get(email);
     if (member === undefined) {
       try {
@@ -343,6 +351,7 @@ export function createWebSocketServer(server: HTTPServer, opts: WebSocketServerO
           }
           state.authenticated = true;
           state.userEmail = result.email;
+          state.sessionId = result.jti;
           releasePending();
           // The session ends at token expiry; don't wait for the next re-check.
           state.expiryTimer = setTimeout(

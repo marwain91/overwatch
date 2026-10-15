@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 
 // Web-UI session tokens share JWT_SECRET with the MCP OAuth tokens and the
 // OAuth consent token. A distinct audience + issuer, required on verify, keeps
@@ -16,6 +17,8 @@ export interface Session extends SessionProfile {
   email: string;
   /** Expiry as epoch seconds. */
   exp: number;
+  /** Token id, revoked on logout. Absent on sessions issued before logout revoked them. */
+  jti?: string;
 }
 
 // Read lazily: JWT_SECRET is validated at startup, after modules are imported.
@@ -34,6 +37,7 @@ export function signSession(email: string, profile: SessionProfile = {}): string
     expiresIn: SESSION_TTL,
     audience: SESSION_AUDIENCE,
     issuer: SESSION_ISSUER,
+    jwtid: randomUUID(),
   });
 }
 
@@ -47,5 +51,6 @@ export function verifySession(token: string): Session {
   if (typeof decoded.email !== 'string' || !decoded.email || typeof decoded.exp !== 'number') {
     throw new Error('Malformed session token');
   }
-  return { email: decoded.email, name: decoded.name, picture: decoded.picture, exp: decoded.exp };
+  const jti = typeof decoded.jti === 'string' && decoded.jti ? decoded.jti : undefined;
+  return { email: decoded.email, name: decoded.name, picture: decoded.picture, exp: decoded.exp, jti };
 }
