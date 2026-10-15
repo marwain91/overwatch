@@ -168,15 +168,14 @@ export interface RawLabelOwner {
   tenant?: TenantLabelScope;
 }
 
-/**
- * The global default_middlewares are the admin's: a tenant label may neither
- * leave them out of its router nor redefine them. Names are router-prefixed
- * and lower-case.
- */
+/** What a tenant's own labels are checked against (see tenantLabelProblem). */
 export interface TenantLabelScope {
   /** Hosts the tenant routes (primary domain and aliases): the only hosts a redirect may target. */
   hosts: string[];
-  /** The global default_middlewares of this router, which its `middlewares` list must keep. */
+  /**
+   * The global default_middlewares of this router (router-prefixed, lower-case),
+   * which its `middlewares` list must keep: they are the admin's.
+   */
   requiredMiddlewares: string[];
   /** Those plus their chain members, which no label may redefine. */
   protectedMiddlewares: string[];
