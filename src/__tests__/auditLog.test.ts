@@ -64,6 +64,47 @@ describe('auditLog service', () => {
   });
 });
 
+describe('auditLog body hygiene', () => {
+  async function stored(body: Record<string, unknown>) {
+    const svc = await import('../services/auditLog');
+    svc.writeAuditEntry({ ...base, action: 'x', body });
+    await svc.flushAuditLog();
+    const raw = await fs.readFile(path.join(dataDir, 'audit.log'), 'utf-8');
+    return { raw, entry: JSON.parse(raw.trim().split('\n').at(-1)!) };
+  }
+
+  it('redacts basicAuth user lists and basicauth/digestauth raw labels (htpasswd hashes)', async () => {
+    const { raw, entry } = await stored({
+      middlewares: { auth: { type: 'basicAuth', users: ['admin:$apr1$SECRETHASH1'], realm: 'r' } },
+      raw_labels: {
+        web: {
+          'traefik.http.middlewares.a.basicauth.users': 'admin:$2y$SECRETHASH2',
+          'traefik.http.middlewares.d.digestAuth.users': 'admin:realm:SECRETHASH3',
+          'traefik.http.middlewares.d.digestauth.realm': 'SECRETREALM',
+          'traefik.http.routers.web.priority': '10',
+        },
+      },
+    });
+    expect(raw).not.toMatch(/SECRETHASH|SECRETREALM/);
+    expect(entry.body.middlewares.auth).toEqual({ type: 'basicAuth', users: '[redacted]', realm: 'r' });
+    expect(entry.body.raw_labels.web['traefik.http.routers.web.priority']).toBe('10');
+  });
+
+  it('caps a large body at 4 KB with a truncation marker', async () => {
+    const big = { name: 'svc', blob: 'a'.repeat(50_000), quoted: '"'.repeat(5_000) };
+    const { entry } = await stored(big);
+    expect(Buffer.byteLength(JSON.stringify(entry.body))).toBeLessThanOrEqual(4096);
+    expect(entry.body._truncated).toBe(true);
+    expect(entry.body._bytes).toBe(Buffer.byteLength(JSON.stringify(big)));
+    expect(entry.body._preview.startsWith('{"name":"svc","blob":"aaa')).toBe(true);
+  });
+
+  it('keeps a body under the cap as is, and redacts before measuring', async () => {
+    const { entry } = await stored({ name: 'n', password: 'p'.repeat(10_000) });
+    expect(entry.body).toEqual({ name: 'n', password: '[redacted]' });
+  });
+});
+
 describe('flushAuditLog on an unwritable file', () => {
   it('gives up after its timeout so shutdown never waits for the forced exit', async () => {
     vi.useFakeTimers();

@@ -24,7 +24,15 @@ function auditWriter() {
   return jsonlLogFor(getAuditLogFile(), 'audit');
 }
 
-const SENSITIVE_KEYS = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key'];
+// Substrings of a key (any depth, case-insensitive) whose value is never stored.
+// `users` is a basicAuth/digestAuth user list (htpasswd hashes); basicauth and
+// digestauth match the raw Traefik label keys that carry the same.
+const SENSITIVE_KEYS = ['password', 'secret', 'token', 'value', 'key', 'credential', 'authorization', 'bearer', 'api_key', 'access_key', 'users', 'basicauth', 'digestauth'];
+
+// Bodies are kept for forensics, not replay. Uncapped, one large request (an
+// app definition, a pasted file; up to the 1 MB JSON limit) bloated every
+// later read and prune of the log.
+export const MAX_AUDIT_BODY_BYTES = 4096;
 
 function isPlainObject(v: unknown): boolean {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -69,6 +77,21 @@ export function sanitizeBody(body: Record<string, unknown> | undefined): Record<
   return sanitizeValue(body) as Record<string, unknown>;
 }
 
+/** A redacted body over the cap becomes a marker with its size and the start of its JSON. */
+function capBody(body: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!body) return undefined;
+  const json = JSON.stringify(body);
+  const bytes = Buffer.byteLength(json);
+  if (bytes <= MAX_AUDIT_BODY_BYTES) return body;
+  let preview = json.slice(0, MAX_AUDIT_BODY_BYTES);
+  // Re-encoding escapes quotes and multi-byte text, so shrink until it fits.
+  for (;;) {
+    const capped = { _truncated: true, _bytes: bytes, _preview: preview };
+    if (Buffer.byteLength(JSON.stringify(capped)) <= MAX_AUDIT_BODY_BYTES) return capped;
+    preview = preview.slice(0, Math.floor(preview.length * 0.8));
+  }
+}
+
 /**
  * Append an audit entry. Callable from HTTP middleware, the CLI and MCP tools;
  * sensitive body keys are redacted here, so callers cannot forget to. Writes go
@@ -82,7 +105,7 @@ export function writeAuditEntry(entry: Omit<AuditEntry, 'timestamp'> & { timesta
     method: entry.method,
     path: entry.path,
     query: entry.query ? (sanitizeValue(entry.query) as Record<string, unknown>) : undefined,
-    body: sanitizeBody(entry.body),
+    body: capBody(sanitizeBody(entry.body)),
     status: entry.status,
     ip: entry.ip,
     ...(entry.force ? { force: true } : {}),
