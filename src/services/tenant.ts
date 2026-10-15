@@ -756,10 +756,27 @@ async function listComposeImages(tenantPath: string, composePath: string): Promi
 }
 
 /**
+ * Whether some tenant's .env still pins the tag of image `ref`
+ * (`<repository>:<tag>`) for that repository: a tenant of the same app, or
+ * one whose IMAGE_REGISTRY the repository lives under. A stopped tenant has
+ * no containers, so `docker rmi` would not refuse to remove its image. A
+ * ref without a tag counts as used.
+ */
+function imageStillPinned(ref: string, appId: string, pins: Array<{ appId: string; env: Record<string, string> }>): boolean {
+  const colon = ref.lastIndexOf(':');
+  if (colon <= ref.lastIndexOf('/')) return true;
+  const repository = ref.slice(0, colon);
+  const tag = ref.slice(colon + 1);
+  return pins.some(({ appId: pinApp, env }) => env.IMAGE_TAG === tag && (
+    pinApp === appId || !env.IMAGE_REGISTRY || repository.startsWith(`${env.IMAGE_REGISTRY}/`)
+  ));
+}
+
+/**
  * After a successful tenant update, drop the previous image tags that the
- * regenerated compose no longer references. `docker rmi` fails harmlessly
- * when another container still references the image, so this is safe across
- * tenants that share a repo on different tags. Best-effort: never throws.
+ * regenerated compose no longer references and no tenant .env still pins.
+ * `docker rmi` also fails harmlessly while a container still uses the image.
+ * Best-effort: never throws, and skips cleanup when the tenants can't be read.
  */
 async function pruneReplacedImages(
   oldImages: string[],
@@ -771,8 +788,19 @@ async function pruneReplacedImages(
   if (oldImages.length === 0) return;
   try {
     const newImages = new Set(await listComposeImages(tenantPath, composePath));
+    const pins = await Promise.all((await listTenantDirs()).map(async ref => ({
+      appId: ref.appId,
+      env: await fs.readFile(path.join(ref.dir, '.env'), 'utf-8').then(parseTenantEnv, (err: any) => {
+        if (err?.code === 'ENOENT') return {};
+        throw err;
+      }),
+    })));
     for (const img of oldImages) {
       if (newImages.has(img)) continue;
+      if (imageStillPinned(img, appId, pins)) {
+        console.log(`[tenant:update] keep ${img} for ${appId}/${tenantId}: a tenant .env still uses its tag`);
+        continue;
+      }
       await execDocker(['rmi', img]).catch((err: any) => {
         const detail = (err?.stderr ?? '').toString().trim() || err?.message || String(err);
         console.log(`[tenant:update] skip rmi ${img} for ${appId}/${tenantId}: ${detail}`);

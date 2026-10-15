@@ -80,7 +80,8 @@ function baseApp(id = 'customer-portal') {
 }
 
 describe('tenant update image cleanup', () => {
-  it('removes image tags the regenerated compose no longer references', async () => {
+  /** Update customer-portal/tenant-one 1.0.0 -> 1.1.0 next to `others` ([appId, tenantId, .env]); returns the rmi'd refs. */
+  async function updateWithNeighbours(others: Array<[string, string, string]>) {
     const appsDir = path.join(tmpRoot, 'apps');
     const tenantPath = path.join(appsDir, 'customer-portal', 'tenants', 'tenant-one');
     await fs.mkdir(tenantPath, { recursive: true });
@@ -148,12 +149,37 @@ describe('tenant update image cleanup', () => {
       }),
     }));
 
+    for (const [otherApp, otherTenant, env] of others) {
+      const dir = path.join(appsDir, otherApp, 'tenants', otherTenant);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, '.env'), env, { mode: 0o600 });
+    }
+
     const { updateTenant } = await import('../services/tenant');
     await updateTenant('customer-portal', 'tenant-one', '1.1.0');
-
     expect(configCalls).toBe(2);
-    expect(rmiCalls).toEqual(['ghcr.io/acme/customer-portal/web-api:1.0.0']);
+    return rmiCalls;
+  }
+
+  it('removes image tags the regenerated compose no longer references', async () => {
+    expect(await updateWithNeighbours([])).toEqual(['ghcr.io/acme/customer-portal/web-api:1.0.0']);
   });
+
+  it('keeps an old tag that a stopped tenant of the same app still runs on', async () => {
+    // A stopped tenant has no containers, so `docker rmi` would not refuse.
+    expect(await updateWithNeighbours([['customer-portal', 'tenant-two', 'IMAGE_TAG=1.0.0\n']])).toEqual([]);
+  });
+
+  it('keeps an old tag that a tenant of another app pulls from the same repository', async () => {
+    const env = 'IMAGE_REGISTRY=ghcr.io/acme/customer-portal\nIMAGE_TAG=1.0.0\n';
+    expect(await updateWithNeighbours([['portal-copy', 't1', env]])).toEqual([]);
+  });
+
+  it('still removes an old tag that only an unrelated repository uses', async () => {
+    const env = 'IMAGE_REGISTRY=ghcr.io/other/thing\nIMAGE_TAG=1.0.0\n';
+    expect(await updateWithNeighbours([['other-app', 't1', env]])).toEqual(['ghcr.io/acme/customer-portal/web-api:1.0.0']);
+  });
+
 
   it('skips cleanup when the compose file still references the same image ref', async () => {
     const appsDir = path.join(tmpRoot, 'apps');
