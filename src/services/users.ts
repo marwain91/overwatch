@@ -37,11 +37,16 @@ function getAdminUsersFile(): string {
   return path.join(getDataDir(), 'admin-users.json');
 }
 
+const ADMIN_USERS_LOCK = 'admin-users';
+
 // Initial allowed emails from environment (seed data)
-const INITIAL_ALLOWED_EMAILS = (process.env.ALLOWED_ADMIN_EMAILS || '')
+const INITIAL_ALLOWED_EMAILS = [...new Set((process.env.ALLOWED_ADMIN_EMAILS || '')
   .split(',')
   .map(e => e.trim().toLowerCase())
-  .filter(e => e.length > 0);
+  .filter(e => e.length > 0))];
+// Every read validates the whole file, so a seeded email the schema rejects
+// would lock every user out.
+const SEED_EMAILS = INITIAL_ALLOWED_EMAILS.filter(e => AdminUserSchema.shape.email.safeParse(e).success);
 
 export interface AdminUser {
   email: string;
@@ -58,21 +63,13 @@ async function ensureDataDir(): Promise<void> {
   }
 }
 
-async function readAdminUsers(): Promise<AdminUser[]> {
+/** The stored list, or null when the file does not exist. */
+async function readAdminUsersFile(): Promise<AdminUser[] | null> {
   let data: string;
   try {
     data = await fs.readFile(getAdminUsersFile(), 'utf-8');
   } catch (error: any) {
-    if (error.code === 'ENOENT') {
-      // File doesn't exist, initialize with env var emails
-      const initialUsers: AdminUser[] = INITIAL_ALLOWED_EMAILS.map(email => ({
-        email,
-        addedAt: new Date().toISOString(),
-        addedBy: 'system',
-      }));
-      await saveAdminUsers(initialUsers);
-      return initialUsers;
-    }
+    if (error.code === 'ENOENT') return null;
     throw error;
   }
   let raw: unknown;
@@ -87,6 +84,33 @@ async function readAdminUsers(): Promise<AdminUser[]> {
     throw new Error(`admin-users.json failed validation: ${errors}`);
   }
   return parsed.data;
+}
+
+// `overwatch init` writes [], and the last-admin guards keep the API and CLI
+// from producing an empty list, so empty (or missing) means nobody is set up yet.
+function needsSeed(users: AdminUser[] | null): boolean {
+  return SEED_EMAILS.length > 0 && (users === null || users.length === 0);
+}
+
+/** Seed from ALLOWED_ADMIN_EMAILS if still needed. The caller holds the lock. */
+async function seedAdminUsers(): Promise<AdminUser[]> {
+  // Re-read: another request or process may have written it while this one waited.
+  const users = await readAdminUsersFile();
+  if (!needsSeed(users)) return users ?? [];
+  const skipped = INITIAL_ALLOWED_EMAILS.filter(e => !SEED_EMAILS.includes(e));
+  if (skipped.length > 0) console.warn(`[users] ALLOWED_ADMIN_EMAILS: skipping invalid email(s): ${skipped.join(', ')}`);
+  const addedAt = new Date().toISOString();
+  const seeded: AdminUser[] = SEED_EMAILS.map(email => ({ email, addedAt, addedBy: 'system' }));
+  await saveAdminUsers(seeded);
+  console.log(`[users] Seeded ${seeded.length} admin user(s) from ALLOWED_ADMIN_EMAILS`);
+  return seeded;
+}
+
+/** Read from disk, seeding if needed; pass `locked` when the caller holds the lock (it is not re-entrant). */
+async function readAdminUsers(opts: { locked?: boolean } = {}): Promise<AdminUser[]> {
+  const users = await readAdminUsersFile();
+  if (!needsSeed(users)) return users ?? [];
+  return opts.locked ? seedAdminUsers() : withFileLock(ADMIN_USERS_LOCK, seedAdminUsers);
 }
 
 async function saveAdminUsers(users: AdminUser[]): Promise<void> {
@@ -115,8 +139,8 @@ function countAdmins(users: AdminUser[]): number {
 }
 
 export async function addAdminUser(email: string, addedBy: string, role: AdminRole = 'viewer'): Promise<AdminUser> {
-  return withFileLock('admin-users', async () => {
-    const users = await readAdminUsers();
+  return withFileLock(ADMIN_USERS_LOCK, async () => {
+    const users = await readAdminUsers({ locked: true });
     const normalizedEmail = email.toLowerCase().trim();
 
     // Check if already exists
@@ -144,8 +168,8 @@ export async function addAdminUser(email: string, addedBy: string, role: AdminRo
 }
 
 export async function removeAdminUser(email: string, removedBy: string): Promise<void> {
-  return withFileLock('admin-users', async () => {
-    const users = await readAdminUsers();
+  return withFileLock(ADMIN_USERS_LOCK, async () => {
+    const users = await readAdminUsers({ locked: true });
     const normalizedEmail = email.toLowerCase().trim();
 
     // Can't remove yourself
@@ -169,8 +193,8 @@ export async function removeAdminUser(email: string, removedBy: string): Promise
 }
 
 export async function setAdminUserRole(email: string, role: AdminRole, changedBy: string): Promise<AdminUser> {
-  return withFileLock('admin-users', async () => {
-    const users = await readAdminUsers();
+  return withFileLock(ADMIN_USERS_LOCK, async () => {
+    const users = await readAdminUsers({ locked: true });
     const normalizedEmail = email.toLowerCase().trim();
 
     const user = users.find(u => u.email.toLowerCase() === normalizedEmail);
