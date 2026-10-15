@@ -467,3 +467,36 @@ describe('alert engine health_check_failed', () => {
     }
   });
 });
+
+describe('alert history reads', () => {
+  afterEach(() => vi.doUnmock('fs/promises'));
+
+  it('returns the newest entries first, reading only the tail of a large history', async () => {
+    const lines = Array.from({ length: 20_000 }, (_, i) => JSON.stringify({
+      id: `h${i}`, ruleId: 'r', ruleName: 'cpu', severity: 'warning', message: 'm'.repeat(200), firedAt: '2026-01-01T00:00:00.000Z',
+    }));
+    lines.splice(19_998, 0, 'not json');
+    await fs.writeFile(path.join(dataDir, 'alert-history.jsonl'), lines.join('\n') + '\n');
+    const counter = { bytes: 0 };
+    vi.doMock('fs/promises', async (orig) => {
+      const actual = await orig<typeof import('fs/promises')>();
+      const open = async (...args: any[]) => {
+        const handle: any = await (actual.open as any)(...args);
+        const read = handle.read.bind(handle);
+        handle.read = async (...a: any[]) => { const r = await read(...a); counter.bytes += r.bytesRead; return r; };
+        return handle;
+      };
+      const readFile = async (...args: any[]) => { const r = await (actual.readFile as any)(...args); counter.bytes += Buffer.byteLength(r); return r; };
+      return { ...actual, default: { ...actual, open, readFile }, open, readFile };
+    });
+    const { getAlertHistory } = await loadEngine([]);
+    const history = await getAlertHistory(3);
+    expect(history.map(h => h.id)).toEqual(['h19999', 'h19998', 'h19997']);
+    expect(counter.bytes).toBeLessThan(256 * 1024);
+  });
+
+  it('returns no entries when there is no history yet', async () => {
+    const { getAlertHistory } = await loadEngine([]);
+    expect(await getAlertHistory(5)).toEqual([]);
+  });
+});

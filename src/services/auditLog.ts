@@ -1,7 +1,6 @@
 import * as path from 'path';
-import * as fs from 'fs/promises';
 import { getDataDir } from '../config';
-import { jsonlLogFor } from '../utils/jsonlLog';
+import { jsonlLogFor, readLinesReverse } from '../utils/jsonlLog';
 
 export interface AuditEntry {
   timestamp: string;
@@ -133,34 +132,38 @@ export async function flushAuditLog(timeoutMs: number = 5000): Promise<void> {
   }
 }
 
-/** Keep the newest `maxEntries` entries; returns how many were dropped. */
-export function pruneAuditLog(maxEntries: number): Promise<number> {
-  return auditWriter().prune(maxEntries);
+/** Keep the newest `maxEntries` entries, at most `maxBytes` of them; returns how many were dropped. */
+export function pruneAuditLog(maxEntries: number, maxBytes?: number): Promise<number> {
+  return auditWriter().prune(maxEntries, maxBytes);
 }
 
-/** Newest-first entries matching the (case-insensitive substring) filters; request bodies are omitted. */
+/**
+ * Newest-first entries matching the (case-insensitive substring) filters;
+ * request bodies are omitted. Reads backwards from the end of the file and
+ * stops once `limit` entries matched.
+ */
 export async function readAuditEntries(opts: { limit: number; user?: string; action?: string }): Promise<Omit<AuditEntry, 'body'>[]> {
-  let content: string;
-  try {
-    content = await fs.readFile(getAuditLogFile(), 'utf-8');
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return [];
-    throw err;
-  }
-  const lines = content.trim().split('\n').filter(Boolean);
   const user = opts.user?.toLowerCase();
   const action = opts.action?.toLowerCase();
   const entries: Omit<AuditEntry, 'body'>[] = [];
-  for (let i = lines.length - 1; i >= 0 && entries.length < opts.limit; i--) {
-    try {
-      const entry: AuditEntry = JSON.parse(lines[i]);
-      if (user && !entry.user.toLowerCase().includes(user)) continue;
-      if (action && !entry.action.toLowerCase().includes(action)) continue;
+  if (opts.limit <= 0) return entries;
+  try {
+    for await (const line of readLinesReverse(getAuditLogFile())) {
+      let entry: AuditEntry;
+      try {
+        entry = JSON.parse(line);
+        if (user && !entry.user.toLowerCase().includes(user)) continue;
+        if (action && !entry.action.toLowerCase().includes(action)) continue;
+      } catch {
+        continue; // Skip malformed lines
+      }
       const { body: _body, ...safe } = entry;
       entries.push(safe);
-    } catch {
-      // Skip malformed lines
+      if (entries.length >= opts.limit) break;
     }
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
   }
   return entries;
 }

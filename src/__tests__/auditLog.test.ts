@@ -105,6 +105,62 @@ describe('auditLog body hygiene', () => {
   });
 });
 
+/** Counts bytes read from disk through fs/promises (whole-file reads and handle reads alike). */
+function countDiskReads() {
+  const counter = { bytes: 0 };
+  vi.doMock('fs/promises', async (orig) => {
+    const actual = await orig<typeof import('fs/promises')>();
+    const open = async (...args: any[]) => {
+      const handle: any = await (actual.open as any)(...args);
+      const read = handle.read.bind(handle);
+      handle.read = async (...a: any[]) => {
+        const r = await read(...a);
+        counter.bytes += r.bytesRead;
+        return r;
+      };
+      return handle;
+    };
+    const readFile = async (...args: any[]) => {
+      const r = await (actual.readFile as any)(...args);
+      counter.bytes += Buffer.byteLength(r);
+      return r;
+    };
+    return { ...actual, default: { ...actual, open, readFile }, open, readFile };
+  });
+  return counter;
+}
+
+describe('audit log reads', () => {
+  afterEach(() => vi.doUnmock('fs/promises'));
+
+  const line = (i: number, user = 'u@example.test') => JSON.stringify({
+    timestamp: '2026-01-01T00:00:00.000Z', user, action: `a${i}`, method: 'POST', path: '/p', status: 200, ip: 'x',
+    body: { pad: 'x'.repeat(400) },
+  });
+
+  it('reads the newest entries from the tail of a large log instead of loading all of it', async () => {
+    const lines = Array.from({ length: 10_000 }, (_, i) => line(i)); // ~5 MB
+    await fs.writeFile(path.join(dataDir, 'audit.log'), lines.join('\n') + '\n');
+    const counter = countDiskReads();
+    const svc = await import('../services/auditLog');
+    const entries = await svc.readAuditEntries({ limit: 50 });
+    expect(entries.map(e => e.action)).toEqual(Array.from({ length: 50 }, (_, i) => `a${9999 - i}`));
+    expect(entries.every(e => !('body' in e))).toBe(true);
+    expect(counter.bytes).toBeLessThan(256 * 1024);
+  });
+
+  it('keeps scanning back for filtered matches and skips malformed lines', async () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => line(i));
+    lines[5] = line(5, 'rare@example.test');
+    lines[2990] = line(2990, 'rare@example.test');
+    lines.splice(2995, 0, '{"truncated', '');
+    await fs.writeFile(path.join(dataDir, 'audit.log'), lines.join('\n'));
+    const svc = await import('../services/auditLog');
+    expect((await svc.readAuditEntries({ limit: 10, user: 'RARE' })).map(e => e.action)).toEqual(['a2990', 'a5']);
+    expect((await svc.readAuditEntries({ limit: 2 })).map(e => e.action)).toEqual(['a2999', 'a2998']);
+  });
+});
+
 describe('flushAuditLog on an unwritable file', () => {
   it('gives up after its timeout so shutdown never waits for the forced exit', async () => {
     vi.useFakeTimers();

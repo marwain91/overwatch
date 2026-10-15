@@ -202,7 +202,7 @@ retention:
   max_audit_entries: number       # Max audit log entries (default: 10000)
 ```
 
-Log files are pruned on startup and hourly.
+Log files are pruned on startup and hourly. Each file is also capped at 32 MB, keeping the newest entries. With typical entry sizes that is several times what the default entry caps keep. Audit entries store at most 4 KB of request body; a larger body is replaced by a truncation marker.
 
 ### MCP Server Configuration
 

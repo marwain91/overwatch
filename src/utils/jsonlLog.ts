@@ -23,6 +23,43 @@ const RETRY_COOLDOWN_MS = 60_000;
 
 const RENAME_BLOCKED = new Set(['EBUSY', 'EXDEV', 'EPERM']);
 
+const NEWLINE = 0x0a;
+
+/**
+ * Non-empty lines of `file`, newest first, read backwards in chunks: a reader
+ * that wants the last few entries reads only the tail, however large the file
+ * is. The handle is opened once, so a prune that renames a new file into place
+ * meanwhile does not disturb the iteration. Throws like fs (ENOENT etc.).
+ */
+export async function* readLinesReverse(file: string, chunkSize: number = 64 * 1024): AsyncGenerator<string> {
+  const handle = await fs.open(file, 'r');
+  try {
+    let position = (await handle.stat()).size;
+    // Bytes of the line that continues into the chunk read last. Split on the
+    // newline byte, which never occurs inside a multi-byte UTF-8 sequence.
+    let carry = Buffer.alloc(0);
+    while (position > 0) {
+      const size = Math.min(chunkSize, position);
+      position -= size;
+      const chunk = Buffer.alloc(size);
+      const { bytesRead } = await handle.read(chunk, 0, size, position);
+      // Shorter only if the file was truncated in place under us; stop there.
+      if (bytesRead < size) return;
+      const buf = carry.length ? Buffer.concat([chunk, carry]) : chunk;
+      let end = buf.length;
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf[i] !== NEWLINE) continue;
+        if (end > i + 1) yield buf.toString('utf8', i + 1, end);
+        end = i;
+      }
+      carry = buf.subarray(0, end);
+    }
+    if (carry.length) yield carry.toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Truncate + write through the existing inode, keeping its mode. Not crash-atomic, but the lock is held. */
 async function rewriteInPlace(file: string, content: string): Promise<void> {
   const handle = await fs.open(file, 'r+');
@@ -69,9 +106,9 @@ export class JsonlLog {
     await this.run(() => this.drain(true));
   }
 
-  /** Keep the newest `maxEntries` lines; returns how many were dropped. */
-  async prune(maxEntries: number): Promise<number> {
-    return this.run(() => this.lockedPrune(maxEntries));
+  /** Keep the newest `maxEntries` lines, at most `maxBytes` of them; returns how many were dropped. */
+  async prune(maxEntries: number, maxBytes: number = Infinity): Promise<number> {
+    return this.run(() => this.lockedPrune(maxEntries, maxBytes));
   }
 
   private run<T>(fn: () => Promise<T>): Promise<T> {
@@ -124,21 +161,34 @@ export class JsonlLog {
     }
   }
 
-  private async lockedPrune(maxEntries: number): Promise<number> {
+  private async lockedPrune(maxEntries: number, maxBytes: number): Promise<number> {
     // Flush first so queued entries are part of what is counted and kept.
     await this.drain();
     const file = this.getFile();
     return withFileLock(this.lockKey(), async () => {
-      let content: string;
+      // A cap of 0 used to keep everything (`slice(-0)`); keep that rather than
+      // start emptying the log of an install configured that way.
+      const entryCap = maxEntries > 0 ? maxEntries : Infinity;
+      // Newest first, so only what is kept is held in memory; the rest is counted.
+      const lines: string[] = [];
+      let keptBytes = 0;
+      let dropped = 0;
       try {
-        content = await fs.readFile(file, 'utf-8');
+        for await (const line of readLinesReverse(file)) {
+          const bytes = Buffer.byteLength(line) + 1;
+          if (dropped === 0 && lines.length < entryCap && keptBytes + bytes <= maxBytes) {
+            lines.push(line);
+            keptBytes += bytes;
+          } else {
+            dropped++;
+          }
+        }
       } catch (err: any) {
         if (err.code === 'ENOENT') return 0;
         throw err;
       }
-      const lines = content.split('\n').filter(Boolean);
-      if (lines.length <= maxEntries) return 0;
-      const kept = lines.slice(-maxEntries).join('\n') + '\n';
+      if (dropped === 0) return 0;
+      const kept = lines.length ? lines.reverse().join('\n') + '\n' : '';
       try {
         await writeFileAtomic(file, kept, { mode: 0o600 });
       } catch (err: any) {
@@ -150,7 +200,7 @@ export class JsonlLog {
         }
         await rewriteInPlace(file, kept);
       }
-      return lines.length - maxEntries;
+      return dropped;
     });
   }
 }

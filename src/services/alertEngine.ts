@@ -7,7 +7,7 @@ import type { OverwatchConfig } from '../config';
 import { sendWebhook } from '../notifications/webhook';
 import { NotificationChannel, AlertHistoryEntry } from '../notifications/types';
 import { writeSecretFile } from '../utils/security';
-import { jsonlLogFor } from '../utils/jsonlLog';
+import { jsonlLogFor, readLinesReverse } from '../utils/jsonlLog';
 import { readJsonStrict } from '../utils/atomicJson';
 import { withFileLock } from './fileLock';
 
@@ -359,19 +359,22 @@ export function stopAlertEngine(): void {
   lastSeen.clear();
 }
 
+/** Newest first; reads backwards from the end of the file and stops at `limit`. */
 export async function getAlertHistory(limit: number = 50): Promise<AlertHistoryEntry[]> {
+  const entries: AlertHistoryEntry[] = [];
+  if (limit <= 0) return entries;
   try {
-    const content = await fs.readFile(getAlertHistoryFile(), 'utf-8');
-    const lines = content.trim().split('\n').filter(Boolean);
-    const entries = lines
-      .map(line => {
-        try { return JSON.parse(line); } catch { return null; }
-      })
-      .filter(Boolean) as AlertHistoryEntry[];
-    return entries.slice(-limit).reverse();
+    for await (const line of readLinesReverse(getAlertHistoryFile())) {
+      let entry: AlertHistoryEntry | null;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (!entry) continue;
+      entries.push(entry);
+      if (entries.length >= limit) break;
+    }
   } catch {
-    return [];
+    // No history yet, or unreadable: same as before, an empty list.
   }
+  return entries;
 }
 
 export async function getNotificationChannelsData(): Promise<NotificationChannel[]> {
