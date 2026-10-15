@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 import {
   initializeRepository,
   unlockRepository,
@@ -149,10 +149,32 @@ router.post('/all', requireRole('editor'), asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
-// Restore a backup to existing tenant — admin (overwrites live tenant data).
-router.post('/:snapshotId/restore', requireRole('admin'), asyncHandler(async (req, res) => {
+/**
+ * The restore target comes from the body, so requireConfirmId (which reads a
+ * route param) cannot name it: same rule, same messages, for `tenantId`.
+ */
+const requireConfirmTargetTenant: RequestHandler = (req, res, next) => {
+  const expected = typeof req.body?.tenantId === 'string' ? req.body.tenantId : '';
+  if (!expected) return next(); // the handler rejects the missing tenantId
+  const provided = req.header('X-Confirm-Id') || req.body?.confirmId;
+  if (!provided) {
+    return res.status(400).json({
+      error: `Destructive operation requires X-Confirm-Id header (or confirmId body field) matching '${expected}'.`,
+    });
+  }
+  if (provided !== expected) {
+    return res.status(400).json({ error: `X-Confirm-Id mismatch: expected '${expected}', got '${provided}'.` });
+  }
+  next();
+};
+
+// Restore a backup into an existing tenant — admin + typed confirmation of the
+// target tenant (its live data is replaced). The snapshot must be the tenant's
+// own unless `allowCrossTenant: true`. A pre-restore snapshot is taken first.
+router.post('/:snapshotId/restore', requireRole('admin'), requireConfirmTargetTenant, asyncHandler(async (req, res) => {
   const { appId, snapshotId } = (req.params as Record<string, string>);
   const { tenantId } = req.body;
+  const allowCrossTenant = req.body?.allowCrossTenant === true;
 
   if (!isValidSnapshotId(snapshotId)) {
     return res.status(400).json({ error: 'Invalid snapshot ID format' });
@@ -167,16 +189,23 @@ router.post('/:snapshotId/restore', requireRole('admin'), asyncHandler(async (re
     return res.status(404).json({ error: `Tenant ${tenantId} not found` });
   }
 
-  const result = await restoreBackup(appId, snapshotId, tenantId);
+  const result = await restoreBackup(appId, snapshotId, tenantId, { allowCrossTenant });
 
   if (result.success) {
     res.json({
       success: true,
       message: `Backup restored to ${tenantId}`,
+      safetySnapshotId: result.safetySnapshotId,
       ...(result.warnings?.length ? { warnings: result.warnings } : {}),
     });
   } else {
-    res.status(500).json({ error: result.error, isLocked: result.isLocked, lockInfo: result.lockInfo });
+    res.status(500).json({
+      error: result.error,
+      isLocked: result.isLocked,
+      lockInfo: result.lockInfo,
+      ...(result.safetySnapshotId ? { safetySnapshotId: result.safetySnapshotId } : {}),
+      ...(result.rolledBack !== undefined ? { rolledBack: result.rolledBack } : {}),
+    });
   }
 }));
 

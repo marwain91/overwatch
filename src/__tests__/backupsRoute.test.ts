@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 
@@ -29,6 +29,9 @@ async function mount() {
   app.use(errorHandler);
   return app;
 }
+
+// The first import of the route graph is slow on a loaded host.
+beforeAll(async () => { await mount(); }, 60_000);
 
 beforeEach(() => {
   for (const fn of Object.values(svc)) if (typeof fn === 'function') fn.mockReset();
@@ -102,5 +105,52 @@ describe('POST /backups (create)', () => {
     const r = await create();
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/busy/);
+  });
+});
+
+describe('POST /backups/:snapshotId/restore', () => {
+  const SNAP = 'abcdef12';
+  const restore = async (body: Record<string, unknown>, confirm?: string) => {
+    const req = request(await mount()).post(`/api/apps/shop/backups/${SNAP}/restore`);
+    if (confirm !== undefined) req.set('X-Confirm-Id', confirm);
+    return req.send(body);
+  };
+
+  beforeEach(() => { svc.restoreBackup.mockResolvedValue({ success: true, safetySnapshotId: 'f'.repeat(64) }); });
+
+  // Restore overwrites the live data of the target tenant, like a delete.
+  it('requires the target tenant id as confirmation', async () => {
+    const r = await restore({ tenantId: 't1' });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/X-Confirm-Id/);
+    expect(svc.restoreBackup).not.toHaveBeenCalled();
+  });
+
+  it('refuses a confirmation of another tenant', async () => {
+    expect((await restore({ tenantId: 't1' }, 't2')).status).toBe(400);
+    expect((await restore({ tenantId: 't1' }, SNAP)).status).toBe(400);
+    expect(svc.restoreBackup).not.toHaveBeenCalled();
+  });
+
+  it('restores with the header or a confirmId body field', async () => {
+    const r = await restore({ tenantId: 't1' }, 't1');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ success: true, safetySnapshotId: 'f'.repeat(64) });
+    expect(svc.restoreBackup).toHaveBeenLastCalledWith('shop', SNAP, 't1', { allowCrossTenant: false });
+    expect((await restore({ tenantId: 't1', confirmId: 't1' })).status).toBe(200);
+  });
+
+  it('passes an explicit cross-tenant choice through', async () => {
+    await restore({ tenantId: 't1', allowCrossTenant: true }, 't1');
+    expect(svc.restoreBackup).toHaveBeenLastCalledWith('shop', SNAP, 't1', { allowCrossTenant: true });
+    await restore({ tenantId: 't1', allowCrossTenant: 'true' }, 't1');
+    expect(svc.restoreBackup).toHaveBeenLastCalledWith('shop', SNAP, 't1', { allowCrossTenant: false });
+  });
+
+  it('reports the safety snapshot and whether it was put back on failure', async () => {
+    svc.restoreBackup.mockResolvedValue({ success: false, error: 'Restore failed: x', safetySnapshotId: 'f'.repeat(64), rolledBack: true });
+    const r = await restore({ tenantId: 't1' }, 't1');
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ error: 'Restore failed: x', safetySnapshotId: 'f'.repeat(64), rolledBack: true });
   });
 });

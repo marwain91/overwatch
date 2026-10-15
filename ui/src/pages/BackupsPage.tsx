@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { toast } from 'sonner';
 import { useApp, useBackupSummary } from '../hooks/useApps';
-import { useBackupStatus, useAllBackups, useTenants, useRestoreBackup, useDeleteBackup } from '../hooks/useTenants';
+import { useBackupStatus, useAllBackups, useTenants } from '../hooks/useTenants';
 import { useCan } from '../hooks/useRole';
 import { cn } from '../lib/cn';
 import { formatRelativeTime, formatCron } from '../lib/format';
+import type { BackupSnapshot } from '../lib/types';
+import { DeleteSnapshotModal, PreRestoreBadge, RestoreSnapshotModal } from './tenants/BackupsModal';
 
 const PAGE_SIZE = 20;
 
@@ -16,12 +17,11 @@ export function BackupsPage() {
   const { data: summary, isLoading: summaryLoading } = useBackupSummary(appId!);
   const { data: backups, isLoading: backupsLoading } = useAllBackups(appId!);
   const { data: tenants } = useTenants(appId!);
-  const restoreBackup = useRestoreBackup(appId!);
-  const deleteBackup = useDeleteBackup(appId!);
   const isAdmin = useCan('admin');
 
   const [page, setPage] = useState(0);
-  const [restoreTarget, setRestoreTarget] = useState<{ snapshotId: string; tenantId: string } | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<BackupSnapshot | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BackupSnapshot | null>(null);
 
   const backupConfig = app?.backup;
   const sorted = backups ? [...backups].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()) : [];
@@ -114,19 +114,12 @@ export function BackupsPage() {
                           {b.tenantId}
                         </span>
                       )}
+                      <PreRestoreBadge snapshot={b} />
                     </div>
                     {isAdmin && (
                     <div className="flex gap-1">
-                      <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget({ snapshotId: b.id, tenantId: b.tenantId || '' })}>Restore</button>
-                      <button
-                        className="btn btn-danger btn-xs"
-                        onClick={() => deleteBackup.mutate(b.id, {
-                          onSuccess: () => toast.success('Backup deleted'),
-                          onError: (err) => toast.error(err.message),
-                        })}
-                      >
-                        Delete
-                      </button>
+                      <button className="btn btn-secondary btn-xs" onClick={() => setRestoreTarget(b)}>Restore</button>
+                      <button className="btn btn-danger btn-xs" onClick={() => setDeleteTarget(b)}>Delete</button>
                     </div>
                     )}
                   </div>
@@ -144,28 +137,15 @@ export function BackupsPage() {
             </>
           )}
 
-          {/* Restore flow */}
           {restoreTarget && (
-            <div className="mt-4 border-t border-border-subtle pt-4">
-              <h3 className="mb-2 text-sm font-medium text-content-secondary">Restore to:</h3>
-              <select className="input mb-2" value={restoreTarget.tenantId} onChange={(e) => setRestoreTarget({ ...restoreTarget, tenantId: e.target.value })}>
-                {tenants?.map((t) => <option key={t.tenantId} value={t.tenantId}>{t.tenantId}</option>)}
-              </select>
-              <div className="flex gap-2">
-                <button className="btn btn-danger btn-sm" onClick={() => restoreBackup.mutate(restoreTarget, {
-                  onSuccess: (res) => {
-                    if (res?.warnings?.length) toast.warning(`Backup restored with warnings: ${res.warnings.join('; ')}`);
-                    else toast.success('Backup restored');
-                    setRestoreTarget(null);
-                  },
-                  onError: (err) => toast.error(err.message),
-                })} disabled={restoreBackup.isPending}>
-                  {restoreBackup.isPending ? 'Restoring...' : 'Restore'}
-                </button>
-                <button className="btn btn-secondary btn-sm" onClick={() => setRestoreTarget(null)}>Cancel</button>
-              </div>
-            </div>
+            <RestoreSnapshotModal
+              appId={appId!}
+              snapshot={restoreTarget}
+              tenantIds={(tenants ?? []).map((t) => t.tenantId)}
+              onClose={() => setRestoreTarget(null)}
+            />
           )}
+          {deleteTarget && <DeleteSnapshotModal appId={appId!} snapshot={deleteTarget} onClose={() => setDeleteTarget(null)} />}
         </div>
       )}
     </div>
