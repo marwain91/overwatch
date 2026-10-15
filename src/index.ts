@@ -38,7 +38,7 @@ import { startMetricsCollector, stopMetricsCollector } from './services/metricsC
 import { startHealthChecker, stopHealthChecker } from './services/healthChecker';
 import { startAlertEngine, stopAlertEngine } from './services/alertEngine';
 import { startRetention, stopRetention } from './services/retention';
-import { isLegacyFormat, runMigration } from './services/migration';
+import { isLegacyFormat, runMigration, runPendingMigrations, hasUnsplitAppsFile } from './services/migration';
 import { readSchemaVersions, findPendingMigrations, ensureSchemaVersionsInitialised } from './services/schemaVersions';
 import { createSnapshot, createBootSnapshot, pruneOldSnapshots } from './services/configSnapshots';
 import { resolveTrustProxySetting } from './utils/proxyTrust';
@@ -194,16 +194,22 @@ async function start() {
 
   // Critical: refuse to boot if any data store is at a newer version than this
   // binary knows — that would silently downgrade. If pending migrations exist,
-  // require explicit opt-in (same gate as legacy migration above).
+  // require explicit opt-in (same gate as legacy migration above). An apps.json
+  // with no versions file yet is pending too: initialising would skip its split.
   await runStartupStep('schema versions', async () => {
     const stored = await readSchemaVersions();
     const pending = findPendingMigrations(stored);
-    if (pending.length > 0) {
+    const unsplit = Object.keys(stored).length === 0 && await hasUnsplitAppsFile();
+    if (pending.length > 0 || unsplit) {
+      const list = [...pending.map(p => `${p.store} v${p.from}→v${p.to}`), ...(unsplit ? ['apps.json → apps.d/'] : [])].join(', ');
       if (process.env.OVERWATCH_AUTO_MIGRATE !== '1') {
-        const list = pending.map(p => `${p.store} v${p.from}→v${p.to}`).join(', ');
         throw new Error(`Pending data migrations (${list}). Run 'overwatch migrate up' or set OVERWATCH_AUTO_MIGRATE=1.`);
       }
-      console.log(`[startup] OVERWATCH_AUTO_MIGRATE=1 — migrations will run as needed`);
+      console.log(`[startup] OVERWATCH_AUTO_MIGRATE=1 — running pending migrations (${list})`);
+      await runPendingMigrations(msg => console.log(`[startup] migrate: ${msg}`));
+      // The app list above was read before the migration changed apps.d/.
+      bootApps = await listApps();
+      console.log(`[startup] Loaded ${bootApps.length} app(s) after migration`);
     }
     await ensureSchemaVersionsInitialised();
   }, { critical: true });

@@ -64,3 +64,77 @@ describe('runMigration -> config writer', () => {
     expect((yaml.load(fsSync.readFileSync(configPath, 'utf-8')) as any).services).toBeDefined();
   });
 });
+
+describe('runMigration — marker only on success, quoting-aware .env edits', () => {
+  const tenantsDir = () => path.join(tmpRoot, 'tenants');
+  const migratedEnv = (t: string) => path.join(tmpRoot, 'apps', 'acme', 'tenants', t, '.env');
+  const marker = () => path.join(dataDir, '.migration-v2-complete');
+
+  async function legacyTenant(id: string, env: string) {
+    await fs.mkdir(path.join(tenantsDir(), id), { recursive: true });
+    await fs.writeFile(path.join(tenantsDir(), id, '.env'), env, { mode: 0o600 });
+  }
+
+  afterEach(() => {
+    vi.doUnmock('fs/promises');
+    vi.doUnmock('../utils/security');
+  });
+
+  it('does not write the marker when a tenant cannot be moved, and a re-run completes', async () => {
+    await legacyTenant('t1', 'TENANT_DOMAIN=t1.example.com\n');
+    let failCopy = true;
+    vi.doMock('fs/promises', async () => {
+      const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+      return {
+        ...actual,
+        cp: async (...a: Parameters<typeof actual.cp>) => {
+          if (failCopy) throw Object.assign(new Error('EIO: i/o error, copy'), { code: 'EIO' });
+          return actual.cp(...a);
+        },
+      };
+    });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { runMigration, isLegacyFormat } = await import('../services/migration');
+
+    await expect(runMigration()).rejects.toThrow(/t1.*EIO|EIO.*t1/);
+    expect(fsSync.existsSync(marker())).toBe(false);
+    // Nothing that blocks a retry: the install still reads as legacy.
+    expect(isLegacyFormat()).toBe(true);
+
+    failCopy = false;
+    await runMigration();
+    expect(fsSync.existsSync(marker())).toBe(true);
+    expect(fsSync.readFileSync(migratedEnv('t1'), 'utf-8')).toMatch(/^APP_ID=acme$/m);
+  });
+
+  it('fails instead of skipping a tenant whose .env cannot be written', async () => {
+    await legacyTenant('t1', 'TENANT_DOMAIN=t1.example.com\n');
+    vi.doMock('../utils/security', async () => {
+      const actual = await vi.importActual<any>('../utils/security');
+      return { ...actual, writeSecretFile: async () => { throw Object.assign(new Error('ENOSPC: no space left'), { code: 'ENOSPC' }); } };
+    });
+    const { runMigration } = await import('../services/migration');
+    await expect(runMigration()).rejects.toThrow(/ENOSPC/);
+    expect(fsSync.existsSync(marker())).toBe(false);
+  });
+
+  it('reads a quoted TENANT_DOMAIN and adds APP_ID even when another key ends in APP_ID', async () => {
+    await legacyTenant('t1', "SOME_APP_ID=other\nTENANT_DOMAIN='shop.example.com'\n");
+    // A routed service, so the regenerated compose carries the tenant's Host rule.
+    await fs.writeFile(configPath, yaml.dump({
+      ...LEGACY_YAML, data_dir: dataDir, services: [{ name: 'web', image_suffix: '-web', ports: { internal: 80 } }],
+    }));
+    const { runMigration } = await import('../services/migration');
+    await runMigration();
+
+    const apps = JSON.parse(fsSync.readFileSync(path.join(dataDir, 'apps.json'), 'utf-8'));
+    expect(apps[0].domain_template).toBe('*.example.com');
+    const env = fsSync.readFileSync(migratedEnv('t1'), 'utf-8');
+    expect(env).toMatch(/^APP_ID=acme$/m);
+    expect(env).toMatch(/^COMPOSE_PROJECT_NAME=acme-t1$/m);
+    expect(env).toMatch(/^SOME_APP_ID=other$/m);
+    const compose = fsSync.readFileSync(path.join(tmpRoot, 'apps', 'acme', 'tenants', 't1', 'docker-compose.yml'), 'utf-8');
+    expect(compose).toContain('shop.example.com');
+    expect(compose).not.toContain("'shop.example.com");
+  });
+});
