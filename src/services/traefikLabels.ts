@@ -1,6 +1,6 @@
 import type { AppDefinition, AppService } from '../models/app';
 import type { MiddlewareSpec, TenantLabelScope, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
-import { rawLabelOwnerForAppService, rawLabelOwnerForRouter, rawLabelProblem } from '../models/traefik';
+import { credentialedAnyOriginProblems, rawLabelOwnerForAppService, rawLabelOwnerForRouter, rawLabelProblem } from '../models/traefik';
 import { HttpError, ValidationError } from '../utils/httpErrors';
 
 /**
@@ -163,9 +163,12 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
   const merged = mergeRawLabels(service.routing?.raw_labels, tenantRaw);
   const generated = new Set(routerMws.map(n => n.toLowerCase()));
   const owner = { ...rawLabelOwnerForRouter(routerName), isGeneratedMiddleware: (n: string) => generated.has(n) };
-  const tenantOwner = { ...owner, tenant: tenantLabelScope(routerName, globalDefaultMiddlewares(app, traefik)) };
+  const fromTenant = (k: string) => Object.prototype.hasOwnProperty.call(tenantRaw, k);
+  const tenantOwner = { ...owner, tenant: tenantLabelScope(routerName, globalDefaultMiddlewares(app, traefik), [domain, ...aliases]) };
+  // Checked over the merged set: the app and the tenant can each supply half of it.
+  const cors = credentialedAnyOriginProblems(merged);
   for (const [k, v] of Object.entries(merged)) {
-    const problem = rawLabelProblem(k, v, Object.prototype.hasOwnProperty.call(tenantRaw, k) ? tenantOwner : owner);
+    const problem = fromTenant(k) ? rawLabelProblem(k, v, tenantOwner) ?? cors.get(k) : rawLabelProblem(k, v, owner);
     if (problem) {
       // Key only: label values may hold credentials.
       console.warn(`[traefik] dropped raw label "${k}" on ${routerName}: ${problem}`);
@@ -203,12 +206,15 @@ export function assertAppRawLabelsOwned(appId: string, services: unknown): void 
   }
 }
 
-/** Save-time check for a tenant's `raw_labels` (service name -> labels). */
+/**
+ * Save-time check for a tenant's `raw_labels` (service name -> labels).
+ * `hosts` are the tenant's domain and aliases; `globalDefaults` come from globalDefaultMiddlewares().
+ */
 export function assertTenantRawLabelsOwned(
   appId: string,
   tenantId: string,
   rawLabels: unknown,
-  globalDefaults: GlobalDefaultMiddlewares = { listed: [], expanded: [] },
+  scope: { hosts?: string[]; globalDefaults?: GlobalDefaultMiddlewares } = {},
 ): void {
   if (!rawLabels || typeof rawLabels !== 'object') return;
   for (const [service, labels] of Object.entries(rawLabels as Record<string, unknown>)) {
@@ -218,9 +224,13 @@ export function assertTenantRawLabelsOwned(
     const owner = {
       ...rawLabelOwnerForRouter(router),
       isGeneratedMiddleware: (n: string) => n.startsWith(typedPrefix) && n.length > typedPrefix.length,
-      tenant: tenantLabelScope(router, globalDefaults),
+      tenant: tenantLabelScope(router, scope.globalDefaults ?? { listed: [], expanded: [] }, scope.hosts ?? []),
     };
     assertRawLabels(`service "${service}"`, labels, owner);
+    if (labels && typeof labels === 'object') {
+      const [cors] = credentialedAnyOriginProblems(labels as Record<string, string>);
+      if (cors) throw new ValidationError(`Raw label "${cors[0]}" on service "${service}" is not allowed: ${cors[1]}`);
+    }
   }
 }
 
@@ -247,9 +257,9 @@ export function globalDefaultMiddlewares(
   return { listed, expanded: [...expanded] };
 }
 
-function tenantLabelScope(routerName: string, defaults: GlobalDefaultMiddlewares): TenantLabelScope {
+function tenantLabelScope(routerName: string, defaults: GlobalDefaultMiddlewares, hosts: string[]): TenantLabelScope {
   const prefixed = (names: string[]) => names.map(n => `${routerName}-${n}`.toLowerCase());
-  return { requiredMiddlewares: prefixed(defaults.listed), protectedMiddlewares: prefixed(defaults.expanded) };
+  return { hosts, requiredMiddlewares: prefixed(defaults.listed), protectedMiddlewares: prefixed(defaults.expanded) };
 }
 
 function resolveServiceMiddlewareNames(

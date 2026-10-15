@@ -96,6 +96,15 @@ Everything under `traefik.tcp.` / `traefik.udp.` and every other `traefik.*` key
 
 Own middlewares are restricted to types that cannot address another service, a URL or a file: `headers`, `ratelimit` (not `ratelimit.redis`), `inflightreq`, `compress`, `retry`, `ipallowlist`/`ipwhitelist`, `redirectscheme`, `redirectregex`, `stripprefix`, `stripprefixregex`, `addprefix`, `replacepath`, `replacepathregex`, `buffering`, `contenttype`, `passtlsclientcert`, `grpcweb`, and `basicauth`/`digestauth` with `users`, `realm`, `removeheader` and `headerfield` only (not `usersfile`). `errors`, `forwardauth`, `chain`, `plugin` and anything else are denied; define those through typed middlewares at the app or global level. A router's `middlewares` raw label may only list the router's own middlewares (`@docker` optional) and the typed middlewares Overwatch generates for it; `@file`, `@internal` and other tenants' middlewares are rejected. `routers.<own>.tls.*` (for example `tls.options`) is denied.
 
+A tenant's own raw labels (editor-writable) are also checked by value, so a tenant cannot send its users, or their credentials, elsewhere:
+
+- `redirectregex.replacement` must be a path (`/...`, not `//...`) or an `http(s)` URL on one of the tenant's own hosts (its domain or a host alias). Traefik answers non-GET requests with 307/308, so a redirect to another host would make browsers re-send a login form's POST body there.
+- `headers.customrequestheaders` may not set request headers that apps and auth proxies commonly take as the user's identity or credentials: `Authorization`, `Proxy-Authorization`, `Cookie`, `X-Forwarded-User`/`-Email`/`-Groups`/`-Preferred-Username`/`-Access-Token`, `Remote-User`/`-Email`/`-Groups`/`-Name`, `X-Remote-*`, `X-Auth-*`, `X-Webauth-*`, `X-Authenticated-*`, `X-User` and `X-Email` (`_` counts as `-`).
+- `headers.customresponseheaders` may not remove (empty value) `Content-Security-Policy`, `Strict-Transport-Security` or `X-Frame-Options`.
+- `headers.accessControlAllowCredentials=true` is refused on a middleware whose origin list contains `*` or `null` or that uses `accessControlAllowOriginListRegex`; list the allowed origins explicitly.
+
+These are rejected with HTTP 400 on save and dropped with a warning at generation. App-level raw labels are admin-owned and not value-checked.
+
 Host alias checks fail closed: if the configuration, the app, the apps directory or another tenant's `.env`/`traefik.yaml` cannot be read (a genuinely missing file or directory counts as empty), saving an alias fails and generation drops all of the tenant's aliases with a warning.
 
 Stored data is not rejected on load: non-conforming labels already on disk are simply not emitted.

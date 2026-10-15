@@ -15,7 +15,7 @@ import { TraefikAppSchema, TraefikTenantSchema, type TraefikApp } from '../model
 import { readTenantTraefik, writeTenantTraefik, loadAliasContext, assertHostAliasesAllowed } from './tenantTraefik';
 import type { TraefikTenant } from '../models/traefik';
 import { NotFoundError } from '../utils/httpErrors';
-import { tenantDir } from './tenantStore';
+import { tenantDir, readTenantEnv } from './tenantStore';
 import * as fs from 'fs/promises';
 import { assertTenantRawLabelsOwned, assertNoGlobalMiddlewareShadowing, globalDefaultMiddlewares } from './traefikLabels';
 import {
@@ -202,12 +202,19 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
   // Restoring masked credentials reads the stored value, so it runs under the write lock.
   await writeTenantTraefik(appId, tenantId, async (stored) => {
     const parsed = restoreTenantTraefik(incoming, stored);
-    if (parsed.raw_labels) {
-      const defaults = globalDefaultMiddlewares((await getApp(appId)) ?? undefined, loadConfig().traefik);
-      assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels, defaults);
-    }
     if (parsed.host_aliases && parsed.host_aliases.length > 0) {
       parsed.host_aliases = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
+    }
+    if (parsed.raw_labels) {
+      // A tenant label may redirect only to the tenant's own hosts, aliases saved with it included.
+      const domain = await readTenantEnv(appId, tenantId).then(env => env.TENANT_DOMAIN, (err: any) => {
+        if (err?.code === 'ENOENT') return undefined;
+        throw err;
+      });
+      assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels, {
+        hosts: [...(domain ? [domain] : []), ...(parsed.host_aliases ?? [])],
+        globalDefaults: globalDefaultMiddlewares((await getApp(appId)) ?? undefined, loadConfig().traefik),
+      });
     }
     return parsed;
   });
