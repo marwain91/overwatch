@@ -234,22 +234,47 @@ export async function restartContainer(containerId: string): Promise<void> {
   await container.restart();
 }
 
-export async function listTenants(): Promise<TenantStatus[]> {
+/** Tenant .env files read at once by listTenants (every UI poll reads them all). */
+const ENV_READ_CONCURRENCY = 16;
+
+/** `fn` over `items` with at most `limit` calls in flight; results keep the input order. */
+async function mapWithLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/**
+ * Tenants with their container state, for UI listings: of one app when
+ * `appId` is given, else of every app. Any failure reads as "no tenants"
+ * (see listTenantDirs for a listing that throws).
+ */
+export async function listTenants(appId?: string): Promise<TenantStatus[]> {
   try {
     const apps = await listApps();
+    const scanned = appId === undefined ? apps : apps.filter(a => a.id === appId);
 
     // Pass 1: tenants that have a readable .env (others are skipped).
-    const found: Array<{ app: AppDefinition; dir: string; env: Record<string, string> }> = [];
-    for (const app of apps) {
+    const refs: Array<{ app: AppDefinition; dir: string }> = [];
+    for (const app of scanned) {
       // An unreadable tenants dir just means this app has no tenants to report.
       for (const { tenantId } of await listTenantDirs(app.id, { onError: () => {}, followSymlinks: true })) {
-        try {
-          found.push({ app, dir: tenantId, env: await readTenantEnv(app.id, tenantId) });
-        } catch {
-          // Skip if no .env file
-        }
+        refs.push({ app, dir: tenantId });
       }
     }
+    const envs = await mapWithLimit(refs, ENV_READ_CONCURRENCY,
+      ({ app, dir }) => readTenantEnv(app.id, dir).catch(() => null)); // no .env: skipped
+    const found = refs.flatMap((ref, i) => {
+      const env = envs[i];
+      return env ? [{ ...ref, env }] : [];
+    });
     if (found.length === 0) return [];
 
     // One Docker call for all tenants, grouped by app and tenant.

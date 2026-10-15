@@ -12,6 +12,8 @@ afterEach(async () => {
   vi.doUnmock('dockerode');
   vi.doUnmock('../services/app');
   vi.doUnmock('../config');
+  vi.doUnmock('../services/tenantStore');
+  vi.doUnmock('../services/docker');
   await fs.rm(appsDir, { recursive: true, force: true });
 });
 
@@ -101,5 +103,64 @@ describe('listTenants', () => {
     setup([], { dockerFails: true });
     const { listTenants } = await import('../services/docker');
     await expect(listTenants()).resolves.toEqual([]);
+  });
+
+  it('scans only the requested app when given one', async () => {
+    await tenantDir('alpha', 't1');
+    await tenantDir('beta', 't3');
+    const reads: string[] = [];
+    vi.doMock('../services/tenantStore', async () => {
+      const actual = await vi.importActual<typeof import('../services/tenantStore')>('../services/tenantStore');
+      return { ...actual, readTenantEnv: vi.fn(async (a: string, t: string) => { reads.push(`${a}:${t}`); return actual.readTenantEnv(a, t); }) };
+    });
+    setup([container('alpha', 't1', 'web'), container('beta', 't3', 'web')]);
+    const { listTenants } = await import('../services/docker');
+
+    const tenants = await listTenants('alpha');
+
+    expect(tenants.map(t => `${t.appId}:${t.tenantId}`)).toEqual(['alpha:t1']);
+    expect(reads).toEqual(['alpha:t1']);
+  });
+
+  it('reads tenant .env files in parallel, at most 16 at a time', async () => {
+    for (let i = 0; i < 40; i++) await tenantDir('alpha', `t${i}`);
+    let active = 0;
+    let maxActive = 0;
+    vi.doMock('../services/tenantStore', async () => {
+      const actual = await vi.importActual<typeof import('../services/tenantStore')>('../services/tenantStore');
+      return {
+        ...actual,
+        readTenantEnv: vi.fn(async (a: string, t: string) => {
+          active++; maxActive = Math.max(maxActive, active);
+          await new Promise(r => setTimeout(r, 5));
+          active--;
+          return actual.readTenantEnv(a, t);
+        }),
+      };
+    });
+    setup([]);
+    const { listTenants } = await import('../services/docker');
+
+    const tenants = await listTenants();
+
+    expect(tenants).toHaveLength(40);
+    expect(tenants.map(t => t.tenantId).sort()).toEqual(Array.from({ length: 40 }, (_, i) => `t${i}`).sort());
+    expect(maxActive).toBeGreaterThan(1);
+    expect(maxActive).toBeLessThanOrEqual(16);
+  });
+
+  it('GET /api/apps/:appId/tenants asks for that app only', async () => {
+    const listTenants = vi.fn(async () => []);
+    vi.doMock('../services/docker', () => ({ listTenants, startTenant: vi.fn(), stopTenant: vi.fn(), restartTenant: vi.fn() }));
+    vi.doMock('../config', () => ({ getAppsDir: () => appsDir, loadConfig: () => ({}) }));
+    const express = (await import('express')).default;
+    const request = (await import('supertest')).default;
+    const { default: router } = await import('../routes/tenants');
+    const app = express();
+    app.use('/api/apps/:appId/tenants', router);
+
+    await request(app).get('/api/apps/alpha/tenants').expect(200, []);
+
+    expect(listTenants).toHaveBeenCalledWith('alpha');
   });
 });
