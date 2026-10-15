@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import { constants as fsConstants } from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { getDataDir } from '../config';
@@ -54,13 +55,56 @@ function isoStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
+/**
+ * Read a regular file without following symlinks: lstat must say regular
+ * file, the open uses O_NOFOLLOW, and the opened inode must be the one lstat
+ * saw (a swap in between is caught). Null when it is a symlink or not a
+ * regular file. Snapshot and restore often run as root, so following a link
+ * would copy any file on the host into the data dir or a snapshot.
+ */
+async function readRegularFile(file: string): Promise<{ data: Buffer; mode: number } | null> {
+  const before = await fs.lstat(file);
+  if (!before.isFile()) return null;
+  let fh: fs.FileHandle;
+  try {
+    // O_NONBLOCK: a FIFO swapped in after the lstat must not hang the open.
+    fh = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch (err: any) {
+    if (err.code === 'ELOOP') return null;
+    throw err;
+  }
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.dev !== before.dev || st.ino !== before.ino) return null;
+    return { data: await fh.readFile(), mode: st.mode & 0o777 };
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Write a new file (never through an existing path or link), keeping `mode`. */
+async function writeNewFile(to: string, data: Buffer, mode: number): Promise<void> {
+  await fs.writeFile(to, data, { mode, flag: 'wx' });
+  // Preserve permissions exactly (umask) — critical for secret files (0600).
+  await fs.chmod(to, mode);
+}
+
+/** lstat that maps "missing" to null. */
+async function lstatOrNull(p: string) {
+  try {
+    return await fs.lstat(p);
+  } catch (err: any) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+function warnSkippedLink(p: string): void {
+  console.warn(`[snapshot] Skipping ${p}: a symlink or not a regular file`);
+}
+
 async function copyDir(src: string, dest: string): Promise<number> {
   let bytes = 0;
-  try {
-    await fs.access(src);
-  } catch {
-    return 0;
-  }
   await fs.mkdir(dest, { recursive: true, mode: 0o700 });
   const entries = await fs.readdir(src, { withFileTypes: true });
   for (const entry of entries) {
@@ -69,10 +113,15 @@ async function copyDir(src: string, dest: string): Promise<number> {
     if (entry.isDirectory()) {
       bytes += await copyDir(from, to);
     } else if (entry.isFile()) {
-      const stat = await fs.stat(from);
-      await fs.copyFile(from, to);
-      await fs.chmod(to, stat.mode & 0o777);
-      bytes += stat.size;
+      const file = await readRegularFile(from);
+      if (!file) {
+        warnSkippedLink(from);
+        continue;
+      }
+      await writeNewFile(to, file.data, file.mode);
+      bytes += file.data.length;
+    } else if (entry.isSymbolicLink()) {
+      warnSkippedLink(from);
     }
   }
   return bytes;
@@ -89,24 +138,28 @@ export async function createSnapshot(label?: string): Promise<SnapshotInfo> {
   let totalBytes = 0;
   for (const file of FILES_TO_SNAPSHOT) {
     const src = path.join(dataDir, file);
-    try {
-      const stat = await fs.stat(src);
-      if (!stat.isFile()) continue;
-      await fs.copyFile(src, path.join(dest, file));
-      // Preserve permissions — critical for secret files (0600).
-      await fs.chmod(path.join(dest, file), stat.mode & 0o777);
-      files.push(file);
-      totalBytes += stat.size;
-    } catch (err: any) {
-      if (err.code !== 'ENOENT') throw err;
+    const stat = await lstatOrNull(src);
+    if (!stat || stat.isDirectory()) continue;
+    const content = await readRegularFile(src).catch((err: any) => {
+      if (err.code === 'ENOENT') return undefined;
+      throw err;
+    });
+    if (content === undefined) continue;
+    if (content === null) {
+      warnSkippedLink(src);
+      continue;
     }
+    await writeNewFile(path.join(dest, file), content.data, content.mode);
+    files.push(file);
+    totalBytes += content.data.length;
   }
 
   for (const dir of DIRS_TO_SNAPSHOT) {
     const src = path.join(dataDir, dir);
-    try {
-      await fs.access(src);
-    } catch {
+    const stat = await lstatOrNull(src);
+    if (!stat) continue;
+    if (!stat.isDirectory()) {
+      warnSkippedLink(src);
       continue;
     }
     const bytes = await copyDir(src, path.join(dest, dir));
@@ -142,6 +195,26 @@ export async function listSnapshots(): Promise<SnapshotInfo[]> {
   }
 }
 
+/**
+ * The real path of an existing snapshot directory. Neither `.snapshots` nor
+ * the snapshot itself may be a symlink, and the result must be a direct child
+ * of the snapshots root.
+ */
+async function resolveSnapshotDir(name: string): Promise<string> {
+  const dir = snapshotDir(name);
+  const rootStat = await lstatOrNull(snapshotsRoot());
+  const stat = await lstatOrNull(dir);
+  if (!rootStat || !stat) throw new NotFoundError(`Snapshot '${name}' not found at ${dir}`);
+  if (!rootStat.isDirectory()) throw new ValidationError(`${snapshotsRoot()} is a symlink or not a directory; refusing to restore`);
+  if (!stat.isDirectory()) throw new ValidationError(`Snapshot '${name}' is a symlink or not a directory; refusing to restore`);
+  const realRoot = await fs.realpath(snapshotsRoot());
+  const realDir = await fs.realpath(dir);
+  if (path.dirname(realDir) !== realRoot) {
+    throw new ValidationError(`Snapshot '${name}' resolves outside ${snapshotsRoot()}; refusing to restore`);
+  }
+  return realDir;
+}
+
 /** Boot-time snapshot: skipped when one was taken recently; prunes right after. */
 export async function createBootSnapshot(): Promise<SnapshotInfo | null> {
   const all = await listSnapshots();
@@ -163,23 +236,20 @@ async function regularFileNames(dir: string): Promise<string[]> {
   return entries.filter(e => e.isFile()).map(e => e.name);
 }
 
-async function isDirectory(p: string): Promise<boolean> {
-  try {
-    return (await fs.stat(p)).isDirectory();
-  } catch (err: any) {
-    if (err.code === 'ENOENT') return false;
-    throw err;
-  }
+function linkRefused(snapshotName: string, label: string): ValidationError {
+  return new ValidationError(
+    `Snapshot '${snapshotName}' holds ${label} as a symlink or non-regular file; refusing to restore it (nothing was restored)`,
+  );
 }
 
 /** Copy one snapshot file into the staging area, keeping its mode; JSON must parse. */
 async function stageFile(snapshotName: string, from: string, to: string, label: string): Promise<void> {
-  const stat = await fs.stat(from);
-  await fs.copyFile(from, to);
-  await fs.chmod(to, stat.mode & 0o777);
+  const file = await readRegularFile(from);
+  if (!file) throw linkRefused(snapshotName, label);
+  await writeNewFile(to, file.data, file.mode);
   if (label.endsWith('.json')) {
     try {
-      JSON.parse(await fs.readFile(to, 'utf-8'));
+      JSON.parse(file.data.toString('utf-8'));
     } catch (err: any) {
       throw new ValidationError(`Snapshot '${snapshotName}' holds an unreadable ${label} (${err?.message || err}); nothing was restored`);
     }
@@ -195,16 +265,12 @@ interface RestorePlan {
 async function stageRestore(name: string, src: string, staging: string): Promise<RestorePlan> {
   const dataDir = getDataDir();
   const plan: RestorePlan = { files: [], dirs: [] };
-  await fs.mkdir(staging, { recursive: true, mode: 0o700 });
+  // Not recursive: the staging dir must be one we just created.
+  await fs.mkdir(staging, { mode: 0o700 });
 
   for (const file of FILES_TO_SNAPSHOT) {
     const from = path.join(src, file);
-    try {
-      if (!(await fs.stat(from)).isFile()) continue;
-    } catch (err: any) {
-      if (err.code === 'ENOENT') continue;
-      throw err;
-    }
+    if (!(await lstatOrNull(from))) continue;
     const staged = path.join(staging, file);
     await stageFile(name, from, staged, file);
     plan.files.push({ staged, live: path.join(dataDir, file) });
@@ -212,13 +278,22 @@ async function stageRestore(name: string, src: string, staging: string): Promise
 
   for (const dir of DIRS_TO_SNAPSHOT) {
     const from = path.join(src, dir);
-    if (!(await isDirectory(from))) continue;
+    const stat = await lstatOrNull(from);
+    if (!stat) continue;
+    if (!stat.isDirectory()) throw linkRefused(name, `${dir}/`);
+    const live = path.join(dataDir, dir);
+    const liveStat = await lstatOrNull(live);
+    if (liveStat && !liveStat.isDirectory()) {
+      throw new ValidationError(`${live} is a symlink or not a directory; refusing to restore into it (nothing was restored)`);
+    }
     const staged = path.join(staging, dir);
     await fs.mkdir(staged, { mode: 0o700 });
-    for (const entry of await regularFileNames(from)) {
-      await stageFile(name, path.join(from, entry), path.join(staged, entry), `${dir}/${entry}`);
+    for (const entry of await fs.readdir(from, { withFileTypes: true })) {
+      // Subdirectories were never part of apps.d; anything else that is not a regular file is refused.
+      if (entry.isDirectory()) continue;
+      await stageFile(name, path.join(from, entry.name), path.join(staged, entry.name), `${dir}/${entry.name}`);
     }
-    plan.dirs.push({ staged, live: path.join(dataDir, dir) });
+    plan.dirs.push({ staged, live });
   }
   return plan;
 }
@@ -229,7 +304,9 @@ async function stageRestore(name: string, src: string, staging: string): Promise
  * dir's owner, and a root-owned 0600 file would be unreadable to the server.
  */
 async function adoptOwner(staged: string, live: string): Promise<void> {
-  const ref = await fs.stat(live).catch(() => fs.stat(path.dirname(live)));
+  // A link's owner (or its target's) says nothing about who should read the file.
+  const current = await lstatOrNull(live);
+  const ref = current?.isFile() ? current : await fs.lstat(path.dirname(live));
   // EPERM as non-root: then the files are ours anyway.
   await fs.chown(staged, ref.uid, ref.gid).catch(() => {});
 }
@@ -264,10 +341,9 @@ async function commitRestore(plan: RestorePlan): Promise<void> {
  * and only then rename the files into place. Returns the pre-restore snapshot.
  */
 export async function restoreSnapshot(name: string): Promise<SnapshotInfo> {
-  const src = snapshotDir(name);
-  try {
-    await fs.access(path.join(src, 'snapshot.json'));
-  } catch {
+  const src = await resolveSnapshotDir(name);
+  const marker = await lstatOrNull(path.join(src, 'snapshot.json'));
+  if (!marker?.isFile()) {
     throw new NotFoundError(`Snapshot '${name}' not found or incomplete (no snapshot.json) at ${src}`);
   }
 

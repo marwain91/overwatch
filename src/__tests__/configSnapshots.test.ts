@@ -141,16 +141,20 @@ describe('config snapshot safety', () => {
   });
 
   it('a restore that fails part-way leaves the live state untouched', async () => {
-    const snapDir = () => path.join(dataDir, '.snapshots', 'good');
+    // An I/O error reading the second app file, however the copy reads it.
     vi.doMock('fs/promises', async () => {
       const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+      const failing = (p: unknown) => String(p).endsWith(path.join('.snapshots', 'good', 'apps.d', 'b.json'));
+      const eio = () => Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
       return {
         ...actual,
         copyFile: async (src: any, dest: any, mode?: number) => {
-          if (String(src) === path.join(snapDir(), 'apps.d', 'b.json')) {
-            throw Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
-          }
+          if (failing(src)) throw eio();
           return actual.copyFile(src, dest, mode);
+        },
+        open: async (file: any, ...rest: any[]) => {
+          if (failing(file)) throw eio();
+          return (actual.open as any)(file, ...rest);
         },
       };
     });
@@ -270,6 +274,134 @@ describe('overwatch snapshot prune --keep', () => {
     } finally {
       vi.restoreAllMocks();
       vi.doUnmock('../services/configSnapshots');
+    }
+  });
+});
+
+describe('config snapshots never follow symlinks', () => {
+  let dataDir: string;
+  let outside: string;
+
+  async function load() {
+    dataDir = path.join(tmpRoot, 'data');
+    outside = path.join(tmpRoot, 'outside');
+    await fs.mkdir(path.join(dataDir, 'apps.d'), { recursive: true });
+    await fs.mkdir(path.join(dataDir, '.snapshots'), { recursive: true });
+    await fs.mkdir(outside, { recursive: true });
+    vi.doMock('../config', () => ({ getDataDir: () => dataDir }));
+    return import('../services/configSnapshots');
+  }
+
+  async function realSnapshot(name: string) {
+    const dir = path.join(dataDir, '.snapshots', name);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'snapshot.json'), JSON.stringify({
+      name, createdAt: new Date().toISOString(), files: [], totalBytes: 0,
+    }));
+    return dir;
+  }
+
+  async function liveState() {
+    await fs.writeFile(path.join(dataDir, 'admin-users.json'), '[]');
+    await fs.writeFile(path.join(dataDir, 'env-vars.json'), '{"live":[]}', { mode: 0o600 });
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'live.json'), '{"id":"live"}');
+  }
+
+  async function expectLiveUntouched() {
+    expect(await fs.readFile(path.join(dataDir, 'admin-users.json'), 'utf-8')).toBe('[]');
+    expect(await fs.readFile(path.join(dataDir, 'env-vars.json'), 'utf-8')).toBe('{"live":[]}');
+    expect(await fs.readdir(path.join(dataDir, 'apps.d'))).toEqual(['live.json']);
+  }
+
+  it('refuses a snapshot directory that is a symlink', async () => {
+    const { restoreSnapshot } = await load();
+    await liveState();
+    await fs.writeFile(path.join(outside, 'snapshot.json'), '{}');
+    await fs.writeFile(path.join(outside, 'env-vars.json'), '{"evil":[]}');
+    await fs.symlink(outside, path.join(dataDir, '.snapshots', 'evil'));
+    await expect(restoreSnapshot('evil')).rejects.toThrow(/symlink|not a directory/i);
+    await expectLiveUntouched();
+  });
+
+  it('refuses a snapshot whose top-level file is a symlink, restoring nothing', async () => {
+    const { restoreSnapshot } = await load();
+    await liveState();
+    const dir = await realSnapshot('linked-file');
+    await fs.writeFile(path.join(dir, 'env-vars.json'), '{"fine":[]}');
+    await fs.writeFile(path.join(outside, 'admins.json'), '[{"email":"attacker@example.com","addedAt":"x","addedBy":"x"}]');
+    await fs.symlink(path.join(outside, 'admins.json'), path.join(dir, 'admin-users.json'));
+    await expect(restoreSnapshot('linked-file')).rejects.toThrow(/admin-users\.json.*symlink|symlink.*admin-users\.json/i);
+    await expectLiveUntouched();
+  });
+
+  it('refuses a snapshot with a symlink inside apps.d, restoring nothing', async () => {
+    const { restoreSnapshot } = await load();
+    await liveState();
+    const dir = await realSnapshot('linked-app');
+    await fs.mkdir(path.join(dir, 'apps.d'));
+    await fs.writeFile(path.join(dir, 'apps.d', 'ok.json'), '{"id":"ok"}');
+    await fs.writeFile(path.join(outside, 'evil.json'), '{"id":"evil"}');
+    await fs.symlink(path.join(outside, 'evil.json'), path.join(dir, 'apps.d', 'evil.json'));
+    await expect(restoreSnapshot('linked-app')).rejects.toThrow(/evil\.json.*symlink|symlink.*evil\.json/i);
+    await expectLiveUntouched();
+  });
+
+  it('refuses a snapshot whose apps.d is a symlinked directory', async () => {
+    const { restoreSnapshot } = await load();
+    await liveState();
+    const dir = await realSnapshot('linked-dir');
+    await fs.mkdir(path.join(outside, 'apps'));
+    await fs.writeFile(path.join(outside, 'apps', 'evil.json'), '{"id":"evil"}');
+    await fs.symlink(path.join(outside, 'apps'), path.join(dir, 'apps.d'));
+    await expect(restoreSnapshot('linked-dir')).rejects.toThrow(/apps\.d.*symlink|symlink.*apps\.d/i);
+    await expectLiveUntouched();
+  });
+
+  it('refuses to restore into a live apps.d that is a symlink', async () => {
+    const { restoreSnapshot } = await load();
+    const dir = await realSnapshot('s');
+    await fs.mkdir(path.join(dir, 'apps.d'));
+    await fs.writeFile(path.join(dir, 'apps.d', 'a.json'), '{"id":"a"}');
+    await fs.rm(path.join(dataDir, 'apps.d'), { recursive: true });
+    await fs.mkdir(path.join(outside, 'target'));
+    await fs.symlink(path.join(outside, 'target'), path.join(dataDir, 'apps.d'));
+    await expect(restoreSnapshot('s')).rejects.toThrow(/apps\.d.*symlink|symlink.*apps\.d/i);
+    expect(await fs.readdir(path.join(outside, 'target'))).toEqual([]);
+  });
+
+  it('createSnapshot skips symlinks in the live data dir instead of copying their targets', async () => {
+    const { createSnapshot } = await load();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await fs.writeFile(path.join(outside, 'secret'), 'root-only-secret');
+    await fs.symlink(path.join(outside, 'secret'), path.join(dataDir, 'env-vars.json'));
+    await fs.symlink(path.join(outside, 'secret'), path.join(dataDir, 'apps.d', 'evil.json'));
+    await fs.writeFile(path.join(dataDir, 'apps.d', 'ok.json'), '{"id":"ok"}');
+    await fs.writeFile(path.join(dataDir, 'admin-users.json'), '[]');
+    try {
+      const snap = await createSnapshot('t');
+      const dir = path.join(dataDir, '.snapshots', snap.name);
+      expect(snap.files).not.toContain('env-vars.json');
+      expect(await fs.readdir(dir)).not.toContain('env-vars.json');
+      expect(await fs.readdir(path.join(dir, 'apps.d'))).toEqual(['ok.json']);
+      expect(warn.mock.calls.flat().join('\n')).toMatch(/symlink/i);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('createSnapshot skips a live apps.d that is a symlinked directory', async () => {
+    const { createSnapshot } = await load();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await fs.rm(path.join(dataDir, 'apps.d'), { recursive: true });
+    await fs.mkdir(path.join(outside, 'apps'));
+    await fs.writeFile(path.join(outside, 'apps', 'x.json'), '{"id":"x"}');
+    await fs.symlink(path.join(outside, 'apps'), path.join(dataDir, 'apps.d'));
+    try {
+      const snap = await createSnapshot('t');
+      expect(snap.files).not.toContain('apps.d/');
+      expect(await fs.readdir(path.join(dataDir, '.snapshots', snap.name))).not.toContain('apps.d');
+    } finally {
+      warn.mockRestore();
     }
   });
 });
