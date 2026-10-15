@@ -516,12 +516,26 @@ Who may sign in, and what they may do, is stored in `data/admin-users.json` and 
 |----------|-------------|
 | `AUTH_SERVICE_SECRET` | JWT secret for tenant access tokens |
 
+### Tenant variables (`shared.env`)
+
+The variables set on the Environment Variables page or per tenant are stored in `data/env-vars.json` and `data/tenant-env-overrides.json`, and written to each tenant's `shared.env`.
+
+- **Admin-only keys.** Only an admin can set, override or delete these keys, and viewers and editors always see their values masked:
+  - `AUTH_SERVICE_SECRET`;
+  - any app's `admin_access.secret_env`;
+  - the Overwatch secret names listed under App Schema (`JWT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, the database root password env, `RESTIC_PASSWORD`, `R2_*`, `AWS_*`, `GHCR_TOKEN`).
+
+  `shared.env` takes precedence over the tenant's `.env` and the image's `ENV`, so whoever sets a tenant's admin-token secret could sign tenant admin tokens.
+- **Lost stores are not treated as empty.** A missing store is created as `{}` only while no tenant's `shared.env` holds a variable. Otherwise reads and writes fail with an error naming a tenant, and boot leaves every `shared.env` as it is. Restore the file with `overwatch snapshot list` and `overwatch snapshot restore <name>`. Create it containing `{}` only if every tenant's variables should really go. A store in the legacy single-app format (a top-level array) is refused the same way. Run `overwatch migrate up`, or rewrite it as `{"<app id>": [...]}`.
+- **An app neither store knows keeps its tenants' files.** This happens after an app id is renamed without re-keying both files. Regeneration then leaves a tenant's `shared.env` unchanged if it holds variables, and logs which tenant it kept and why. An app entry that is an empty list (`"<app id>": []`) means "no variables", and its tenants' files are emptied.
+- **Values are written so compose reads them exactly.** A value is quoted when it holds `$`, has leading or trailing whitespace, holds whitespace before `#`, or starts with a quote.
+
 ### Other
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3002` | Overwatch HTTP port |
-| `ALLOWED_ADMIN_EMAILS` | (none) | Comma-separated initial admin emails |
+| `ALLOWED_ADMIN_EMAILS` | (none) | Comma-separated initial admin emails. Seeded into `data/admin-users.json` while that file is missing or holds an empty list, as `overwatch init` writes it. A list with users is never changed. Invalid emails are skipped with a warning. |
 | `OVERWATCH_TRUST_PROXY` | `1` | Express `trust proxy` setting for the client IP behind Traefik (hop count, `true`/`false` or a subnet list). Set it to your proxy's subnet/IP if Overwatch is not directly behind one Traefik hop. The generated Overwatch compose passes it through. |
 | `OVERWATCH_LOCK_TIMEOUT_MS` | `30000` | How long a request or CLI command waits for a file lock (for example the per-tenant lock) before failing as "busy" (HTTP 409). Raise it only if legitimate operations on one tenant routinely queue for longer. |
 | `OVERWATCH_DEPLOY_DIR` | (none) | Deploy root used by `overwatch infra deploy` only; a legacy alias of `DEPLOY_DIR`, which takes precedence when both are set. Without either, the root is the parent of the directory holding `overwatch.yaml`. Other CLI commands read `DEPLOY_DIR` only (see [updating.md](updating.md)). |
