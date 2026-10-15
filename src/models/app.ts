@@ -17,15 +17,40 @@ export const AppRegistryAuthSchema = z.object({
   aws_region_env: z.string().optional(),
 });
 
+// `url` and `repository` become `docker login/pull/create` arguments and image
+// references, and parts of registry API URLs. Each piece must start with a
+// letter or digit (never `-`, so never an option) and use the reference
+// charset, which also rules out whitespace and URL syntax. Case is not
+// checked: docker refuses uppercase repositories itself, and older images
+// embed such values in their manifests.
+const REGISTRY_PATH_COMPONENT = '[A-Za-z0-9][A-Za-z0-9._-]*';
+const REGISTRY_URL_RE = new RegExp(
+  `^(?:[A-Za-z0-9][A-Za-z0-9._-]*|\\[[0-9A-Fa-f:.]+\\])(?::[0-9]{1,5})?(?:/${REGISTRY_PATH_COMPONENT})*$`,
+);
+const REGISTRY_REPOSITORY_RE = new RegExp(`^${REGISTRY_PATH_COMPONENT}(?:/${REGISTRY_PATH_COMPONENT})*$`);
+
+// An http(s) URL, or a bare host as validateRegistryUrl accepts, with no
+// credentials, query or fragment.
+function isRegistryApiUrl(value: string): boolean {
+  if (value.startsWith('-') || /[\u0000- \u007f]/.test(value) || /[?#]/.test(value)) return false;
+  let url: URL;
+  try {
+    url = new URL(value.includes('://') ? value : `https://${value}`);
+  } catch {
+    return false;
+  }
+  return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password;
+}
+
 // Registry configuration for app.
 // `api_url` is required for self-hosted GitLab where the registry host
 // (e.g. registry.acme.com:5050) and the REST API host (gitlab.acme.com)
 // differ. Unused (and unset) for GHCR/DockerHub/ECR/Custom.
 export const AppRegistrySchema = z.object({
   type: z.enum(['ghcr', 'dockerhub', 'ecr', 'custom', 'gitlab']),
-  url: z.string(),
-  api_url: z.string().optional(),
-  repository: z.string(),
+  url: z.string().regex(REGISTRY_URL_RE, 'must be a registry host with optional port and path, e.g. ghcr.io or registry.acme.com:5050'),
+  api_url: z.string().refine(isRegistryApiUrl, 'must be an http(s) URL without credentials, query or fragment, e.g. https://gitlab.acme.com').optional(),
+  repository: z.string().regex(REGISTRY_REPOSITORY_RE, 'must be a repository path such as org/app: letters, digits, ".", "_" and "-", separated by "/"'),
   auth: AppRegistryAuthSchema,
   tag_pattern: z.string().optional(),
 });
