@@ -1,10 +1,18 @@
 // ─── API contract types ───────────────────────────────────────────────────
-// Generated from the backend Zod schemas (scripts/gen-ui-types.mjs); never hand-copy
-// them here. Hand-written types below are UI-only or describe ad-hoc route payloads.
-import type { AdminRole, AdminUser as ApiAdminUser, EnvVar, LockInfo } from './api-types.generated';
+// Generated from the backend Zod schemas and source types (scripts/gen-ui-types.mjs);
+// never hand-copy them here. Hand-written types below are UI-only or describe ad-hoc
+// route payloads.
+import type {
+  AdminRole,
+  AdminUser as ApiAdminUser,
+  AuditEntry as ApiAuditEntry,
+  EnvVar,
+  LockInfo,
+} from './api-types.generated';
 
 export type {
   AdminRole,
+  AlertHistoryEntry,
   AppAdminAccess,
   AppBackup,
   AppCredentials,
@@ -19,12 +27,19 @@ export type {
   CertResolver,
   CertResolverDns,
   CertResolverHttp,
+  ContainerInfo,
+  ContainerMetrics,
   CreateApp,
   Entrypoint,
   EnvVar,
+  HealthState,
   LockInfo,
+  MetricsSnapshot,
   MiddlewareSpec,
   NotificationChannel,
+  TenantMetrics,
+  // What the tenant list endpoints return.
+  TenantStatus as Tenant,
   TlsTermination,
   TraefikApp,
   TraefikDashboard,
@@ -47,85 +62,13 @@ export const MIDDLEWARE_TYPES: MiddlewareType[] = [
   'replacePath', 'replacePathRegex', 'inFlightReq', 'chain',
 ];
 
-// Tenant
-export interface Tenant {
-  tenantId: string;
-  appId: string;
-  domain: string;
-  version: string;
-  healthy: boolean;
-  runningContainers: number;
-  totalContainers: number;
-  containers: ContainerInfo[];
-}
-
-export interface ContainerInfo {
-  id: string;
-  name: string;
-  state: string;
-  status: string;
-  image: string;
-  created: string;
-  service: string;
-}
-
 // Env Vars
 export interface TenantEnvVar extends EnvVar {
   source: 'global' | 'override' | 'tenant-only';
 }
 
-// Monitoring
-export interface ContainerMetrics {
-  name: string;
-  appId: string;
-  tenantId: string;
-  service: string;
-  cpuPercent: number;
-  memUsage: number;
-  memLimit: number;
-  netRx: number;
-  netTx: number;
-}
-
-export interface TenantMetrics {
-  tenantId: string;
-  appId: string;
-  containerCount: number;
-  totalCpu: number;
-  totalMem: number;
-  totalMemLimit: number;
-}
-
-export interface MetricsSnapshot {
-  containers: ContainerMetrics[];
-  tenants: TenantMetrics[];
-}
-
-export interface HealthState {
-  containerName: string;
-  appId: string;
-  tenantId: string;
-  service: string;
-  state: 'healthy' | 'unhealthy' | 'unknown';
-  lastCheck: string | null;
-}
-
-export interface AlertEntry {
-  id: string;
-  ruleName: string;
-  severity: 'info' | 'warning' | 'critical';
-  message: string;
-  firedAt: string;
-  resolvedAt: string | null;
-}
-
-// Audit
-export interface AuditEntry {
-  action: string;
-  user: string;
-  status: number;
-  timestamp: string;
-}
+// Audit: GET /audit-logs never returns request bodies.
+export type AuditEntry = Omit<ApiAuditEntry, 'body'>;
 
 // Admin
 export interface AdminUser extends Omit<ApiAdminUser, 'role'> {
