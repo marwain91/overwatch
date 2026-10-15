@@ -22,6 +22,13 @@ interface ActiveAlert {
 const cooldowns = new Map<string, number>(); // ruleId+scope -> lastFiredAt timestamp
 const activeAlerts = new Map<string, ActiveAlert>(); // ruleId+scope -> alert info
 const containerDownTimers = new Map<string, ReturnType<typeof setTimeout>>(); // ruleId:containerName -> pending down timeout
+// A requested stop is not an outage. `docker stop`, `compose stop|down` and
+// restarts emit kill, die, stop (then destroy on removal); `docker kill` and
+// `rm -f` emit kill, die. A crash emits die alone. `stop` and `destroy` cancel
+// the down timer whenever they arrive; a kill only marks the die that follows
+// shortly, so an earlier non-fatal signal (a HUP reload) cannot hide a crash.
+const KILL_TO_DIE_WINDOW_MS = 30_000;
+const stopRequestedAt = new Map<string, number>(); // containerName -> last kill/stop event
 // Keyed per rule so two rules of the same type (e.g. 80% warn / 95% critical)
 // don't reset each other's timer on every snapshot.
 const cpuThresholdTimers = new Map<string, number>(); // ruleId:containerName -> exceededSince timestamp
@@ -180,6 +187,7 @@ function evictStaleContainers(rules: AlertRule[], now: number): void {
       if (down) clearTimeout(down);
       containerDownTimers.delete(key);
     }
+    stopRequestedAt.delete(name);
     lastSeen.delete(name);
   }
 }
@@ -262,31 +270,55 @@ export function startAlertEngine(): void {
   });
 
   // Subscribe to container events for container_down alerts
+  const downRules = rules.filter(rule => rule.condition.type === 'container_down');
+  const cancelDownTimers = (name: string) => {
+    for (const rule of downRules) {
+      const key = `${rule.id}:${name}`;
+      const timer = containerDownTimers.get(key);
+      if (timer) clearTimeout(timer);
+      containerDownTimers.delete(key);
+    }
+  };
   subscribe('container:event', (data) => {
-    lastSeen.set(data.containerName, Date.now());
-    for (const rule of rules) {
-      if (rule.condition.type === 'container_down') {
-        const durationMs = parseDuration(rule.condition.duration || '5m');
-        const key = `${rule.id}:${data.containerName}`;
+    const name = data.containerName;
+    const now = Date.now();
+    lastSeen.set(name, now);
 
-        if (data.action === 'die' || data.action === 'stop') {
-          // die + stop both arrive for one outage: keep the first timer so the
-          // down duration counts from when the container actually went down.
+    switch (data.action) {
+      case 'kill':
+      case 'stop':
+        stopRequestedAt.set(name, now);
+        cancelDownTimers(name); // `stop` follows the `die` of a requested stop
+        break;
+      case 'destroy':
+        // Removed on purpose. A down alert that never fired is simply dropped,
+        // so eviction later has nothing to send a "Resolved" for.
+        stopRequestedAt.delete(name);
+        cancelDownTimers(name);
+        break;
+      case 'die': {
+        const requested = stopRequestedAt.get(name);
+        if (requested !== undefined && now - requested < KILL_TO_DIE_WINDOW_MS) break;
+        for (const rule of downRules) {
+          const key = `${rule.id}:${name}`;
+          // Keep the first timer so the down duration counts from when the
+          // container actually went down.
           if (containerDownTimers.has(key)) continue;
           const timer = setTimeout(() => {
             if (containerDownTimers.delete(key)) {
-              fireAlert(rule, data.containerName, `Container ${data.containerName} has been down for ${rule.condition.duration || '5m'}`, undefined, data.containerName);
+              fireAlert(rule, name, `Container ${name} has been down for ${rule.condition.duration || '5m'}`, undefined, name);
             }
-          }, durationMs);
+          }, parseDuration(rule.condition.duration || '5m'));
           timer.unref();
           containerDownTimers.set(key, timer);
-        } else if (data.action === 'start') {
-          const timer = containerDownTimers.get(key);
-          if (timer) clearTimeout(timer);
-          containerDownTimers.delete(key);
-          resolveAlert(rule, data.containerName);
         }
+        break;
       }
+      case 'start':
+        stopRequestedAt.delete(name);
+        cancelDownTimers(name);
+        for (const rule of downRules) resolveAlert(rule, name);
+        break;
     }
   });
 
@@ -319,6 +351,7 @@ export function stopAlertEngine(): void {
   unsubscribe = [];
   for (const timer of containerDownTimers.values()) clearTimeout(timer);
   containerDownTimers.clear();
+  stopRequestedAt.clear();
   cooldowns.clear();
   activeAlerts.clear();
   cpuThresholdTimers.clear();

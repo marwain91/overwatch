@@ -124,6 +124,86 @@ describe('alert engine container_down timers', () => {
   });
 });
 
+describe('alert engine container_down on deliberate stops', () => {
+  async function run(actions: string[], { gapMs = 0, waitMs = 120_000 } = {}) {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const { eventBus, startAlertEngine, stopAlertEngine } = await loadEngine([downRule]);
+    const fired: any[] = [];
+    const resolved: any[] = [];
+    eventBus.on('alert:fired', (a) => fired.push(a));
+    eventBus.on('alert:resolved', (a) => resolved.push(a));
+    startAlertEngine();
+    for (const action of actions) {
+      eventBus.emit('container:event', containerEvent({ action, containerName: 'app-t1-web' }));
+      if (gapMs) await vi.advanceTimersByTimeAsync(gapMs);
+    }
+    await vi.advanceTimersByTimeAsync(waitMs);
+    return { eventBus, stopAlertEngine, fired, resolved };
+  }
+
+  it('does not alert for docker stop / compose stop (kill, die, stop)', async () => {
+    const { stopAlertEngine, fired } = await run(['kill', 'die', 'stop']);
+    stopAlertEngine();
+    expect(fired).toHaveLength(0);
+  });
+
+  it('does not alert when stop arrives after die without a kill first', async () => {
+    const { stopAlertEngine, fired } = await run(['die', 'stop']);
+    stopAlertEngine();
+    expect(fired).toHaveLength(0);
+  });
+
+  it('does not alert for docker kill (kill, die)', async () => {
+    const { stopAlertEngine, fired } = await run(['kill', 'die'], { gapMs: 2_000 });
+    stopAlertEngine();
+    expect(fired).toHaveLength(0);
+  });
+
+  it('sends neither a down alert nor a Resolved for a deleted tenant (compose down), even after eviction', async () => {
+    const { eventBus, stopAlertEngine, fired, resolved } = await run(['kill', 'die', 'stop', 'destroy']);
+    try {
+      eventBus.emit('containers:existence', []);
+      vi.setSystemTime(new Date('2026-01-01T00:30:00Z'));
+      eventBus.emit('containers:existence', []);
+      expect(fired).toHaveLength(0);
+      expect(resolved).toHaveLength(0);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('cancels the pending down timer of a crashed container that is then deleted', async () => {
+    const { eventBus, stopAlertEngine, fired, resolved } = await run(['die', 'destroy']);
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:30:00Z'));
+      eventBus.emit('containers:existence', []);
+      expect(fired).toHaveLength(0);
+      expect(resolved).toHaveLength(0);
+    } finally {
+      stopAlertEngine();
+    }
+  });
+
+  it('still alerts for a crash (die alone)', async () => {
+    const { stopAlertEngine, fired } = await run(['die']);
+    stopAlertEngine();
+    expect(fired).toHaveLength(1);
+  });
+
+  it('still alerts for a crash after a restart or an earlier non-fatal signal', async () => {
+    const restarted = await run(['kill', 'die', 'stop', 'start', 'die']);
+    restarted.stopAlertEngine();
+    expect(restarted.fired).toHaveLength(1);
+    vi.resetModules();
+
+    // e.g. `docker kill -s HUP` to reload, then a crash well after it
+    const reloaded = await run(['kill', 'die'], { gapMs: 5 * 60_000 });
+    reloaded.stopAlertEngine();
+    expect(reloaded.fired).toHaveLength(1);
+  });
+});
+
 describe('alert engine lifecycle', () => {
   it('removes its eventBus listeners on stop and restarts cleanly without double firing', async () => {
     vi.useFakeTimers();

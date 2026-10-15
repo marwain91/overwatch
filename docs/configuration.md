@@ -191,6 +191,7 @@ alert_rules:
     severity: "info" | "warning" | "critical"  # Default: "warning"
 ```
 
+- `container_down` fires when a container that died on its own (a crash, an OOM kill) has not started again within `duration` (default "5m"). Requested stops (`docker stop`/`kill`, `docker compose stop`/`down`, a tenant stop, restart or delete from Overwatch) do not alert.
 - `health_check_failed` fires once per outage, on the probe where the failure count reaches `consecutive_failures` (default 3; probes run every 10s). It resolves on the next healthy probe.
 
 ### Retention Configuration

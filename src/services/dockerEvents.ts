@@ -65,7 +65,9 @@ async function startListening(): Promise<void> {
   docker.getEvents({
     filters: {
       type: ['container'],
-      event: ['start', 'stop', 'die'],
+      // kill and destroy let the alert engine tell requested stops and
+      // deletes from crashes (a crash emits die alone).
+      event: ['start', 'stop', 'die', 'kill', 'destroy'],
     },
   }, (err, stream) => {
     if (err || !stream) {
