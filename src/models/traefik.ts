@@ -164,6 +164,20 @@ export interface RawLabelOwner {
   isGeneratedMiddleware?: (name: string) => boolean;
   /** Operator-owned object (the Overwatch admin router): the tenant-facing field restrictions do not apply. */
   trusted?: boolean;
+  /** Set for a tenant's own raw labels (editor-writable); app-level labels are admin-owned. */
+  tenant?: TenantLabelScope;
+}
+
+/**
+ * The global default_middlewares are the admin's: a tenant label may neither
+ * leave them out of its router nor redefine them. Names are router-prefixed
+ * and lower-case.
+ */
+export interface TenantLabelScope {
+  /** The global default_middlewares of this router, which its `middlewares` list must keep. */
+  requiredMiddlewares: string[];
+  /** Those plus their chain members, which no label may redefine. */
+  protectedMiddlewares: string[];
 }
 
 // Slugs may contain hyphens but never `_`, so a middleware named
@@ -254,6 +268,18 @@ function routerMiddlewaresProblem(value: string, owner?: RawLabelOwner): string 
   return undefined;
 }
 
+function tenantLabelProblem(kind: string, name: string, field: string, value: string, scope: TenantLabelScope): string | undefined {
+  if (kind === 'middlewares' && scope.protectedMiddlewares.includes(name)) {
+    return `"${name}" is a global default middleware, which a tenant cannot change`;
+  }
+  if (kind === 'routers' && field === 'middlewares') {
+    const listed = new Set(value.split(',').map(e => e.trim().toLowerCase().replace(/@docker$/, '')));
+    const missing = scope.requiredMiddlewares.filter(n => !listed.has(n));
+    if (missing.length > 0) return `the router's middlewares must keep the global default middlewares (missing ${missing.join(', ')})`;
+  }
+  return undefined;
+}
+
 /**
  * Why a raw label may not be emitted/stored, or undefined when it is fine.
  * Stricter than the schema check because the rules must see the key exactly as
@@ -266,6 +292,7 @@ function routerMiddlewaresProblem(value: string, owner?: RawLabelOwner): string 
  * - Only `traefik.http.{routers,services,middlewares}.<name>.*` for names the
  *   `owner` owns; tcp/udp and every other `traefik.*` key is refused. Without an
  *   `owner` the name check is skipped (the reserved-field rules still apply).
+ * - A tenant's own labels (`owner.tenant`) are also held to tenantLabelProblem.
  * Kept out of the schema refinement on purpose: that schema is parsed at
  * boot, so tightening it there would turn a stored key into a boot failure.
  */
@@ -291,6 +318,10 @@ export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwne
   }
   const field = rest.join('.').replace(/\[\d+\]/g, '');
   const trusted = owner?.trusted === true;
+  if (owner?.tenant && !trusted) {
+    const p = tenantLabelProblem(kind, name, field, value, owner.tenant);
+    if (p) return p;
+  }
   if (kind === 'middlewares' && !trusted) {
     const p = middlewareFieldProblem(field);
     if (p) return p;
@@ -490,7 +521,7 @@ export type TraefikApp = z.infer<typeof TraefikAppSchema>;
 export const TraefikTenantSchema = z.object({
   cert_resolver: z.string().optional().describe('Explicit cert resolver name; overrides domain_pattern matching'),
   host_aliases: z.array(z.string()).optional().describe('Additional Host(...) matchers on the primary service'),
-  middleware_overrides: z.record(z.array(z.string())).optional().describe('serviceName → middleware names. REPLACES the app\'s middleware list for that service.'),
+  middleware_overrides: z.record(z.array(z.string())).optional().describe('serviceName → middleware names. REPLACES the app- and service-level middlewares for that service; the global default_middlewares always apply.'),
   raw_labels: PerServiceRawLabelsSchema.optional().describe('serviceName → label key/value map (escape hatch, denylist enforced)'),
   tls_termination: TlsTerminationSchema.optional().describe('Override TLS termination mode for this tenant'),
 });

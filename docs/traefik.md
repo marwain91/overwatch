@@ -153,7 +153,7 @@ cert_resolver: gandi-eu              # explicit override of the auto-pick
 host_aliases:
   - "legacy.acme.com"
 middleware_overrides:
-  web: ["strict-rl", "ip-allowlist-corp"]   # REPLACES the app's middleware list for this service
+  web: ["strict-rl", "ip-allowlist-corp"]   # REPLACES the app's middlewares for this service (global defaults stay)
 raw_labels:
   web:
     "traefik.http.routers.myapp-acme-web.observability.tracing": "true"
@@ -173,7 +173,9 @@ traefik:
     - partner.example.org   # also allows www.partner.example.org
 ```
 
-Override semantics: `middleware_overrides` is a full replacement, not a merge, so an editor can already replace the whole chain, including the global and app `default_middlewares`, for any service of a tenant. For the same reason a router's raw `middlewares` label (which may list the router's own typed middlewares) is not treated as a way around `default_middlewares`: it is no more powerful than `middleware_overrides`. `raw_labels` are merged on top of the generated and app-level labels (denylist enforced after merge).
+Override semantics: the global `traefik.default_middlewares` belong to the admin and always apply to every tenant router. `middleware_overrides` (editor-writable) replace only the app- and service-level part of a service's chain (the app's `default_middlewares` and the service's `routing.middlewares`), not merge with it; the router's chain is the global defaults followed by the override list. An empty list therefore leaves just the global defaults.
+
+`raw_labels` are merged on top of the generated and app-level labels (denylist enforced after merge). A tenant's own raw labels cannot get around the global defaults either: a router `middlewares` label must still list every global default middleware (`myapp-acme-web-<name>`, `@docker` optional), and a label that redefines a global default middleware, or a member of a global default chain (for example `traefik.http.middlewares.myapp-acme-web-auth.basicauth.users`), is refused. Both are rejected with HTTP 400 on save and dropped with a warning at generation. App-level raw labels are admin-owned and not subject to this rule.
 
 ## Operational notes
 

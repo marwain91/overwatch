@@ -17,7 +17,7 @@ import type { TraefikTenant } from '../models/traefik';
 import { NotFoundError } from '../utils/httpErrors';
 import { tenantDir } from './tenantStore';
 import * as fs from 'fs/promises';
-import { assertTenantRawLabelsOwned, assertNoGlobalMiddlewareShadowing } from './traefikLabels';
+import { assertTenantRawLabelsOwned, assertNoGlobalMiddlewareShadowing, globalDefaultMiddlewares } from './traefikLabels';
 import {
   restoreMiddlewareCredentials,
   restoreRoutingCredentials,
@@ -202,7 +202,10 @@ export async function updateTenantTraefik(appId: string, tenantId: string, body:
   // Restoring masked credentials reads the stored value, so it runs under the write lock.
   await writeTenantTraefik(appId, tenantId, async (stored) => {
     const parsed = restoreTenantTraefik(incoming, stored);
-    assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels);
+    if (parsed.raw_labels) {
+      const defaults = globalDefaultMiddlewares((await getApp(appId)) ?? undefined, loadConfig().traefik);
+      assertTenantRawLabelsOwned(appId, tenantId, parsed.raw_labels, defaults);
+    }
     if (parsed.host_aliases && parsed.host_aliases.length > 0) {
       parsed.host_aliases = assertHostAliasesAllowed(parsed.host_aliases, await loadAliasContext(appId, tenantId));
     }

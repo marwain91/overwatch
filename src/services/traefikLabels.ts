@@ -1,5 +1,5 @@
 import type { AppDefinition, AppService } from '../models/app';
-import type { MiddlewareSpec, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
+import type { MiddlewareSpec, TenantLabelScope, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
 import { rawLabelOwnerForAppService, rawLabelOwnerForRouter, rawLabelProblem } from '../models/traefik';
 import { HttpError, ValidationError } from '../utils/httpErrors';
 
@@ -99,8 +99,9 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
   }
 
   // Resolve which middlewares apply to this service:
-  //   tenant.middleware_overrides[service] — REPLACES app's chain
-  //   else: app.default_middlewares + service.routing.middlewares + global.default_middlewares
+  //   global.default_middlewares, always
+  //   + tenant.middleware_overrides[service] if set, REPLACING the app's part
+  //   + else app.default_middlewares + service.routing.middlewares
   // Plus an auto-emitted strip-prefix middleware when path_prefix + strip_prefix.
   const resolvedNames = resolveServiceMiddlewareNames(service, app, traefik, tenantOverrides);
   const expanded = new Map<string, MiddlewareSpec>();
@@ -156,15 +157,15 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
   // Service load balancer port
   push(`traefik.http.services.${routerName}.loadbalancer.server.port=${service.ports.internal}`);
 
-  // Raw labels (app-service + tenant-service), deny-filtered
-  const merged = mergeRawLabels(
-    service.routing?.raw_labels,
-    tenantOverrides?.raw_labels?.[service.name],
-  );
+  // Raw labels (app-service + tenant-service), deny-filtered. Tenant labels
+  // (editor-writable) are held to the tenant rules; app labels are admin-owned.
+  const tenantRaw = tenantOverrides?.raw_labels?.[service.name] ?? {};
+  const merged = mergeRawLabels(service.routing?.raw_labels, tenantRaw);
   const generated = new Set(routerMws.map(n => n.toLowerCase()));
   const owner = { ...rawLabelOwnerForRouter(routerName), isGeneratedMiddleware: (n: string) => generated.has(n) };
+  const tenantOwner = { ...owner, tenant: tenantLabelScope(routerName, globalDefaultMiddlewares(app, traefik)) };
   for (const [k, v] of Object.entries(merged)) {
-    const problem = rawLabelProblem(k, v, owner);
+    const problem = rawLabelProblem(k, v, Object.prototype.hasOwnProperty.call(tenantRaw, k) ? tenantOwner : owner);
     if (problem) {
       // Key only: label values may hold credentials.
       console.warn(`[traefik] dropped raw label "${k}" on ${routerName}: ${problem}`);
@@ -203,7 +204,12 @@ export function assertAppRawLabelsOwned(appId: string, services: unknown): void 
 }
 
 /** Save-time check for a tenant's `raw_labels` (service name -> labels). */
-export function assertTenantRawLabelsOwned(appId: string, tenantId: string, rawLabels: unknown): void {
+export function assertTenantRawLabelsOwned(
+  appId: string,
+  tenantId: string,
+  rawLabels: unknown,
+  globalDefaults: GlobalDefaultMiddlewares = { listed: [], expanded: [] },
+): void {
   if (!rawLabels || typeof rawLabels !== 'object') return;
   for (const [service, labels] of Object.entries(rawLabels as Record<string, unknown>)) {
     const router = `${appId}-${tenantId}-${service}`;
@@ -212,9 +218,38 @@ export function assertTenantRawLabelsOwned(appId: string, tenantId: string, rawL
     const owner = {
       ...rawLabelOwnerForRouter(router),
       isGeneratedMiddleware: (n: string) => n.startsWith(typedPrefix) && n.length > typedPrefix.length,
+      tenant: tenantLabelScope(router, globalDefaults),
     };
     assertRawLabels(`service "${service}"`, labels, owner);
   }
+}
+
+export interface GlobalDefaultMiddlewares {
+  /** traefik.default_middlewares, as put on every router. */
+  listed: string[];
+  /** The same plus their chain members, resolved as generation resolves them. */
+  expanded: string[];
+}
+
+export function globalDefaultMiddlewares(
+  app: { traefik?: AppDefinition['traefik'] } | undefined,
+  traefik: TraefikGlobal | undefined,
+): GlobalDefaultMiddlewares {
+  const listed = [...new Set(traefik?.default_middlewares ?? [])];
+  const expanded = new Set<string>();
+  const visit = (name: string) => {
+    if (expanded.has(name)) return;
+    expanded.add(name);
+    const spec = lookupMiddleware(name, app, traefik);
+    if (spec?.type === 'chain') spec.middlewares.forEach(visit);
+  };
+  listed.forEach(visit);
+  return { listed, expanded: [...expanded] };
+}
+
+function tenantLabelScope(routerName: string, defaults: GlobalDefaultMiddlewares): TenantLabelScope {
+  const prefixed = (names: string[]) => names.map(n => `${routerName}-${n}`.toLowerCase());
+  return { requiredMiddlewares: prefixed(defaults.listed), protectedMiddlewares: prefixed(defaults.expanded) };
 }
 
 function resolveServiceMiddlewareNames(
@@ -223,14 +258,17 @@ function resolveServiceMiddlewareNames(
   traefik: TraefikGlobal | undefined,
   tenantOverrides: TraefikTenant | undefined,
 ): string[] {
-  const tenantOverride = tenantOverrides?.middleware_overrides?.[service.name];
-  if (tenantOverride !== undefined) {
-    return tenantOverride.slice();
-  }
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (n: string) => { if (!seen.has(n)) { seen.add(n); out.push(n); } };
+  // Global defaults are the admin's and always apply; a tenant override
+  // (editor-writable) replaces only the app/service part of the chain.
   for (const n of traefik?.default_middlewares ?? []) add(n);
+  const tenantOverride = tenantOverrides?.middleware_overrides?.[service.name];
+  if (tenantOverride !== undefined) {
+    for (const n of tenantOverride) add(n);
+    return out;
+  }
   for (const n of app.traefik?.default_middlewares ?? []) add(n);
   for (const n of service.routing?.middlewares ?? []) add(n);
   return out;
@@ -244,11 +282,11 @@ const hasOwn = (lib: Record<string, MiddlewareSpec> | undefined, name: string) =
 // refuse such a name; this covers definitions stored before that check.
 function lookupMiddleware(
   name: string,
-  app: AppDefinition,
+  app: { traefik?: AppDefinition['traefik'] } | undefined,
   traefik: TraefikGlobal | undefined,
 ): MiddlewareSpec | undefined {
   if (hasOwn(traefik?.middlewares, name)) return traefik!.middlewares![name];
-  return hasOwn(app.traefik?.middlewares, name) ? app.traefik!.middlewares![name] : undefined;
+  return hasOwn(app?.traefik?.middlewares, name) ? app!.traefik!.middlewares![name] : undefined;
 }
 
 /** Save-time check for an app middleware library: a name the global library also defines is refused. */
