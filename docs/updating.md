@@ -280,3 +280,34 @@ On manifest apply (both `overwatch apps apply` and the image-embedded flow), Ove
 **Reserved keys** (auto-resolved by Overwatch: `FRONTEND_URL`, `BACKEND_URL`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME`, `DB_PASSWORD`, `NODE_ENV`, `PORT`, `JWT_SECRET`, `TENANT_ID`, `TENANT_DOMAIN`, `IMAGE_TAG`, `PROJECT_PREFIX`, `SHARED_NETWORK`, `APP_ID`, `CERT_RESOLVER`, plus Node/system vars like `NODE_OPTIONS`, `PATH`, etc.) are skipped with a warning if an app mistakenly declares them — they're already provided at compose time, no operator input needed.
 
 `default` values are convenience non-secrets only; don't put credentials there since the manifest travels inside the public-ish image.
+
+## Upgrading past v1.8.2 — tenant volumes, names and lifecycle
+
+The upgrade itself renames, moves and deletes nothing. What changes:
+
+### Volumes
+
+- New tenants get their own Docker volumes, named `<app>-<tenant>-<name>` (see [Volume names](configuration.md#volume-names)).
+- Existing tenants keep the volume names their `docker-compose.yml` declares. A `volumes[]` entry without `name_template`, and a backup path the service does not mount itself, used to be **one volume shared by every tenant** that declared it. Such names are now declared `external: true`, so no tenant delete removes them, and every regeneration of the tenant's compose file logs `uses the shared legacy volume`. Check each host with the commands in [Shared legacy volumes](troubleshooting.md#shared-legacy-volumes), which also describes giving a tenant its own volume.
+- Deleting a tenant removes only volumes named `<app>-<tenant>-…`, also when its compose file was written by an older version. A failed tenant create no longer removes volumes.
+- The API and `overwatch apps apply` refuse a volume `name` or `name_template` that is not a plain Docker volume name (a path such as `/var/run/docker.sock` or `./data`, a `:` or a `$`): compose mounted such a name as a host path. A stored definition keeps working with a warning, but saving the app fails until the name is fixed.
+
+### Start and restart regenerate the tenant compose file
+
+Start and restart (UI, API, MCP) now regenerate `apps/<app>/tenants/<tenant>/docker-compose.yml` from the tenant's app-definition snapshot, its current routing overrides, and the app's current registry and default tag, then run `docker compose up -d`. Routing changes (host aliases, middleware overrides, raw labels, cert resolver) therefore apply on restart, as the UI says. Hand edits to a tenant compose file are overwritten on start and restart, not only on update, and a change of the app's registry reaches a tenant at its next start or restart (compose pulls an image that is not present).
+
+### Deleting tenants
+
+- **Keep data** now keeps the tenant's volumes as well as its database (it used to remove the volumes), and saves the tenant `.env`, which holds the database password, to `data/deleted-tenants/<app>/<tenant>-<timestamp>.env` (mode 0600). Creating a tenant with the same ID still fails while its database exists; the error says what to drop.
+- A tenant of a trashed app is deleted against the database named in its `.env` (`DB_NAME`), or derived from its own snapshot's `db_prefix`; it used to fall back to the project prefix and orphan the database. When the database cannot be determined, the delete fails with 409 and changes nothing.
+
+### Tenant IDs and names
+
+- Hyphenated app and tenant IDs work: the database name maps `-` to `_` (`shop` + `eu-west` gives `<prefix>_shop_eu_west`). Before, creating such a tenant always failed at the database step.
+- A new tenant whose compose project, container names, volumes or database would be the same as an existing tenant's (for example `shop`/`eu-api` next to `shop-eu`/`api`) is refused with 409.
+- With `database.type: mysql`, a tenant whose database name (prefix included) is longer than 32 characters is refused before anything is created, because MySQL limits user names to 32 characters and the database user has the same name.
+
+### Tenant update
+
+- An update fails with 409 when the tenant `.env` has no `IMAGE_TAG=` line; it used to report success without changing the tag.
+- Image cleanup after an update keeps an old tag that another tenant's `.env` still uses (a stopped tenant has no containers to protect its image).
