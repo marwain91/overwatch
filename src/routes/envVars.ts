@@ -12,7 +12,6 @@ import {
 import { adminAccessSecretEnvs } from '../services/adminAccess';
 import { can } from '../services/users';
 import { asyncHandler } from '../utils/asyncHandler';
-import { isReservedSecretEnv, loadConfigOrNull } from '../utils/reservedEnv';
 import { validateTenantId } from '../middleware/validators';
 import { requireRole } from '../middleware/requireRole';
 import type { AuthUser } from '../middleware/auth';
@@ -33,16 +32,14 @@ function isAdmin(res: Response): boolean {
 }
 
 /**
- * Keys only an admin may write or read unmasked: every app's
- * admin_access.secret_env and Overwatch's own secret names. shared.env
- * outranks the tenant's .env and image ENV, so whoever sets the secret a
- * tenant verifies admin tokens with can sign the {isSystemAdmin:true} tokens
- * that only an admin may mint.
+ * Keys only an admin may write or read unmasked: AUTH_SERVICE_SECRET and every
+ * app's admin_access.secret_env. shared.env outranks the tenant's .env and
+ * image ENV, so whoever sets the secret a tenant verifies admin tokens with
+ * can sign the {isSystemAdmin:true} tokens that only an admin may mint.
  */
 async function adminOnlyKeys(): Promise<(key: string) => boolean> {
   const secretEnvs = await adminAccessSecretEnvs();
-  const config = loadConfigOrNull();
-  return key => secretEnvs.has(key) || isReservedSecretEnv(key, config);
+  return key => secretEnvs.has(key);
 }
 
 /** Sends a 403 and returns true when a non-admin targets an admin-only key. */
@@ -51,7 +48,7 @@ async function refuseAdminOnlyKey(res: Response, key: unknown): Promise<boolean>
   // Trimmed like validateEnvVarKey, so padding cannot slip a key past this check.
   const name = String(key).trim();
   if (!(await adminOnlyKeys())(name)) return false;
-  res.status(403).json({ error: `Only an admin can change ${name}: it holds a tenant admin-token secret or an Overwatch secret` });
+  res.status(403).json({ error: `Only an admin can change ${name}: it holds the secret tenants verify admin tokens with` });
   return true;
 }
 

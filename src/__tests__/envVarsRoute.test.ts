@@ -6,7 +6,6 @@ afterEach(() => {
   vi.resetModules();
   vi.doUnmock('../services/envVars');
   vi.doUnmock('../services/app');
-  vi.doUnmock('../config/loader');
   vi.doUnmock('../middleware/requireRole');
 });
 
@@ -40,7 +39,6 @@ async function makeApp(setEnvVar: ReturnType<typeof vi.fn>, opts: MakeAppOptions
     ]),
     getApp: vi.fn(),
   }));
-  vi.doMock('../config/loader', () => ({ loadConfig: () => ({ database: { root_password_env: 'DB_ROOT_PW' } }) }));
   vi.doMock('../middleware/requireRole', () => ({ requireRole: () => (_req: any, _res: any, next: any) => next() }));
   const { default: router } = await import('../routes/envVars');
   const app = express();
@@ -153,8 +151,8 @@ describe('busy tenants are a warning, not a failure', () => {
 // shared.env outranks the tenant's .env and image ENV: an editor who could set
 // the secret a tenant verifies admin tokens with could sign their own
 // {isSystemAdmin:true} token, which only an admin may mint.
-describe('admin-only keys (tenant admin-token secrets, Overwatch core secrets)', () => {
-  const adminOnly = ['AUTH_SERVICE_SECRET', 'DEMO_ADMIN_SECRET', 'GOOGLE_CLIENT_SECRET', 'AWS_SECRET_ACCESS_KEY', 'R2_SECRET_ACCESS_KEY', 'DB_ROOT_PW', ' AUTH_SERVICE_SECRET'];
+describe('admin-only keys (tenant admin-token secrets)', () => {
+  const adminOnly = ['AUTH_SERVICE_SECRET', 'DEMO_ADMIN_SECRET', ' AUTH_SERVICE_SECRET'];
 
   it.each(adminOnly)('an editor cannot set %j globally', async (key) => {
     const setEnvVar = vi.fn();
@@ -181,14 +179,15 @@ describe('admin-only keys (tenant admin-token secrets, Overwatch core secrets)',
     expect(deleteTenantOverride).not.toHaveBeenCalled();
   });
 
-  it('an editor still writes ordinary keys', async () => {
-    const setEnvVar = vi.fn(async (_a: string, key: string, value: string, sensitive: boolean) => ({ key, value, sensitive }));
+  // Only reach the tenant's containers, never Overwatch: apps use them for their own S3/OAuth.
+  it.each(['LOG_LEVEL', 'AWS_SECRET_ACCESS_KEY', 'GOOGLE_CLIENT_SECRET', 'R2_ACCESS_KEY_ID'])('an editor still writes %s', async (key) => {
+    const setEnvVar = vi.fn(async (_a: string, k: string, value: string, sensitive: boolean) => ({ key: k, value, sensitive }));
     const setTenantOverride = vi.fn();
     const deleteEnvVar = vi.fn();
     const app = await makeApp(setEnvVar, { role: 'editor', services: { setTenantOverride, deleteEnvVar } });
-    await request(app).post('/api/apps/demo/env-vars').send({ key: 'LOG_LEVEL', value: 'debug' }).expect(200);
-    await request(app).post('/api/apps/demo/env-vars/tenants/t1/overrides').send({ key: 'LOG_LEVEL', value: 'info' }).expect(200);
-    await request(app).delete('/api/apps/demo/env-vars/LOG_LEVEL').expect(200);
+    await request(app).post('/api/apps/demo/env-vars').send({ key, value: 'debug' }).expect(200);
+    await request(app).post('/api/apps/demo/env-vars/tenants/t1/overrides').send({ key, value: 'info' }).expect(200);
+    await request(app).delete(`/api/apps/demo/env-vars/${key}`).expect(200);
     expect(setEnvVar).toHaveBeenCalled();
     expect(setTenantOverride).toHaveBeenCalled();
     expect(deleteEnvVar).toHaveBeenCalled();
@@ -211,6 +210,7 @@ describe('admin-only keys (tenant admin-token secrets, Overwatch core secrets)',
     { key: 'AUTH_SERVICE_SECRET', value: 'plain-but-secret', sensitive: false },
     { key: 'DEMO_ADMIN_SECRET', value: 'also-secret', sensitive: false },
     { key: 'LOG_LEVEL', value: 'info', sensitive: false },
+    { key: 'AWS_ACCESS_KEY_ID', value: 'AKIA-plain', sensitive: false },
   ];
 
   it.each(['viewer', 'editor'] as const)('a %s always sees them masked, whatever their sensitive flag', async (role) => {
@@ -222,6 +222,7 @@ describe('admin-only keys (tenant admin-token secrets, Overwatch core secrets)',
       expect(byKey.AUTH_SERVICE_SECRET).toMatchObject({ value: '••••••••', sensitive: true });
       expect(byKey.DEMO_ADMIN_SECRET).toMatchObject({ value: '••••••••', sensitive: true });
       expect(byKey.LOG_LEVEL).toMatchObject({ value: 'info', sensitive: false });
+      expect(byKey.AWS_ACCESS_KEY_ID).toMatchObject({ value: 'AKIA-plain', sensitive: false });
     }
   });
 
