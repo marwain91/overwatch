@@ -63,6 +63,8 @@ To find these on a self-hosted instance:
 
 > **Note:** SaaS does not need an API URL. Overwatch derives `https://gitlab.com` automatically when `url` is `registry.gitlab.com`. Setting it explicitly is fine but unnecessary.
 
+`url` is the bare registry host, with an optional port and path but no `https://`. `repository` is the project path (`group/subgroup/project`). `api_url` is an `http(s)://` URL without credentials, query or fragment. Overwatch rejects values that start with `-` or contain whitespace (see [Registry field formats](./configuration.md#registry-field-formats)).
+
 ---
 
 ## 3. Set the environment variable
@@ -135,7 +137,7 @@ In the app's **Settings → Registry**, click **Test Registry** (calls `POST /ap
 - **`needs an api_url`** error — you picked self-hosted GitLab but didn't set the API URL. Fill it in.
 - **`Registry URL points to private IP`** — the SSRF guard caught a private-network address. Either fix the URL or set `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL=1` (next section).
 
-The Overwatch backend logs `Authenticating with GitLab Container Registry at <url>...` and `Successfully logged in to <url>` on a successful login.
+The test lists tags only; it does not log in. The `docker login` runs right before the first tenant create or update that pulls images, and the Overwatch backend then logs `Authenticating with GitLab Container Registry at <url>...` and `Successfully logged in to <url>`.
 
 ---
 
@@ -159,10 +161,10 @@ GitLab tokens don't auto-rotate. When you rotate one:
 
 1. Generate the replacement (same scopes).
 2. Update `GITLAB_TOKEN` in your env / `.env` / secret manager.
-3. Restart Overwatch (the registry adapter caches resolved env values per process — restart picks up the new value).
+3. Recreate the Overwatch container (`docker compose up -d`) so it reads the new value. Overwatch reads env vars only at start. The next tenant create or update logs in with the new token, so no other step is needed. If you instead point the app's `token_env` at a variable Overwatch already has, the next pull uses it without a restart.
 4. The old token can be deleted from GitLab once Overwatch is verified working.
 
-If the token expires before you rotate, the next tag listing or registry login fails with HTTP 401 — Overwatch surfaces this as a clear UI error rather than a hang.
+If the token expires before you rotate, the next tag listing fails with HTTP 401, and the next tenant create or update fails with `Registry login to <url> failed for app '<id>'`. Both are reported in the UI, and the login gives up after 60 seconds instead of hanging.
 
 ---
 
@@ -207,7 +209,7 @@ You gain tag browsing in the UI. `docker login` keeps working — `oauth2` (the 
 ## How it works under the hood
 
 1. The factory picks `GitLabAdapter` for `type: 'gitlab'`.
-2. `login()` runs `docker login <url> -u oauth2 --password-stdin` with the token piped on stdin. `oauth2` is the canonical GitLab username for token auth — works for every token type.
+2. `login()` runs `docker login --username=oauth2 --password-stdin -- <url>` with the token piped on stdin and a 60-second timeout. `oauth2` is the canonical GitLab username for token auth — works for every token type. Overwatch logs in right before it pulls tenant images or an image manifest, and reuses that login for 6 hours per registry host and token.
 3. `getImageTags()` derives the API base (`api_url` if set; `https://gitlab.com` if `url === 'registry.gitlab.com'`; error otherwise), URL-encodes the repository path (so `group/sub/project` → `group%2Fsub%2Fproject`), and calls `GET /api/v4/projects/:id/repository/tags?per_page=100&order_by=name&sort=desc` with a `PRIVATE-TOKEN` header.
 4. Tags are filtered by `tag_pattern` (if set) and re-sorted client-side using `localeCompare(undefined, { numeric: true })` so `v1.10.0` correctly outranks `v1.9.0`.
 5. SSRF guard runs against the API base **only when `api_url` was set explicitly** — the SaaS-derived `https://gitlab.com` is trusted. Override via `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL=1`.

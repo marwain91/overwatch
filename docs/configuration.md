@@ -454,6 +454,32 @@ environment:
 
 > **Note on `github_app` removal (v1.6.7):** GitHub App auth was added in v1.6.x as a way to authenticate to GHCR with rotating installation tokens, but GHCR's permission model only honors App tokens for *public* packages. For service-to-service pulls of private/internal GHCR packages, use a fine-grained PAT under a dedicated service-account user (cleanest non-public option) — same shape as the `token` row above, just with a different env var name.
 
+### Registry field formats
+
+`url`, `repository` and `api_url` end up in `docker login` and `docker pull` arguments, image references and registry API URLs. Overwatch checks them whenever an app definition is created, edited, applied or loaded.
+
+| Field | Format | Examples |
+|-------|--------|----------|
+| `url` | Registry host (DNS name, IPv4 or `[IPv6]`), optional `:port`, optional `/path`. No scheme. | `ghcr.io`, `registry.acme.com:5050`, `123456789012.dkr.ecr.eu-west-1.amazonaws.com`, `harbor.acme.com/team` |
+| `repository` | Path of `/`-separated components | `org/app`, `group/sub/project` |
+| `api_url` (GitLab only) | `http(s)://` URL without credentials, query or fragment | `https://gitlab.acme.com` |
+
+Each host label and path component starts with a letter or digit and contains only letters, digits, `.`, `_` and `-`. A value that starts with `-`, contains whitespace, or has an empty component is rejected. Docker also requires `repository` to be lowercase before it pulls.
+
+A stored definition that fails these checks stops Overwatch at boot with `<id>.json failed validation: registry.<field>: ...`. Docker could never pull with such a value. Fix the file in `data/apps.d/` and restart.
+
+### Registry login
+
+Overwatch logs in to an app's registry right before it pulls that app's images: on tenant create, on tenant update, and for the image-manifest pull. Boot also logs in, which only warms the cache. A new app, a changed `token_env` or an expired ECR token therefore works without a restart.
+
+- **Apps without credentials** are never logged in for: no `token_env`, an empty token variable, or for `basic` auth no username. Their pulls use whatever docker login state exists, as before.
+- **Reuse:** a login is reused for 6 hours per registry host and credential. ECR tokens last 12 hours.
+- **Failures:** `docker login` has a 60-second timeout. A rejected or timed-out login fails the pull with `Registry login to <host> failed for app '<id>': <reason>`. Tenant create is rolled back, and tenant update restores the tenant and reports the pull step as failed.
+- **Shared hosts:** Docker stores one credential per registry host. Apps on the same host with different credentials pull one after the other; apps with the same credential pull together.
+- **Where logins are stored:** in the Overwatch container at `$HOME/.docker/config.json`, which is `/home/node/.docker` for the default runtime user. It does not survive recreating the container, so the next pull logs in again.
+- **The `/root/.docker` mount** in the shipped compose file is read only when Overwatch runs as root (`OVERWATCH_UID=0`). In that case `docker login` cannot save into the read-only mount, so Overwatch logs a warning and pulls with the mounted credentials, as before.
+- **ECR** logins need the AWS CLI (`aws`), which the Overwatch image does not include. Without it, or without AWS credentials, the login is skipped with a warning. Tag listing then reports the error.
+
 ---
 
 ## Roles (RBAC)
