@@ -4,21 +4,28 @@ import * as path from 'path';
 import * as os from 'os';
 
 // Fake docker: `inspect --format ... <container>` answers from `running`;
-// every other docker call succeeds silently and is recorded.
+// every other docker call succeeds silently and is recorded with its options.
+// Callback shape and promisify behaviour match the real execFile.
 const running: Record<string, string> = {};
 const dockerCalls: string[][] = [];
+const dockerOptions: Array<{ args: string[]; opts: any }> = [];
 vi.mock('child_process', async (orig) => {
   const actual = await orig<typeof import('child_process')>();
-  const execFile = (_cmd: string, args: string[], ...rest: any[]) => {
+  const { promisify } = await import('util');
+  const execFile: any = (_cmd: string, args: string[], ...rest: any[]) => {
     const cb = rest[rest.length - 1];
     dockerCalls.push(args);
+    dockerOptions.push({ args, opts: rest.length > 1 ? rest[0] : undefined });
     if (args[0] === 'inspect' && args[1] === '--format') {
       const image = running[args[3]];
-      if (image === undefined) return cb(new Error('No such object'));
-      return cb(null, { stdout: `${image}\n`, stderr: '' });
+      if (image === undefined) return cb(Object.assign(new Error('No such object'), { code: 1 }), '', 'Error: No such object');
+      return cb(null, `${image}\n`, '');
     }
-    return cb(null, { stdout: '', stderr: '' });
+    return cb(null, '', '');
   };
+  execFile[promisify.custom] = (cmd: string, args: string[], opts?: any) => new Promise((resolve, reject) => {
+    execFile(cmd, args, opts ?? {}, (err: any, stdout: string, stderr: string) => (err ? reject(err) : resolve({ stdout, stderr })));
+  });
   return { ...actual, execFile };
 });
 
@@ -63,6 +70,7 @@ beforeEach(async () => {
   await fs.mkdir(deployDir, { recursive: true });
   for (const k of Object.keys(running)) delete running[k];
   dockerCalls.length = 0;
+  dockerOptions.length = 0;
 });
 
 afterEach(async () => {
@@ -147,5 +155,28 @@ describe('deployInfra downgrade guard', () => {
     const { deployInfra } = await import('../services/infraTemplates');
     await expect(deployInfra({ deployDir, dryRun: true })).resolves.toMatchObject({ dryRun: true });
     expect(dockerCalls).toHaveLength(0);
+  });
+});
+
+describe('deployInfra docker calls', () => {
+  afterEach(() => { delete process.env.JWT_SECRET; });
+
+  it('run with the allowlisted env and a timeout, like every other docker call', async () => {
+    await seedConfig();
+    process.env.JWT_SECRET = 'must-not-reach-docker';
+    running['acme-mariadb'] = 'mariadb:10.11';
+    const { deployInfra } = await import('../services/infraTemplates');
+    await deployInfra({ deployDir });
+
+    const kinds = dockerOptions.map(c => c.args.slice(0, 2).join(' '));
+    expect(kinds).toEqual(expect.arrayContaining(['inspect --format', 'network inspect', 'compose --file']));
+    for (const { args, opts } of dockerOptions) {
+      expect(opts?.env, args.join(' ')).toBeDefined();
+      expect(opts.env.JWT_SECRET, args.join(' ')).toBeUndefined();
+      expect(opts.timeout, args.join(' ')).toBeGreaterThan(0);
+    }
+    // Compose resolves ${VAR} from infrastructure/.env, so it runs from that directory.
+    const compose = dockerOptions.find(c => c.args[0] === 'compose')!;
+    expect(compose.opts.cwd).toBe(path.join(deployDir, 'infrastructure'));
   });
 });
