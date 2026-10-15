@@ -367,14 +367,14 @@ export async function reconcileTenantComposeLocked(appId: string, tenantId: stri
     if (err?.code !== 'ENOENT') throw err;
     throw new HttpError(500, `Tenant ${appId}/${tenantId} has no docker-compose.yml, so its containers cannot be managed.`, { expose: true });
   }
-  const app = await resolveTenantApp(appId, tenantId);
-  const domain = (await readTenantEnv(appId, tenantId).catch(() => ({} as Record<string, string>))).TENANT_DOMAIN;
-  if (!app || !domain) {
-    console.warn(`[compose] ${appId}/${tenantId}: no ${app ? 'TENANT_DOMAIN in .env' : 'app definition'}; using its docker-compose.yml as is`);
-    return;
-  }
   let next: string;
   try {
+    const app = await resolveTenantApp(appId, tenantId);
+    const domain = (await readTenantEnv(appId, tenantId).catch(() => ({} as Record<string, string>))).TENANT_DOMAIN;
+    if (!app || !domain) {
+      console.warn(`[compose] ${appId}/${tenantId}: no ${app ? 'TENANT_DOMAIN in .env' : 'app definition'}; using its docker-compose.yml as is`);
+      return;
+    }
     const tenantTraefik = await readTenantTraefik(appId, tenantId);
     next = generateComposeFile({ app, tenantId, domain, config: loadConfig(), tenantTraefik, existingCompose: existing });
   } catch (err: any) {
