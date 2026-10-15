@@ -192,17 +192,22 @@ export function validateEnvVarValue(value: string): { valid: boolean; error?: st
 
 /**
  * Render a value for a compose env file (`.env` / `shared.env`). Compose
- * interpolates `$VAR` / `${VAR}` in unquoted and double-quoted values, which
- * would blank or rewrite a password or URL holding `$`. Single quotes are read
- * literally; a value that also holds `'` falls back to double quotes with
- * `\`, `"` and `$` backslash-escaped. Values without `$` or edge whitespace
- * stay unquoted, as before. The same rules apply to the project-level `.env` compose reads.
+ * changes an unquoted value that:
+ * - holds `$` (interpolated, which blanks or rewrites a password or URL),
+ * - has leading or trailing whitespace (trimmed),
+ * - holds whitespace before `#` (cut there as an inline comment),
+ * - starts with a quote (parsed as a quoted value, or a parse error that
+ *   takes the tenant's compose down when the quote is unterminated).
+ * Such values are single-quoted, which compose reads literally. A value
+ * holding `'` or ending with `\` (compose does not end a single-quoted value
+ * at a `'` preceded by `\`) is double-quoted with `\`, `"` and `$` escaped.
+ * Other values stay unquoted, as before. The same rules apply to the
+ * project-level `.env` compose reads.
  */
 export function formatEnvValue(value: string | number): string {
   const v = String(value);
-  // Compose trims unquoted leading/trailing whitespace, so such values need quotes too.
-  if (!v.includes('$') && !/^\s|\s$/.test(v)) return v;
-  if (!v.includes("'")) return `'${v}'`;
+  if (!/\$|^\s|\s$|\s#|^['"]/.test(v)) return v;
+  if (!v.includes("'") && !v.endsWith('\\')) return `'${v}'`;
   return `"${v.replace(/[\\"$]/g, c => `\\${c}`)}"`;
 }
 
