@@ -70,7 +70,7 @@
     "supertest": "^7.2.2",
     "tsx": "^4.22.2",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.12"
+    "vitest": "^5.0.5"
   },
   "overrides": {
     "protobufjs": "^7.5.9"
