@@ -66,11 +66,18 @@ docker run -p 3002:3002 \
 
 ## Building the CLI Binary
 
-The CLI is built with `@yao-pkg/pkg` targeting Linux x64 and arm64:
+The CLI is built with `@yao-pkg/pkg` in SEA mode, embedding stock Node.js
+24.22.1 for Linux x64 and arm64. Standard pkg mode currently embeds Node.js
+24.20.0, which lacks the October 21, 2026 security fixes. Updating the build
+container alone does not update that embedded runtime.
 
 ```bash
-docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:24-alpine sh -c "npm ci && npm run build && npx @yao-pkg/pkg dist/cli.js --targets node24-linux-x64,node24-linux-arm64 --output dist/bin/overwatch --compress GZip"
+docker run --rm --pull=always -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:24-bookworm-slim sh -c "npm ci && npm run build:cli"
 ```
+
+The binaries are written to `dist/bin/overwatch-linux-x64` and
+`dist/bin/overwatch-linux-arm64`. Keep the explicit Node.js targets in
+`build:cli` current when applying future runtime security updates.
 
 ## Project Layout
 
