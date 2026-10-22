@@ -1,6 +1,6 @@
 {
   "name": "overwatch",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "Universal Multi-Tenant Management Tool",
   "license": "MIT",
   "author": "marwain91",
@@ -29,7 +29,7 @@
     "build": "node scripts/embed-templates.mjs && tsc && node scripts/gen-ui-types.mjs",
     "build:ui": "cd ui && npm ci && npm run build",
     "build:all": "npm run build && cd ui && npm ci && npm run build",
-    "build:cli": "npm run build && pkg dist/cli.js --targets node24-linux-x64,node24-linux-arm64 --output dist/bin/overwatch --compress GZip",
+    "build:cli": "npm run build && pkg dist/cli.js --config package.json --sea --target node24.22.1-linux-x64 --output dist/bin/overwatch-linux-x64 --compress GZip && pkg dist/cli.js --config package.json --sea --target node24.22.1-linux-arm64 --output dist/bin/overwatch-linux-arm64 --compress GZip",
     "start": "node dist/index.js",
     "test": "vitest run",
     "typecheck:test": "tsc -p tsconfig.test.json"
@@ -66,11 +66,11 @@
     "@types/pg": "^8.20.0",
     "@types/supertest": "^7.2.0",
     "@types/ws": "^8.5.10",
-    "@yao-pkg/pkg": "^6.19.0",
+    "@yao-pkg/pkg": "^6.23.0",
     "supertest": "^7.2.2",
     "tsx": "^4.22.2",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.12"
   },
   "overrides": {
     "protobufjs": "^7.5.9"

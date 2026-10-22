@@ -57,6 +57,7 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
+          check-latest: true
           cache: 'npm'
 
       - name: Install dependencies
@@ -147,6 +148,7 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
+          check-latest: true
           cache: 'npm'
 
       - name: Install dependencies
@@ -155,13 +157,25 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Build TypeScript
-        run: npm run build
-
       - name: Build CLI binaries
+        # SEA embeds stock Node 24.22.1. Standard pkg mode still embeds the
+        # vulnerable 24.20.0 runtime, regardless of the setup-node version.
+        run: npm run build:cli
+
+      - name: Verify embedded CLI runtime and startup
         run: |
-          npx @yao-pkg/pkg dist/cli.js --target node24-linux-x64 --output dist/bin/overwatch-linux-x64 --compress GZip
-          npx @yao-pkg/pkg dist/cli.js --target node24-linux-arm64 --output dist/bin/overwatch-linux-arm64 --compress GZip
+          # NODE_OPTIONS runs this assertion inside the packaged executable.
+          # Checking the build host's node --version would miss an old runtime.
+          cat > "$RUNNER_TEMP/check-cli-runtime.cjs" <<'JS'
+          const [major, minor, patch] = process.versions.node.split('.').map(Number);
+          require('node:assert/strict')(
+            major === 24 && (minor > 22 || (minor === 22 && patch >= 1)),
+            `CLI embeds unpatched Node.js ${process.version}`,
+          );
+          console.log(`CLI runtime: ${process.version}`);
+          JS
+          NODE_OPTIONS="--require=$RUNNER_TEMP/check-cli-runtime.cjs" dist/bin/overwatch-linux-x64 --version
+          dist/bin/overwatch-linux-x64 config docs project
 
       - name: Generate SHA256 checksums
         run: |

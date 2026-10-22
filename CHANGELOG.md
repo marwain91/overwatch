@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-10-22
+
+### Security
+
+- Update all three Docker stages from Node.js 24.22.0 to 24.22.1, pinned by
+  image digest. This applies the [October 21, 2026 Node.js security release](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases),
+  including CVE-2026-111497 (Brotli remote code execution), CVE-2026-105482,
+  CVE-2026-105483, CVE-2026-106069, CVE-2026-105481, CVE-2026-106072,
+  CVE-2026-106074 and CVE-2026-106073, plus bundled dependency and CA updates.
+  Existing deployments need a rebuilt image and container recreation.
+- Build standalone CLI binaries in SEA mode with stock Node.js 24.22.1.
+  Standard `pkg` mode embeds Node.js 24.20.0 even when the build host is patched;
+  existing CLI installations need the rebuilt binary too. CI checks for the
+  latest Node 24 patch before tests and release builds.
+- Upgrade Vitest and its mocker to 4.1.12 for
+  [CVE-2026-112949](https://github.com/advisories/GHSA-qxg6-89mg-rqv8) and
+  [CVE-2026-112950](https://github.com/advisories/GHSA-xp26-3454-mjgp), fixing
+  development-server mock injection and Windows path traversal.
+
 ## [1.9.0] — 2026-10-15
 
 A security and reliability release from a whole-app audit. Read the **Upgrade notes** before upgrading: some editor permissions are tightened, the restore API needs a confirmation header, and installs should be checked for tenant volumes shared between tenants.
