@@ -53,13 +53,23 @@ describe('gen-ui-types', () => {
   });
 
   it('throws on object modes it cannot render faithfully', async () => {
-    // zod 4 replaced .passthrough()/.strict() with z.looseObject()/z.strictObject();
-    // all three extra-key modes set `catchall` on the def, which the generator rejects.
+    // Loose/catchall objects need index signatures; strict objects only declare
+    // known keys, which the generated type can check with excess property checks.
     const gen = (schema: unknown) => generate(new Map<string, unknown>([['X', schema]]), { srcRoot: SRC_ROOT, ts });
     await expect(gen(z.looseObject({ a: z.string() }))).rejects.toThrow(/catchall/);
     await expect(gen(z.object({ a: z.string() }).catchall(z.number()))).rejects.toThrow(/catchall/);
-    await expect(gen(z.strictObject({ a: z.string() }))).rejects.toThrow(/catchall/);
     await expect(gen(z.object({ n: z.looseObject({ a: z.string() }) }))).rejects.toThrow(/catchall/);
+  });
+
+  it('renders strict policy objects, including nested refined rules', async () => {
+    const Sample = z.strictObject({
+      rules: z.array(z.strictObject({ action: z.enum(['allow', 'deny']), path: z.string().optional() }).refine(rule => !!rule.path)),
+    });
+    const out = await generate(new Map<string, unknown>([['Policy', Sample]]), { srcRoot: SRC_ROOT, ts });
+    expect(out).toContain('export interface Policy {');
+    expect(out).toContain('action: "allow" | "deny";');
+    expect(out).toContain('path?: string;');
+    expect(Sample.safeParse({ rules: [{ action: 'allow', path: '/', typo: 'x' }] }).success).toBe(false);
   });
 
   it('copies the tenant, container, health, metrics, alert and audit types from the backend source', async () => {

@@ -4,6 +4,7 @@ import { useAppTraefik, useUpdateAppTraefik } from '../hooks/useTraefik';
 import type { MiddlewareSpec, TraefikApp } from '../lib/types';
 import { useCan } from '../hooks/useRole';
 import { MiddlewareEditor } from './MiddlewareEditor';
+import { AccessControlEditor } from './AccessControlEditor';
 
 export function AppTraefikSection({ appId }: { appId: string }) {
   const { data, isLoading } = useAppTraefik(appId);
@@ -12,6 +13,7 @@ export function AppTraefikSection({ appId }: { appId: string }) {
   const canEdit = useCan('admin');
   const [editing, setEditing] = useState<{ name: string; spec: MiddlewareSpec } | null>(null);
   const [adding, setAdding] = useState(false);
+  const [editingAccess, setEditingAccess] = useState(false);
 
   if (isLoading) return null;
   const traefik: TraefikApp = data ?? {};
@@ -97,6 +99,28 @@ export function AppTraefikSection({ appId }: { appId: string }) {
           <p className="mt-1 text-xs text-content-faint">Comma-separated names from this app's library or the global library. Saved on blur.</p>
         </label>
       </div>
+
+      <div className="mt-5 border-t border-border pt-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-medium text-content-primary">URL and IP access rules</h3>
+            <p className="mt-1 text-xs text-content-muted">Allowlist or blacklist paths and IP ranges across the whole app. Rules run in order; the first match wins.</p>
+            <p className="mt-1 text-xs text-content-faint">Changes apply to existing tenants on their next Overwatch restart, start, or update, across image versions.</p>
+          </div>
+          {canEdit && <button onClick={() => setEditingAccess(true)} className="shrink-0 rounded-lg border border-border px-3 py-1.5 text-xs text-content-secondary">Edit access rules</button>}
+        </div>
+        {traefik.access_control ? (
+          <pre className="mt-3 max-h-80 overflow-auto rounded bg-surface-base p-3 text-xs text-content-muted">{JSON.stringify(traefik.access_control, null, 2)}</pre>
+        ) : <p className="mt-2 text-xs text-content-faint">No app access policy configured.</p>}
+      </div>
+
+      {editingAccess && <AccessControlEditor initial={traefik.access_control} onClose={() => setEditingAccess(false)} onSubmit={async policy => {
+        const next = { ...traefik };
+        if (policy) next.access_control = policy;
+        else delete next.access_control;
+        await update.mutateAsync(next);
+        toast.success('Access policy saved. Restart each existing tenant from Overwatch to apply.');
+      }} />}
 
       {(editing || adding) && (
         <MiddlewareEditor

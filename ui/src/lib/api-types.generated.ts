@@ -290,6 +290,17 @@ export interface TraefikGlobal {
 export interface TraefikApp {
   middlewares?: Record<string, MiddlewareSpec>;
   default_middlewares?: Array<string>;
+  access_control?: AccessControl;
+}
+
+export interface AccessControl {
+  default_action: "allow" | "deny";
+  rules: Array<{
+    action: "allow" | "deny";
+    description?: string;
+    path_regex?: string;
+    source_ranges?: Array<string>;
+  }>;
 }
 
 export interface TraefikTenant {

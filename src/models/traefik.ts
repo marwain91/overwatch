@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AccessControlSchema } from './accessControl';
 
 // ─── Middleware specs (typed core) ──────────────────────────────────────────
 // Discriminated union over the most-used Traefik middlewares. The long tail of
@@ -346,6 +347,7 @@ export function rawLabelProblem(key: string, value: string, owner?: RawLabelOwne
   if (lower !== 'traefik' && !lower.startsWith('traefik.')) return undefined;
 
   const [, proto, kind, name, ...rest] = lower.split('.');
+  if (name?.includes('-_access_')) return 'access-control objects are reserved by Overwatch';
   if (proto === 'tcp' || proto === 'udp') return 'tcp/udp routing labels are not allowed';
   if (proto !== 'http' || !name || rest.length === 0 || !['routers', 'services', 'middlewares'].includes(kind)) {
     return 'only traefik.http.routers|services|middlewares.<own name>.* labels are allowed';
@@ -580,6 +582,7 @@ export type TraefikGlobal = z.infer<typeof TraefikGlobalSchema>;
 export const TraefikAppSchema = z.object({
   middlewares: z.record(z.string(), MiddlewareSpecSchema).optional().describe('App-scoped middleware library'),
   default_middlewares: z.array(z.string()).optional().describe('Applied to every service in this app'),
+  access_control: AccessControlSchema.optional().describe('Admin-owned URL/IP policy applied to every routed service; follows the current app definition on tenant restart'),
 });
 
 export type TraefikApp = z.infer<typeof TraefikAppSchema>;

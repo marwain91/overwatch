@@ -78,9 +78,9 @@ export async function readTenantAppDef(
  * tenant on an older image keeps working when a newer one changes it. Where
  * images are pulled from (`registry`, `default_image_tag`) and the app's
  * identity (`id`, `name`, `domain_template`) always follow the global
- * definition: an admin's registry switch or an app rename must reach existing
- * tenants. Without a global definition (trashed app) the snapshot is returned
- * as is.
+ * definition. The access policy also follows the global definition, so an
+ * admin's restrictions reach older image versions on their next restart.
+ * Without a global definition (trashed app) the snapshot is returned as is.
  */
 export function overlayGlobalApp<T extends AppDefinition | AppDefinitionStatic>(snapshot: T, global: AppDefinition | null): T {
   if (!global) return snapshot;
@@ -91,6 +91,9 @@ export function overlayGlobalApp<T extends AppDefinition | AppDefinitionStatic>(
     id: global.id,
     name: global.name,
     domain_template: global.domain_template,
+    ...(snapshot.traefik || global.traefik?.access_control ? {
+      traefik: { ...snapshot.traefik, access_control: global.traefik?.access_control },
+    } : {}),
   } as T;
 }
 

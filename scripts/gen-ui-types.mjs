@@ -47,6 +47,7 @@ export const SCHEMA_SPECS = [
   ['TraefikOverwatchRouting', 'models/traefik', 'TraefikOverwatchSchema'],
   ['TraefikGlobal', 'models/traefik', 'TraefikGlobalSchema'],
   ['TraefikApp', 'models/traefik', 'TraefikAppSchema'],
+  ['AccessControl', 'models/accessControl', 'AccessControlSchema'],
   ['TraefikTenant', 'models/traefik', 'TraefikTenantSchema'],
 ];
 
@@ -88,10 +89,12 @@ function render(schema, names, indent, isRoot = false) {
     // schema (.refine/.superRefine/.check) reports its base type, not a wrapper.
     case 'union': return def.options.map(sub).join(' | ');
     case 'object': {
-      // Interfaces here model a plain strip-mode object. .catchall()/strictObject/
-      // looseObject allow or reject extra keys, which is not expressible faithfully
-      // in the generated shape, so fail the build instead of lying.
-      if (def.catchall) throw new Error('gen-ui-types: ZodObject uses .catchall()/strictObject/looseObject, which cannot be rendered faithfully; extend render()');
+      // Strict objects have the same declared fields and TypeScript's excess
+      // property checks. Reject catchall/loose objects: those need an index
+      // signature that this renderer does not emit.
+      if (def.catchall && def.catchall._zod.def.type !== 'never') {
+        throw new Error('gen-ui-types: ZodObject uses .catchall()/looseObject, which cannot be rendered faithfully; extend render()');
+      }
       const pad = '  '.repeat(indent + 1);
       const lines = Object.entries(schema.shape).map(([key, value]) => {
         const k = IDENT.test(key) ? key : q(key);
