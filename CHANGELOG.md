@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-10-26
+
+### Added
+
+- **App-wide URL and IP access policies.** Ordered allow/deny rules match Go/RE2
+  path regexes, IPv4/IPv6 addresses and CIDRs, or both, with an explicit fallback
+  action. Configure private apps with public health/webhook exceptions, URL/IP
+  blacklists, and partner-specific endpoints in App Settings → Traefik or the
+  app Traefik API. First matching rule wins; existing authentication and other
+  middleware still apply. Invalid rules and unknown policy fields are rejected.
+- **Access-control setup guide** with full examples, precedence, regex boundaries,
+  client IP/proxy limitations, and rollout instructions: [docs/access-control.md](docs/access-control.md).
+
+### Changed
+
+- Access policies follow the current admin-owned app definition across tenant
+  image versions and apply on each tenant's next Overwatch start, restart, or
+  update. Tenant overrides and embedded image manifests cannot disable them.
+  Apps without a policy retain their existing routing behavior.
+- Denied requests receive an explicit proxy rejection instead of falling through
+  to a less-specific service. The original service routing priorities are retained.
+
 ## [1.9.3] — 2026-10-26
 
 ### Security

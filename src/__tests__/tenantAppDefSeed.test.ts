@@ -122,6 +122,23 @@ describe('resolveTenantApp', () => {
     expect(await resolveTenantApp('shop', 't1')).toMatchObject({ id: 'shop', db_prefix: 'custom' });
   });
 
+  it('uses the current access policy across image versions while retaining snapshot middlewares', async () => {
+    const oldPolicy = { default_action: 'allow', rules: [] };
+    const newPolicy = { default_action: 'deny', rules: [{ action: 'allow', path_regex: '^/health$' }] };
+    await writeSnapshot('shop', 't1', appDef('shop', { traefik: {
+      access_control: oldPolicy, middlewares: { frozen: { type: 'compress' } }, default_middlewares: ['frozen'],
+    } }));
+    getApp.mockResolvedValue(appDef('shop', { traefik: { access_control: newPolicy } }));
+    const { resolveTenantApp } = await import('../services/tenantAppDef');
+    expect((await resolveTenantApp('shop', 't1'))?.traefik).toEqual({
+      access_control: newPolicy, middlewares: { frozen: { type: 'compress' } }, default_middlewares: ['frozen'],
+    });
+    // Removing the current policy must also remove a stale policy from a snapshot.
+    getApp.mockResolvedValue(appDef('shop'));
+    expect((await resolveTenantApp('shop', 't1'))?.traefik?.access_control).toBeUndefined();
+    expect((await resolveTenantApp('shop', 't1'))?.traefik?.middlewares).toEqual({ frozen: { type: 'compress' } });
+  });
+
   it('falls back to the global definition without a snapshot, and is null without either', async () => {
     await mkTenant('shop', 't1');
     getApp.mockResolvedValue(appDef('shop'));

@@ -147,6 +147,10 @@ host_aliases: ["legacy.example.com"]
 cert_resolver: gandi-eu                  # Explicit override of the auto-pick
 ```
 
+#### URL and IP access control
+
+Set `traefik.access_control` on an app to allowlist/blacklist paths or client IP ranges. Rules are evaluated in order (first match wins), with an explicit `default_action`. For a private app with public URL exceptions, allow those paths first, allow office/VPN IP ranges next, then use a deny fallback. See the [complete setup guide and examples](access-control.md), including proxy IP handling and restarting existing tenants to apply changes.
+
 #### Raw labels (escape hatch)
 
 For Traefik features not covered by the typed middleware schemas, set `raw_labels: { "key": "value" }` on a service or tenant. The following keys are denylisted because they would break multi-tenancy guarantees:

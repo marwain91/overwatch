@@ -2,6 +2,8 @@ import type { AppDefinition, AppService } from '../models/app';
 import type { MiddlewareSpec, TenantLabelScope, TlsTermination, TraefikGlobal, TraefikTenant } from '../models/traefik';
 import { credentialedAnyOriginProblems, rawLabelOwnerForAppService, rawLabelOwnerForRouter, rawLabelProblem } from '../models/traefik';
 import { HttpError, ValidationError } from '../utils/httpErrors';
+import { AccessControlSchema } from '../models/accessControl';
+import { applyAccessControl } from './accessControl';
 
 /**
  * Resolve the effective TLS termination mode for a single router.
@@ -177,6 +179,11 @@ export function buildTraefikLabels(ctx: BuildLabelsContext): string[] {
     push(`${k}=${v}`);
   }
 
+  // Applied last so raw labels and tenant middleware overrides cannot remove
+  // or rewrite the app's access policy. Re-validate even direct generator input.
+  if (app.traefik?.access_control) {
+    return applyAccessControl(labels, routerName, hostExpr, AccessControlSchema.parse(app.traefik.access_control), service.routing?.priority);
+  }
   return labels;
 }
 

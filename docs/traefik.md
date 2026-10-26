@@ -154,6 +154,12 @@ The app definition rides in the app's frozen tenant snapshot (v1.5.5), so middle
 
 An app middleware may not use a name that the global `traefik.middlewares` library also defines: saving one is refused with HTTP 400. Global names are what `traefik.default_middlewares` refers to, so an app library must not be able to redefine, say, the global auth gate. An app definition stored before this check keeps loading; when its labels are generated the global definition is used for that name, with an `ignored app middleware` warning, and `overwatch config traefik doctor` reports it.
 
+## App URL and IP access rules
+
+Use app `traefik.access_control` for ordered allow/deny rules matching URL path regexes, client IP ranges, or both. This supports a private app with public webhook/health endpoints, URL blacklists, IP blacklists, and partner-specific routes. Configure it under **App Settings → Traefik → URL and IP access rules** or through the app Traefik API.
+
+See the [access-control setup guide](access-control.md) for complete examples, first-match precedence, regex syntax, proxy/IP constraints, and rollout steps. This policy follows the current app definition across tenant image versions and applies on each tenant's next Overwatch start, restart, or update. Tenant overrides cannot disable it. Other middleware restrictions still apply to allowed requests.
+
 ## Per-tenant overrides
 
 ```yaml
@@ -191,7 +197,7 @@ Override semantics: the global `traefik.default_middlewares` belong to the admin
 - **Reload Traefik** after changing cert resolvers, entrypoints, or the dashboard config — the static config in `traefik.yml` is read at start. Use the **Reload Traefik** button in the UI, `overwatch config traefik reload`, or `docker restart <prefix>-traefik`.
 - **Per-tenant changes** (cert resolver, host aliases, middleware overrides, raw labels) apply when the tenant is next started or restarted from Overwatch (UI, API or MCP), or updated. Start and restart regenerate the tenant's `docker-compose.yml` from its app-definition snapshot and its current overrides, then run `docker compose up -d`, which recreates the containers whose labels changed. Running `docker compose up -d` by hand does not regenerate the file, and hand edits to the file are overwritten on the next start, restart or update.
 - **`overwatch infra deploy`** regenerates `traefik.yml`, `dynamic.yml`, the infrastructure compose, and the Overwatch compose from the global config. For legacy installs, it keeps the static templates.
-- **Frozen snapshots**: each tenant has a frozen copy of its app definition (incl. `traefik.middlewares`). Changes to the app's middleware library don't affect existing tenants until you explicitly `tenant update`; a restart regenerates from the snapshot, not from the current app definition (only the registry, default image tag and app identity follow the current definition).
+- **Frozen snapshots**: each tenant has a frozen copy of its app definition (incl. `traefik.middlewares`). Changes to the app's middleware library don't affect existing tenants until you explicitly `tenant update`; a restart regenerates from the snapshot. The registry, default image tag, app identity, and `traefik.access_control` policy follow the current app definition.
 
 ## Behind an upstream SSL terminator
 

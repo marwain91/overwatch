@@ -11,6 +11,7 @@ import type {
 } from './api-types.generated';
 
 export type {
+  AccessControl,
   AdminRole,
   AlertHistoryEntry,
   AppAdminAccess,
