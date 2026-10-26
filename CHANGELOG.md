@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-10-26
+
+### Added
+
+- Optional managed host Nginx edge configured in `overwatch.yaml.edge`: ordered IP/path/method rules, endpoint-specific request limits, query-free access logs, TLS 1.2/1.3, version hiding, trusted forwarding and rejection of unknown hosts/TLS names.
+- `overwatch infra edge render|check|deploy|rollback`: complete Nginx validation, explicit adoption of existing files, protected backups, concurrent-edit detection and rollback on failure. Conflicting virtual hosts fail validation instead of silently ignoring access policies. Existing installations remain unchanged until explicitly enabled and deployed.
+- [Managed edge setup and operations guide](docs/edge-security.md), including proxy boundaries, MCP exceptions, safe rollout and application responsibilities.
+
 ## [1.10.0] — 2026-10-26
 
 ### Added

@@ -1,5 +1,7 @@
 # Deployment
 
+For an existing host Nginx proxy before Traefik, see [Managed Nginx edge](edge-security.md). It has a separate validated deployment/rollback flow and is not activated by an ordinary infrastructure deploy.
+
 ## Docker Compose (Recommended)
 
 Overwatch's own compose file is generated, not hand-written. Configure `traefik.overwatch` (host, cert resolver, middlewares) in `overwatch.yaml`, then run:

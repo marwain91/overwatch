@@ -1,5 +1,7 @@
 # App URL and IP access control
 
+For peer-IP restrictions when host Nginx sits before Traefik, see the optional [managed Nginx edge](edge-security.md).
+
 An app can allowlist or blacklist URL paths, client IPs, or combinations of both. Configure `traefik.access_control` in the app definition, or open **App Settings → Traefik → URL and IP access rules** as an admin. The policy covers every routed service and every tenant host/alias of that app, including tenants on older image versions.
 
 ## Private app with public URL exceptions

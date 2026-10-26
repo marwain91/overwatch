@@ -41,6 +41,7 @@ function showMainHelp(): void {
   console.log('    admins                  List, add, remove, or change roles of admin users');
   console.log('    apps <sub>              Manage app definitions (apply, restore, purge)');
   console.log('    infra deploy            Render + deploy shared infra (Traefik, MariaDB)');
+  console.log('    infra edge <sub>        Render, validate, deploy or roll back host Nginx edge');
   console.log('    migrate status|up       Inspect / run pending data migrations');
   console.log('    snapshot <sub>          Create / list / restore / prune config snapshots');
   console.log('    config                  View, edit, validate, and explore configuration');
