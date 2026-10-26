@@ -11,12 +11,14 @@ interface FieldDoc {
 }
 
 function getZodType(schema: ZodType): { type: string; required: boolean; defaultValue?: unknown; description?: string; inner?: ZodType } {
-  const def = (schema as any)._def;
-  const description = def.description;
+  // zod 4: internals live under `_zod.def`; descriptions moved to a registry and
+  // are read via the public `.description` getter (def.description is undefined).
+  const def = (schema as any)._zod.def;
+  const description = (schema as any).description;
 
   if (schema instanceof ZodDefault) {
     const inner = getZodType(def.innerType);
-    const defaultValue = def.defaultValue();
+    const defaultValue = def.defaultValue; // zod 4: a value, not a factory function
     return { ...inner, required: false, defaultValue, description: description || inner.description };
   }
 
@@ -26,7 +28,7 @@ function getZodType(schema: ZodType): { type: string; required: boolean; default
   }
 
   if (schema instanceof ZodEnum) {
-    const values = def.values.join('|');
+    const values = Object.values(def.entries).join('|'); // zod 4: def.entries replaces def.values
     return { type: `enum(${values})`, required: true, description };
   }
 
@@ -47,9 +49,9 @@ function getZodType(schema: ZodType): { type: string; required: boolean; default
   }
 
   if (schema instanceof ZodArray) {
-    const itemType = getZodType(def.type);
-    if (def.type instanceof ZodObject) {
-      return { type: 'array<object>', required: true, description, inner: def.type };
+    const itemType = getZodType(def.element); // zod 4: def.element replaces def.type
+    if (def.element instanceof ZodObject) {
+      return { type: 'array<object>', required: true, description, inner: def.element };
     }
     return { type: `array<${itemType.type}>`, required: true, description };
   }
@@ -65,7 +67,7 @@ function walkSchema(schema: ZodType, prefix: string, docs: FieldDoc[]): void {
   const info = getZodType(schema);
 
   if (info.inner && info.inner instanceof ZodObject) {
-    const shape = (info.inner as any)._def.shape();
+    const shape = (info.inner as any)._zod.def.shape; // zod 4: shape is an object, not a function
     for (const [key, value] of Object.entries(shape)) {
       const path = prefix ? `${prefix}.${key}` : key;
       const fieldInfo = getZodType(value as ZodType);
@@ -102,7 +104,7 @@ function walkSchema(schema: ZodType, prefix: string, docs: FieldDoc[]): void {
       }
     }
   } else if (schema instanceof ZodObject) {
-    const shape = (schema as any)._def.shape();
+    const shape = (schema as any)._zod.def.shape; // zod 4: shape is an object, not a function
     for (const [key, value] of Object.entries(shape)) {
       const path = prefix ? `${prefix}.${key}` : key;
       const fieldInfo = getZodType(value as ZodType);
