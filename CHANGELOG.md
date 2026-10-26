@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.3] — 2026-10-26
+
 ### Security
 
 - **Upgrade `zod` from 3 to 4 to fix [CVE-2023-54404](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)**
