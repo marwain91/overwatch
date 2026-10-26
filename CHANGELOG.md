@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.2] — 2026-10-26
+
+### Security
+
+- **Patch an unauthenticated denial of service in `body-parser`.** A request
+  carrying `Content-Encoding` plus trailing bytes after a valid compressed
+  frame reached the finished decoder as an uncaught exception and terminated
+  the process; parsing runs before routing, so no auth or matching route was
+  required. Pin `body-parser` to `2.4.0` via an override (within Express 5's
+  accepted range). Fixes [CVE-2026-111181](https://github.com/advisories/GHSA-27r3-jxmh-p828).
+  Existing deployments need a rebuilt image and container recreation.
+- **Patch URI-parsing flaws in `fast-uri`** (pulled in transitively through the
+  MCP server's `ajv` JSON-schema validation). Pin `fast-uri` to `3.1.9` via an
+  override, covering [GHSA-w74x-v6f9-j3xg](https://github.com/advisories/GHSA-w74x-v6f9-j3xg),
+  GHSA-xhq7-xmqj-769h, GHSA-wjr9-j795-jxcr and GHSA-333x-w4r6-6crp (URI scheme
+  spoofing, path-equivalence, host confusion and scheme injection).
+- **Refresh the Alpine `docker-cli` / `docker-cli-compose` packages** in the
+  runtime image to the fixed `29.9.2-r0` / `5.6.1-r0` (CVE-2026-78669,
+  CVE-2026-111943). The Dockerfile installs these with `apk add --no-cache`, so
+  a clean rebuild of this release pulls the patched versions.
+- **Bump the dev-only `undici` to `7.30.1`** (via override) in the `@yao-pkg/pkg`
+  build toolchain, clearing it from `npm audit`. This package is build-time only
+  and never shipped in the runtime image.
+
+### Known issues
+
+- A moderate-severity memory-exhaustion advisory affects `zod` 3.x
+  ([CVE-2023-54404](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)); the fix
+  requires the `zod` 4 major upgrade, which is tracked as a separate reviewed
+  migration. The affected `safeParse` paths are reachable only by an
+  authenticated admin.
+
 ## [1.9.1] — 2026-10-22
 
 ### Security
