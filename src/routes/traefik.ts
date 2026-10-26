@@ -47,7 +47,7 @@ router.post('/validate', asyncHandler(async (req: Request, res: Response) => {
   if (!parsed.success) {
     return res.status(400).json({
       ok: false,
-      errors: parsed.error.errors.map(e => ({ path: e.path.join('.'), message: e.message })),
+      errors: parsed.error.issues.map(e => ({ path: e.path.join('.'), message: e.message })),
     });
   }
   res.json({ ok: true });

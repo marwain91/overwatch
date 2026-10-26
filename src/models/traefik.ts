@@ -33,8 +33,8 @@ export const IpAllowListMiddlewareSchema = z.object({
 
 export const HeadersMiddlewareSchema = z.object({
   type: z.literal('headers'),
-  custom_request_headers: z.record(z.string()).optional(),
-  custom_response_headers: z.record(z.string()).optional(),
+  custom_request_headers: z.record(z.string(), z.string()).optional(),
+  custom_response_headers: z.record(z.string(), z.string()).optional(),
   sts_seconds: z.number().int().nonnegative().optional().describe('Strict-Transport-Security max-age'),
   sts_include_subdomains: z.boolean().optional(),
   sts_preload: z.boolean().optional(),
@@ -430,7 +430,7 @@ const denylistRefinement = (labels: Record<string, string>, ctx: z.RefinementCtx
   for (const key of Object.keys(labels)) {
     if (isDenylistedLabelKey(key)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: 'custom',
         path: [key],
         message: `Label key "${key}" is reserved by Overwatch and cannot be set via raw_labels. Use the corresponding typed field (cert_resolver, host_aliases, middlewares) or configure it at the global infrastructure level.`,
       });
@@ -438,8 +438,8 @@ const denylistRefinement = (labels: Record<string, string>, ctx: z.RefinementCtx
   }
 };
 
-export const RawLabelsSchema = z.record(z.string()).superRefine(denylistRefinement);
-export const PerServiceRawLabelsSchema = z.record(RawLabelsSchema);
+export const RawLabelsSchema = z.record(z.string(), z.string()).superRefine(denylistRefinement);
+export const PerServiceRawLabelsSchema = z.record(z.string(), RawLabelsSchema);
 
 // ─── Cert resolvers ─────────────────────────────────────────────────────────
 
@@ -449,7 +449,7 @@ export const CertResolverDnsSchema = z.object({
   provider: z.string().min(1).describe('Traefik DNS provider name (cloudflare, gandi, route53, etc.)'),
   acme_email: z.string().describe('Contact email for Let\'s Encrypt registration'),
   ca_server: z.string().url().optional().describe('Override ACME directory URL (defaults to Let\'s Encrypt prod)'),
-  env: z.record(z.string()).optional().describe('Provider-specific env vars passed to the Traefik container'),
+  env: z.record(z.string(), z.string()).optional().describe('Provider-specific env vars passed to the Traefik container'),
   domain_patterns: z.array(z.string()).optional().describe('Domain glob patterns this resolver auto-matches'),
   resolvers: z.array(z.string()).optional().describe('Custom DNS-01 nameservers used during propagation checks'),
   delay_before_check: z.string().optional().describe('Delay before DNS propagation check (e.g. "30s")'),
@@ -536,7 +536,7 @@ export const TraefikGlobalSchema = z.object({
   dashboard: TraefikDashboardSchema.optional(),
   entrypoints: z.array(EntrypointSchema).optional().describe('Custom entrypoints. Defaults to web (80) + websecure (443) when omitted.'),
   cert_resolvers: z.array(CertResolverSchema).optional().describe('Named TLS certificate resolvers'),
-  middlewares: z.record(MiddlewareSpecSchema).optional().describe('Global middleware library, referenceable from any app/tenant/dashboard/overwatch router'),
+  middlewares: z.record(z.string(), MiddlewareSpecSchema).optional().describe('Global middleware library, referenceable from any app/tenant/dashboard/overwatch router'),
   default_middlewares: z.array(z.string()).optional().describe('Middleware names applied to every generated router unless explicitly omitted'),
   overwatch: TraefikOverwatchSchema.optional().describe('Routing for the Overwatch admin server itself'),
   tls_termination: TlsTerminationSchema.optional().describe('Where TLS terminates. "traefik" (default): Traefik manages certs. "upstream": an upstream proxy terminates TLS; Traefik routes plain HTTP. Per-service and per-tenant overrides win.'),
@@ -549,7 +549,7 @@ export const TraefikGlobalSchema = z.object({
     cfg.cert_resolvers.forEach((r, i) => {
       if (seen.has(r.name)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: 'custom',
           path: ['cert_resolvers', i, 'name'],
           message: `Duplicate cert resolver name "${r.name}"`,
         });
@@ -563,7 +563,7 @@ export const TraefikGlobalSchema = z.object({
     cfg.entrypoints.forEach((e, i) => {
       if (seen.has(e.name)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: 'custom',
           path: ['entrypoints', i, 'name'],
           message: `Duplicate entrypoint name "${e.name}"`,
         });
@@ -578,7 +578,7 @@ export type TraefikGlobal = z.infer<typeof TraefikGlobalSchema>;
 // ─── Per-app Traefik config ─────────────────────────────────────────────────
 
 export const TraefikAppSchema = z.object({
-  middlewares: z.record(MiddlewareSpecSchema).optional().describe('App-scoped middleware library'),
+  middlewares: z.record(z.string(), MiddlewareSpecSchema).optional().describe('App-scoped middleware library'),
   default_middlewares: z.array(z.string()).optional().describe('Applied to every service in this app'),
 });
 
@@ -589,7 +589,7 @@ export type TraefikApp = z.infer<typeof TraefikAppSchema>;
 export const TraefikTenantSchema = z.object({
   cert_resolver: z.string().optional().describe('Explicit cert resolver name; overrides domain_pattern matching'),
   host_aliases: z.array(z.string()).optional().describe('Additional Host(...) matchers on the primary service'),
-  middleware_overrides: z.record(z.array(z.string())).optional().describe('serviceName → middleware names. REPLACES the app- and service-level middlewares for that service; the global default_middlewares always apply.'),
+  middleware_overrides: z.record(z.string(), z.array(z.string())).optional().describe('serviceName → middleware names. REPLACES the app- and service-level middlewares for that service; the global default_middlewares always apply.'),
   raw_labels: PerServiceRawLabelsSchema.optional().describe('serviceName → label key/value map (escape hatch, denylist enforced)'),
   tls_termination: TlsTerminationSchema.optional().describe('Override TLS termination mode for this tenant'),
 });

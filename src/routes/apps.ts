@@ -56,7 +56,7 @@ router.get('/.trashed', asyncHandler(async (_req, res) => {
 router.post('/', requireRole('admin'), asyncHandler(async (req, res) => {
   const parseResult = CreateAppSchema.safeParse(req.body);
   if (!parseResult.success) {
-    const errors = parseResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    const errors = parseResult.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
     return res.status(400).json({ error: `Invalid app definition: ${errors}` });
   }
 
@@ -86,7 +86,7 @@ router.put('/:appId', validateAppId, requireRole('admin'), asyncHandler(async (r
   // the schema (e.g. createdAt) that the shallow merge in updateApp would keep.
   const parseResult = UpdateAppSchema.safeParse({ ...req.body, id: appId });
   if (!parseResult.success) {
-    const errors = parseResult.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    const errors = parseResult.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
     throw new ValidationError(`Invalid app definition: ${errors}`);
   }
   assertServiceNamesValid(parseResult.data.services);

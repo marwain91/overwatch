@@ -27,8 +27,8 @@ const TenantOverrideSchema = z.object({
   tenantId: z.string(),
   overrides: z.array(TenantOverrideItemSchema),
 });
-const EnvVarsStoreSchema = z.record(z.array(EnvVarSchema));
-const TenantOverridesStoreSchema = z.record(z.array(TenantOverrideSchema));
+const EnvVarsStoreSchema = z.record(z.string(), z.array(EnvVarSchema));
+const TenantOverridesStoreSchema = z.record(z.string(), z.array(TenantOverrideSchema));
 
 function getEnvVarsFile(): string {
   return path.join(getDataDir(), 'env-vars.json');
@@ -133,7 +133,7 @@ function parseStore<T>(spec: StoreSpec<T>, data: string): T {
   }
   const parsed = spec.schema.safeParse(raw);
   if (!parsed.success) {
-    const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    const errors = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
     throw new Error(`${spec.name} failed validation: ${errors}`);
   }
   return parsed.data;

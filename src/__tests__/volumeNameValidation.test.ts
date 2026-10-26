@@ -31,14 +31,14 @@ describe('volume names on app definition write paths', () => {
     for (const schema of [CreateAppSchema, UpdateAppSchema]) {
       const result = schema.safeParse(def([{ name, container_path: '/x' }]));
       expect(result.success).toBe(false);
-      expect(result.error!.errors[0].path).toEqual(['services', 0, 'volumes', 0, 'name']);
+      expect(result.error!.issues[0].path).toEqual(['services', 0, 'volumes', 0, 'name']);
     }
   });
 
   it('refuses a name_template that renders to a host path', () => {
     const result = CreateAppSchema.safeParse(def([{ name: 'x', container_path: '/x', name_template: '/srv/${tenantId}' }]));
     expect(result.success).toBe(false);
-    expect(result.error!.errors[0].path).toEqual(['services', 0, 'volumes', 0, 'name_template']);
+    expect(result.error!.issues[0].path).toEqual(['services', 0, 'volumes', 0, 'name_template']);
   });
 
   it('accepts plain names and templates with placeholders', () => {

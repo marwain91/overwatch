@@ -35,7 +35,7 @@ describe('gen-ui-types', () => {
       dflt: z.number().default(3),
       opt: z.array(Inner).optional(),
       kind: z.enum(['x', 'y']),
-      map: z.record(z.string()),
+      map: z.record(z.string(), z.string()),
       u: z.discriminatedUnion('t', [z.object({ t: z.literal('p') }), z.object({ t: z.literal('q'), n: z.number() })]),
     });
     const out = await generate(new Map<string, unknown>([['Inner', Inner], ['Sample', Sample]]), { srcRoot: SRC_ROOT, ts });
@@ -53,11 +53,13 @@ describe('gen-ui-types', () => {
   });
 
   it('throws on object modes it cannot render faithfully', async () => {
+    // zod 4 replaced .passthrough()/.strict() with z.looseObject()/z.strictObject();
+    // all three extra-key modes set `catchall` on the def, which the generator rejects.
     const gen = (schema: unknown) => generate(new Map<string, unknown>([['X', schema]]), { srcRoot: SRC_ROOT, ts });
-    await expect(gen(z.object({ a: z.string() }).passthrough())).rejects.toThrow(/passthrough/);
+    await expect(gen(z.looseObject({ a: z.string() }))).rejects.toThrow(/catchall/);
     await expect(gen(z.object({ a: z.string() }).catchall(z.number()))).rejects.toThrow(/catchall/);
-    await expect(gen(z.object({ a: z.string() }).strict())).rejects.toThrow(/strict/);
-    await expect(gen(z.object({ n: z.object({ a: z.string() }).passthrough() }))).rejects.toThrow(/passthrough/);
+    await expect(gen(z.strictObject({ a: z.string() }))).rejects.toThrow(/catchall/);
+    await expect(gen(z.object({ n: z.looseObject({ a: z.string() }) }))).rejects.toThrow(/catchall/);
   });
 
   it('copies the tenant, container, health, metrics, alert and audit types from the backend source', async () => {

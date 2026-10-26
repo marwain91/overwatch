@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Upgrade `zod` from 3 to 4 to fix [CVE-2023-54404](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5)**
+  (memory exhaustion validating oversized unbounded-array schemas; the fix exists
+  only in zod 4). This was the deferred item from 1.9.2. `npm audit` is now clean
+  for both production and dev. No change to the REST/MCP request or response
+  contracts.
+
+### Changed
+
+- **`gen-ui-types` now walks zod 4 internals (`_zod.def`).** The generated
+  `ui/src/lib/api-types.generated.ts` is unchanged except that `TraefikGlobal` is
+  now emitted as an `interface` rather than a `type` alias (the same object shape):
+  in zod 3 its top-level `.superRefine()` hid it behind a `ZodEffects` wrapper, so
+  it missed the object check; zod 4 refinements don't wrap, so it is now detected
+  as an object like every other schema.
+
+### Fixed
+
+- **A partial app update no longer silently resets `default_image_tag` to
+  `latest`.** Under zod 4, `.partial()` lets a field's `.default()` fire when the
+  field is omitted (zod 3 suppressed it), so `PATCH /api/apps/:id` without
+  `default_image_tag` would have overwritten the app's pinned tag. The update
+  schema now re-declares that field as a plain optional, so an omitted field means
+  "leave unchanged".
+
 ## [1.9.2] — 2026-10-26
 
 ### Security

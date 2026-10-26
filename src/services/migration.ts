@@ -409,7 +409,7 @@ function validateLegacyApps(legacyApps: unknown[]): LegacyAppEntry[] {
     const { createdAt, updatedAt, ...staticDef } = app;
     const parsed = AppDefinitionStaticSchema.safeParse(staticDef);
     if (!parsed.success) {
-      problems.push(`app '${app.id}': ${parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
+      problems.push(`app '${app.id}': ${parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`);
       return;
     }
     if (seen.has(app.id)) {

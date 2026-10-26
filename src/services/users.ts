@@ -80,7 +80,7 @@ async function readAdminUsersFile(): Promise<AdminUser[] | null> {
   }
   const parsed = AdminUsersFileSchema.safeParse(raw);
   if (!parsed.success) {
-    const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    const errors = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
     throw new Error(`admin-users.json failed validation: ${errors}`);
   }
   return parsed.data;

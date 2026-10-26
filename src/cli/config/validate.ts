@@ -53,7 +53,7 @@ export async function runConfigValidate(args: string[]): Promise<void> {
     passed++;
   } else {
     fail('Schema validation failed:');
-    for (const err of parseResult.error.errors) {
+    for (const err of parseResult.error.issues) {
       console.log(`    ${RED}${err.path.join('.')}:${NC} ${err.message}`);
     }
     failed++;
