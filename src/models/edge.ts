@@ -37,7 +37,11 @@ export const EdgeSiteSchema = z.strictObject({
 export const EdgeConfigSchema = z.strictObject({
   enabled: z.boolean().default(false),
   upstream: z.string().regex(/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/).refine(v => Number(v.split(':').slice(-1)[0]) <= 65535).default('http://127.0.0.1:8080'),
-  tls: z.strictObject({ certificate: filePath, certificate_key: filePath }),
+  tls: z.strictObject({
+    certificate: filePath,
+    certificate_key: filePath,
+    ciphers: z.string().regex(/^[A-Za-z0-9:+!@=._-]+$/).default('ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384'),
+  }),
   access_log: filePath.default('/var/log/nginx/overwatch-edge-access.log'),
   // Explicit adoption avoids deleting unrelated virtual hosts during initial installation.
   adopt_files: z.array(z.string().regex(/^[a-zA-Z0-9_-]+\.conf$/)).max(50).default([]),

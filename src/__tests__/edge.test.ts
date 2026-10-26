@@ -45,6 +45,7 @@ describe('managed edge renderer',()=>{
     expect(out).toContain('ssl_reject_handshake on;');expect(out).toContain('return 444;');
     expect(out).toContain('server_tokens off;');expect(out).toContain('proxy_hide_header X-Powered-By;');
     expect(out).toContain('ssl_protocols TLSv1.2 TLSv1.3;');
+    expect(out).toContain('ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:');
     expect(out).not.toContain('Content-Security-Policy');
   });
   it('never writes query strings, referers or raw request headers into managed access logs',()=>{

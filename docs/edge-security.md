@@ -13,6 +13,7 @@ edge:
   tls:
     certificate: /etc/ssl/example/fullchain.pem
     certificate_key: /etc/ssl/example/private.key
+    # Optional: ciphers: PROFILE=SYSTEM on RHEL/AlmaLinux to retain the OS policy.
   access_log: /var/log/nginx/overwatch-edge-access.log
   adopt_files: [product.conf, default.conf]
   sites:

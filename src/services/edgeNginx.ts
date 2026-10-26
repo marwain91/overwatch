@@ -23,7 +23,7 @@ export function renderEdgeNginx(input: EdgeConfig): string {
   const out = [EDGE_MANAGED_MARKER,
     '# Generated from overwatch.yaml.edge; edit configuration, not this file.',
     'server_tokens off;', 'proxy_hide_header X-Powered-By;',
-    'ssl_protocols TLSv1.2 TLSv1.3;', 'ssl_session_tickets off;',
+    'ssl_protocols TLSv1.2 TLSv1.3;', `ssl_ciphers ${quote(edge.tls.ciphers)};`, 'ssl_session_tickets off;',
     'client_header_timeout 15s;', 'client_body_timeout 60s;', 'send_timeout 60s;',
     // No query strings, Referer, credentials, request bodies or untrusted forwarding headers.
     `log_format overwatch_edge escape=json '{"time":"$time_iso8601","host":"$host","client":"$remote_addr","method":"$request_method","path":"$uri","status":$status,"bytes":$body_bytes_sent,"duration":$request_time}';`,
