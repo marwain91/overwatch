@@ -1,5 +1,7 @@
 # Configuration Reference
 
+Optional host Nginx configuration in `edge` is documented in [Managed Nginx edge](edge-security.md), including real-client IP policies and infrastructure hardening.
+
 Overwatch separates **infrastructure config** (YAML, set at deployment) from **app config** (GUI/API, set at runtime).
 
 ## `overwatch.yaml` — Infrastructure Config

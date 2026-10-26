@@ -2,6 +2,7 @@ import * as path from 'path';
 import { findConfigPath } from '../config/loader';
 import { deployInfra, InfraFileChange } from '../services/infraTemplates';
 import { GREEN, YELLOW, RED, BOLD, DIM, NC } from './config/utils';
+import { runEdge } from './edge';
 
 function usage(): void {
   console.log('');
@@ -10,6 +11,7 @@ function usage(): void {
   console.log('  Usage: overwatch infra <subcommand>');
   console.log('');
   console.log('  Subcommands:');
+  console.log('    edge render|check|deploy|rollback  Manage the optional host Nginx edge');
   console.log('    deploy [--dry-run] [--allow-db-downgrade]');
   console.log('                         Render the infra templates, write to the');
   console.log('                         deploy directory, and run `docker compose up -d`');
@@ -75,6 +77,7 @@ async function runDeploy(args: string[]): Promise<void> {
 export async function runInfra(args: string[]): Promise<void> {
   const sub = args[0];
   const rest = args.slice(1);
+  if (sub === 'edge') return runEdge(rest);
   if (!sub || sub === '--help' || sub === '-h') {
     usage();
     return;

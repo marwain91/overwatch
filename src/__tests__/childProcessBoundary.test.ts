@@ -14,6 +14,7 @@ const ALLOWED = new Set([
   'adapters/database/base.ts',     // streaming dump/restore clients, allowlisted env
   'adapters/registry/ecr.ts',      // aws CLI, AWS_* allowlist
   'services/backup.ts',            // restic, getResticEnv allowlist
+  'services/edgeDeploy.ts',        // operator-only nginx -t/reload; no shell, PATH/LANG only, bounded timeout
   // Host-side CLI: runs as the operator, not inside the server.
   'cli/config/traefik.ts',
   'cli/init.ts',

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TraefikGlobalSchema } from '../models/traefik';
 import { McpConfigSchema } from './mcp';
+import { EdgeConfigSchema } from '../models/edge';
 
 // Database configuration schema
 export const DatabaseConfigSchema = z.object({
@@ -77,6 +78,7 @@ export const OverwatchConfigSchema = z.object({
   credentials: CredentialsSchema.optional().describe('Auto-generated credential settings'),
   networking: NetworkingSchema.optional().describe('Docker networking configuration'),
   traefik: TraefikGlobalSchema.optional().describe('Traefik reverse-proxy configuration: cert resolvers, middleware library, dashboard, Overwatch self-routing'),
+  edge: EdgeConfigSchema.optional().describe('Optional managed host Nginx edge: TLS, IP/path access rules, request limits and privacy-safe access logs'),
   monitoring: MonitoringConfigSchema.optional().describe('Container monitoring configuration'),
   alert_rules: z.array(AlertRuleSchema).optional().describe('Alert rules for monitoring'),
   retention: RetentionConfigSchema.optional().describe('Log retention configuration'),

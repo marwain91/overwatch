@@ -8,6 +8,7 @@ import { buildTraefikStaticYml, buildTraefikDynamicYml, shouldUseDynamicTraefik 
 import { buildInfraComposeYml, buildOverwatchComposeYml } from './infraComposeGenerator';
 import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 import { runDocker } from '../utils/runDocker';
+import { renderEdgeNginx } from './edgeNginx';
 
 // Quick docker queries (inspect, network create). `compose up` gets the long
 // bound: its first run pulls the Traefik and database images.
@@ -157,6 +158,7 @@ export function renderInfraFiles(
     }
     files.push({ dest: tpl.dest, content: rendered });
   }
+  if (config.edge?.enabled) files.push({dest:'infrastructure/nginx/overwatch-edge.conf',content:renderEdgeNginx(config.edge)});
   return files;
 }
 
