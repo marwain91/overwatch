@@ -640,7 +640,7 @@ async function updateTenantLocked(
     if (manifest !== null) {
       const parsed = AppDefinitionStaticSchema.safeParse(manifest);
       if (!parsed.success) {
-        const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+        const errors = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
         throw new HttpError(500, `Image manifest failed validation: ${errors}`, { expose: true });
       }
       const globalForManifest = await getApp(appId);

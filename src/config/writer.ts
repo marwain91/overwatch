@@ -25,7 +25,7 @@ export class ConfigValidationError extends ValidationError {
 function assertValid(raw: Record<string, any>): void {
   const parse = OverwatchConfigSchema.safeParse(raw);
   if (!parse.success) {
-    throw new ConfigValidationError(parse.error.errors.map(e => ({ path: e.path.join('.'), message: e.message })));
+    throw new ConfigValidationError(parse.error.issues.map(e => ({ path: e.path.join('.'), message: e.message })));
   }
 }
 

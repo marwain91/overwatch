@@ -3,8 +3,8 @@
 // the plain interfaces the API returns) so the React UI cannot drift from the
 // API contract.
 //
-// Zod schemas are walked via their public `_def` (zod v3) and rendered as the
-// z.input shape: fields with defaults are optional, because that is what the
+// Zod schemas are walked via their internal `_zod.def` (zod v4) and rendered as
+// the z.input shape: fields with defaults are optional, because that is what the
 // API accepts and what stored JSON may contain. Schemas are loaded from dist/
 // (this runs right after tsc in `npm run build`); the drift test in
 // src/__tests__/genUiTypes.test.ts feeds the same renderer from src/.
@@ -71,28 +71,27 @@ const q = (s) => JSON.stringify(s);
 
 function render(schema, names, indent, isRoot = false) {
   if (!isRoot && names.has(schema)) return names.get(schema);
-  const def = schema._def;
+  const def = schema._zod.def;
   const sub = (s) => render(s, names, indent);
-  switch (def.typeName) {
-    case 'ZodString': return 'string';
-    case 'ZodNumber': return 'number';
-    case 'ZodBoolean': return 'boolean';
-    case 'ZodLiteral': return q(def.value);
-    case 'ZodEnum': return def.values.map(q).join(' | ');
-    case 'ZodOptional':
-    case 'ZodDefault': return sub(def.innerType);
-    case 'ZodNullable': return `${sub(def.innerType)} | null`;
-    case 'ZodEffects': return render(def.schema, names, indent);
-    case 'ZodArray': return `Array<${sub(def.type)}>`;
-    case 'ZodRecord': return `Record<string, ${sub(def.valueType)}>`;
-    case 'ZodUnion': return def.options.map(sub).join(' | ');
-    case 'ZodDiscriminatedUnion': return [...def.options.values()].map(sub).join(' | ');
-    case 'ZodObject': {
-      // Interfaces here model a plain strip-mode object. Passthrough/catchall
-      // allow extra keys and strict rejects them; none of that is expressible
-      // faithfully in the generated shape, so fail the build instead of lying.
-      const mode = def.unknownKeys !== 'strip' ? def.unknownKeys : def.catchall?._def?.typeName !== 'ZodNever' ? 'catchall' : null;
-      if (mode) throw new Error(`gen-ui-types: ZodObject uses .${mode}(), which cannot be rendered faithfully; extend render()`);
+  switch (def.type) {
+    case 'string': return 'string';
+    case 'number': return 'number';
+    case 'boolean': return 'boolean';
+    case 'literal': return def.values.map(q).join(' | ');
+    case 'enum': return Object.values(def.entries).map(q).join(' | ');
+    case 'optional':
+    case 'default': return sub(def.innerType);
+    case 'nullable': return `${sub(def.innerType)} | null`;
+    case 'array': return `Array<${sub(def.element)}>`;
+    case 'record': return `Record<string, ${sub(def.valueType)}>`;
+    // Plain and discriminated unions are both type 'union' in zod 4; a refined
+    // schema (.refine/.superRefine/.check) reports its base type, not a wrapper.
+    case 'union': return def.options.map(sub).join(' | ');
+    case 'object': {
+      // Interfaces here model a plain strip-mode object. .catchall()/strictObject/
+      // looseObject allow or reject extra keys, which is not expressible faithfully
+      // in the generated shape, so fail the build instead of lying.
+      if (def.catchall) throw new Error('gen-ui-types: ZodObject uses .catchall()/strictObject/looseObject, which cannot be rendered faithfully; extend render()');
       const pad = '  '.repeat(indent + 1);
       const lines = Object.entries(schema.shape).map(([key, value]) => {
         const k = IDENT.test(key) ? key : q(key);
@@ -101,7 +100,7 @@ function render(schema, names, indent, isRoot = false) {
       return lines.length ? `{\n${lines.join('\n')}\n${'  '.repeat(indent)}}` : 'Record<string, never>';
     }
     default:
-      throw new Error(`gen-ui-types: unsupported Zod node ${def.typeName}; extend render()`);
+      throw new Error(`gen-ui-types: unsupported Zod node ${def.type}; extend render()`);
   }
 }
 
@@ -145,7 +144,7 @@ export async function generate(schemas, { srcRoot, ts }) {
   ];
   for (const [name, schema] of schemas) {
     const body = render(schema, names, 0, true);
-    out.push(schema._def.typeName === 'ZodObject' ? `export interface ${name} ${body}` : `export type ${name} = ${body};`, '');
+    out.push(schema._zod.def.type === 'object' ? `export interface ${name} ${body}` : `export type ${name} = ${body};`, '');
   }
   for (const [file, wanted] of SOURCE_SPECS) {
     for (const decl of await extractDeclarations(ts, srcRoot, file, wanted)) out.push(decl, '');

@@ -98,6 +98,20 @@ describe('PUT /api/apps/:appId', () => {
     }
   });
 
+  it('a PUT that omits default_image_tag leaves the pinned tag unchanged (not reset to latest)', async () => {
+    // zod 4 regression guard, end to end: UpdateAppSchema is a .partial(). Unless
+    // default_image_tag is re-declared as a plain optional, an omitted tag defaults
+    // to 'latest' at the route and silently overwrites a pinned tag on any update.
+    const app = await mount();
+    await request(app).post('/api/apps').send(validApp('demo', { default_image_tag: 'v2.1' })).expect(201);
+
+    await request(app).put('/api/apps/demo').send({ name: 'renamed' }).expect(200);
+
+    const after = await request(app).get('/api/apps/demo').expect(200);
+    expect(after.body.name).toBe('renamed');
+    expect(after.body.default_image_tag).toBe('v2.1');
+  });
+
   it('persists admin_access.enabled=false and refuses token minting afterwards', async () => {
     const app = await mount();
     await request(app).post('/api/apps').send(validApp('demo', {

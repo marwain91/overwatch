@@ -120,7 +120,7 @@ describe('RawLabelsSchema', () => {
     });
     expect(result.success).toBe(false);
     if (!result.success) {
-      const messages = result.error.errors.map(e => e.message).join('\n');
+      const messages = result.error.issues.map(e => e.message).join('\n');
       expect(messages).toMatch(/reserved by Overwatch/);
       expect(messages).toMatch(/traefik\.http\.routers\.foo\.rule/);
     }

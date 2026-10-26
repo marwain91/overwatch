@@ -48,7 +48,7 @@ export async function readTenantAppDef(
     const raw = await readJsonStrict<unknown>(defPath);
     const parsedStatic = AppDefinitionStaticSchema.safeParse(raw);
     if (!parsedStatic.success) {
-      const errors = parsedStatic.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      const errors = parsedStatic.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new Error(`${defPath} failed validation: ${errors}`);
     }
     // Rehydrate runtime timestamps from the global runtime store via the
@@ -59,7 +59,7 @@ export async function readTenantAppDef(
     const full: AppDefinition = { ...parsedStatic.data, createdAt, updatedAt };
     const verified = AppDefinitionSchema.safeParse(full);
     if (!verified.success) {
-      const errors = verified.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      const errors = verified.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new Error(`${defPath} (with rehydrated timestamps) failed validation: ${errors}`);
     }
     return verified.data;
@@ -120,7 +120,7 @@ export async function writeTenantAppDef(
   // Validate once so we don't write nonsense to disk.
   const parsed = AppDefinitionStaticSchema.safeParse(staticDef);
   if (!parsed.success) {
-    const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    const errors = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
     throw new Error(`Refusing to write invalid per-tenant definition for ${appId}/${tenantId}: ${errors}`);
   }
   await fs.mkdir(path.dirname(defPath), { recursive: true });

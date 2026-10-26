@@ -18,7 +18,7 @@ export function errorHandler(err: any, req: Request, res: Response, next: NextFu
   }
   if (err instanceof ZodError) {
     // Schema parse failures are caller input problems, not server faults.
-    const detail = err.errors.map(e => `${e.path.join('.') || 'value'}: ${e.message}`).join(', ');
+    const detail = err.issues.map(e => `${e.path.join('.') || 'value'}: ${e.message}`).join(', ');
     res.status(400).json({ error: `Invalid input: ${detail}` });
     return;
   }

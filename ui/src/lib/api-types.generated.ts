@@ -274,7 +274,7 @@ export interface TraefikOverwatchRouting {
   raw_labels?: Record<string, string>;
 }
 
-export type TraefikGlobal = {
+export interface TraefikGlobal {
   log_level?: "DEBUG" | "INFO" | "WARN" | "ERROR";
   dashboard?: TraefikDashboard;
   entrypoints?: Array<Entrypoint>;
@@ -285,7 +285,7 @@ export type TraefikGlobal = {
   tls_termination?: TlsTermination;
   upstream_entrypoint?: string;
   allowed_alias_domains?: Array<string>;
-};
+}
 
 export interface TraefikApp {
   middlewares?: Record<string, MiddlewareSpec>;

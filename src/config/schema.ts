@@ -135,7 +135,7 @@ export const ServiceConfigSchema = z.object({
   health_check: HealthCheckSchema.optional(),
   backup: ServiceBackupSchema.optional(),
   command: z.array(z.string()).optional(),
-  env_mapping: z.record(z.union([z.string(), z.object({ static: z.string() })])).optional(),
+  env_mapping: z.record(z.string(), z.union([z.string(), z.object({ static: z.string() })])).optional(),
 });
 
 export const BackupS3Schema = z.object({

@@ -152,7 +152,7 @@ export const AppServiceSchema = z.object({
   health_check: AppHealthCheckSchema.optional(),
   backup: AppServiceBackupSchema.optional(),
   command: z.array(z.string()).optional(),
-  env_mapping: z.record(z.union([z.string(), z.object({ static: z.string() })])).optional(),
+  env_mapping: z.record(z.string(), z.union([z.string(), z.object({ static: z.string() })])).optional(),
   routing: AppServiceRoutingSchema.optional(),
   volumes: z.array(AppServiceVolumeSchema).optional(),
   depends_on: z.array(z.string()).optional(),
@@ -165,7 +165,7 @@ export const AppServiceSchema = z.object({
 // definition that predates the check still loads (the generator warns).
 export const AppServicesWriteSchema = z.array(AppServiceSchema).min(1).superRefine((services, ctx) => {
   for (const issue of volumeNameIssues(services)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: issue.path, message: issue.message });
+    ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message });
   }
 });
 
@@ -270,8 +270,14 @@ export const CreateAppSchema = AppDefinitionSchema.omit({
   updatedAt: true,
 }).extend({ services: AppServicesWriteSchema });
 
-// Schema for updating an app (all fields optional except id)
-export const UpdateAppSchema = CreateAppSchema.partial().required({ id: true });
+// Schema for updating an app (all fields optional except id).
+// zod 4 note: .partial() over a field carrying .default() now lets that default
+// fire when the field is omitted (zod 3 suppressed it via the optional wrapper).
+// On an update an omitted field must mean "leave unchanged", so default_image_tag
+// is re-declared as a plain optional to avoid silently resetting it to 'latest'.
+export const UpdateAppSchema = CreateAppSchema.partial().required({ id: true }).extend({
+  default_image_tag: z.string().optional(),
+});
 
 // Static portion of an app definition — the shape persisted in data/apps.d/<id>.json.
 // Everything in AppDefinitionSchema except the runtime timestamps.
@@ -287,7 +293,7 @@ export const AppRuntimeEntrySchema = z.object({
 });
 
 // Runtime store: map of appId → runtime entry.
-export const AppRuntimeStoreSchema = z.record(AppRuntimeEntrySchema);
+export const AppRuntimeStoreSchema = z.record(z.string(), AppRuntimeEntrySchema);
 
 // TypeScript types
 export type AppDefinition = z.infer<typeof AppDefinitionSchema>;

@@ -172,7 +172,7 @@ async function loadApps(files: string[]): Promise<{ apps: AppDefinition[]; runti
     }
     const parsed = AppDefinitionStaticSchema.safeParse(raw);
     if (!parsed.success) {
-      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      const errors = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new Error(`${filename} failed validation: ${errors}`);
     }
     const staticDef = parsed.data;
@@ -341,7 +341,7 @@ export async function createApp(input: CreateAppInput): Promise<AppDefinition> {
     const app: AppDefinition = { ...input, createdAt: now, updatedAt: now };
     const parsed = AppDefinitionSchema.safeParse(app);
     if (!parsed.success) {
-      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      const errors = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`Invalid app definition: ${errors}`);
     }
     assertWritable(parsed.data, undefined);
@@ -369,7 +369,7 @@ export async function updateApp(input: UpdateAppInput): Promise<AppDefinition> {
     const updated: AppDefinition = { ...apps[index], ...input, updatedAt: now };
     const parsed = AppDefinitionSchema.safeParse(updated);
     if (!parsed.success) {
-      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      const errors = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`Invalid app definition: ${errors}`);
     }
     assertWritable(parsed.data, apps[index]);
@@ -404,7 +404,7 @@ export async function applyApp(
     const candidate = opts.restore ? opts.restore(input, stored) : input;
     const parsed = AppDefinitionStaticSchema.safeParse(candidate);
     if (!parsed.success) {
-      const errors = parsed.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      const errors = parsed.error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new ValidationError(`App definition failed validation: ${errors}`);
     }
     const next = parsed.data;
