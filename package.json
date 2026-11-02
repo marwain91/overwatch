@@ -67,7 +67,7 @@
     "@types/pg": "^8.20.0",
     "@types/supertest": "^7.2.0",
     "@types/ws": "^8.5.10",
-    "@yao-pkg/pkg": "^6.23.0",
+    "@yao-pkg/pkg": "^6.24.0",
     "supertest": "^7.2.2",
     "tsx": "^4.22.2",
     "typescript": "^6.0.3",
