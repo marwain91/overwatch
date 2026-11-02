@@ -41,7 +41,7 @@
     "outputPath": "dist/bin"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "dockerode": "^5.0.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -52,7 +52,7 @@
     "mysql2": "^3.22.3",
     "node-cron": "^4.2.1",
     "pg": "^8.21.0",
-    "re2js": "^2.9.0",
+    "re2js": "^2.9.1",
     "ws": "^8.20.1",
     "zod": "^4.6.7"
   },
