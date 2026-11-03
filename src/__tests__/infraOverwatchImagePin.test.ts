@@ -114,6 +114,48 @@ describe.each(['template', 'generated'] as const)('infra deploy keeps the pinned
   });
 });
 
+describe('withOverwatchImage — touches only the overwatch service', () => {
+  // A rendered compose whose first `image:` line belongs to another service.
+  function twoServices(sidecarImage: string, overwatchImage: string): string {
+    return [
+      '# Rendered by overwatch infra deploy.',
+      'services:',
+      '  sidecar:',
+      `    image: ${sidecarImage}`,
+      '  overwatch:',
+      '    container_name: acme-overwatch',
+      `    image: ${overwatchImage}`,
+      '    labels:',
+      '      - "image: not-a-key"',
+      '',
+    ].join('\n');
+  }
+
+  it('puts the pin on overwatch and leaves the first service image alone', async () => {
+    const { withOverwatchImage } = await import('../services/infraTemplates');
+    expect(withOverwatchImage(twoServices('busybox:1.36', LATEST), PINNED))
+      .toBe(twoServices('busybox:1.36', PINNED));
+  });
+
+  it('does not rewrite another service running the same image', async () => {
+    const { withOverwatchImage } = await import('../services/infraTemplates');
+    expect(withOverwatchImage(twoServices(LATEST, LATEST), PINNED))
+      .toBe(twoServices(LATEST, PINNED));
+  });
+
+  it('leaves the file alone when overwatch already has the image', async () => {
+    const { withOverwatchImage } = await import('../services/infraTemplates');
+    const compose = twoServices('busybox:1.36', PINNED);
+    expect(withOverwatchImage(compose, PINNED)).toBe(compose);
+  });
+
+  it('does not take the next service image when overwatch has none', async () => {
+    const { withOverwatchImage } = await import('../services/infraTemplates');
+    const compose = 'services:\n  overwatch:\n    container_name: acme-overwatch\n  sidecar:\n    image: busybox:1.36\n';
+    expect(withOverwatchImage(compose, PINNED)).toBe(compose);
+  });
+});
+
 describe('infra deploy — Overwatch image reporting', () => {
   it('uses :latest for a new install and reports no image change', async () => {
     await seedConfig('template');
