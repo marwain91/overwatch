@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.1] — 2026-11-03
+
 ### Fixed
 
 - `overwatch config traefik doctor` now warns when `forwarded_headers.trusted_ips` can never match a proxy on the same host. Docker delivers connections to a published port from the shared network's gateway (e.g. `172.18.0.1`), not from `127.0.0.1`, so a loopback-only list silently made every app see the gateway as the client and collapsed per-IP rate limits into one bucket. The doctor looks up the gateway with `docker network inspect` and names the `/32` to add.
