@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.2] — 2026-11-03
+
 ### Security
 
 - `overwatch config traefik doctor` no longer advises trusting the Docker network gateway on an entrypoint that is not bound to loopback. On such a bind, Docker also delivers connections from containers on other Docker networks and, through its userland proxy, IPv6 clients from the gateway address, so trusting it would let them forge `X-Forwarded-For` / `X-Real-IP`. The hint for a loopback-only `trusted_ips` on a public bind now says to set `host_bind: "127.0.0.1"` first, and the doctor warns when an entrypoint that is not bound to loopback trusts the gateway. The [Traefik docs](docs/traefik.md#behind-an-upstream-ssl-terminator) and the entrypoint help text in the UI state the same precondition.
