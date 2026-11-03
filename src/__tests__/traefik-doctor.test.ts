@@ -9,7 +9,7 @@ vi.mock('../utils/runDocker', async (orig) => ({
   runDocker: (...a: unknown[]) => runDockerMock(...a),
 }));
 
-import { validateTraefik, collectPresentEnvVars, resolveNetworkGateways, type DoctorContext } from '../services/traefikDoctor';
+import { validateTraefik, collectPresentEnvVars, needsNetworkGateways, resolveNetworkGateways, type DoctorContext } from '../services/traefikDoctor';
 import type { OverwatchConfig } from '../config/schema';
 import type { AppDefinition } from '../models/app';
 import type { Entrypoint, TraefikGlobal, TraefikTenant } from '../models/traefik';
@@ -264,13 +264,37 @@ describe('validateTraefik — forwarded-header trust behind a same-host proxy', 
     expect(issues[0].hint).toContain('"172.18.0.1/32"');
   });
 
-  it('warns about loopback-only trust on any bind address, IPv4 or IPv6', () => {
+  it('warns about loopback-only trust on a loopback bind, IPv4 or IPv6', () => {
     for (const ep of [
-      { host_bind: undefined },
       { host_bind: '::1', forwarded_headers: { trusted_ips: ['::1/128'] } },
       { forwarded_headers: { trusted_ips: ['127.0.0.0/8'] } },
     ]) {
-      expect(trustIssues({ config: behindHostProxy(ep) })).toHaveLength(1);
+      const issues = trustIssues({ config: behindHostProxy(ep) });
+      expect(issues).toHaveLength(1);
+      expect(issues[0].hint).toMatch(/^Add /);
+      expect(issues[0].hint).not.toContain('host_bind');
+    }
+  });
+
+  it('on a public bind, says to bind to loopback before trusting the gateway', () => {
+    for (const host_bind of [undefined, '0.0.0.0', '203.0.113.7']) {
+      const issues = trustIssues({
+        config: behindHostProxy({ host_bind }),
+        sharedNetwork: { name: 'daktela-network', gateways: ['172.18.0.1'] },
+      });
+      expect(issues).toHaveLength(1);
+      expect(issues[0].hint).toMatch(/^First set `host_bind: "127\.0\.0\.1"`/);
+      expect(issues[0].hint).toContain('127.0.0.1:8080');
+      expect(issues[0].hint).toContain('only safe on a loopback-bound entrypoint');
+      expect(issues[0].hint).toContain(`published on ${host_bind ?? 'all interfaces'}`);
+      expect(issues[0].hint).toContain('"172.18.0.1/32"');
+    }
+  });
+
+  it('does not count a range wider than loopback as loopback-only', () => {
+    // 127.0.0.0/7 also covers 126.0.0.0/8; ::1/64 covers more than ::1.
+    for (const trusted of [['127.0.0.0/7'], ['::1/64']]) {
+      expect(trustIssues({ config: behindHostProxy({ forwarded_headers: { trusted_ips: trusted } }) })).toEqual([]);
     }
   });
 
@@ -280,6 +304,65 @@ describe('validateTraefik — forwarded-header trust behind a same-host proxy', 
       config: behindHostProxy({ host_bind: undefined, forwarded_headers: { trusted_ips: ['10.0.0.0/8'] } }),
       sharedNetwork: { name: 'n', gateways: ['172.18.0.1'] },
     })).toEqual([]);
+  });
+
+  it('warns when an entrypoint not bound to loopback trusts the gateway', () => {
+    for (const [host_bind, trusted] of [
+      [undefined, ['172.18.0.1/32']],
+      ['0.0.0.0', ['172.16.0.0/12']],
+    ] as const) {
+      const issues = trustIssues({
+        config: behindHostProxy({ host_bind, forwarded_headers: { trusted_ips: [...trusted] } }),
+        sharedNetwork: { name: 'daktela-network', gateways: ['172.18.0.1'] },
+      });
+      expect(issues).toHaveLength(1);
+      expect(issues[0].severity).toBe('warning');
+      expect(issues[0].message).toContain('"daktela-network" Docker network gateway (172.18.0.1)');
+      expect(issues[0].message).toContain(`published on ${host_bind ?? 'all interfaces'}`);
+      expect(issues[0].message).toMatch(/forge X-Forwarded-For/);
+      expect(issues[0].hint).toContain('host_bind: "127.0.0.1"');
+    }
+  });
+
+  it('warns about a trusted gateway on a public bind whatever the TLS termination', () => {
+    const config = withTraefik({
+      entrypoints: [{ name: 'web', port: 80, forwarded_headers: { trusted_ips: ['172.18.0.1/32'] } }],
+    } as TraefikGlobal);
+    expect(trustIssues({ config, sharedNetwork: { name: 'n', gateways: ['172.18.0.1'] } })).toHaveLength(1);
+  });
+
+  it('matches the gateway to the bind address family on a dual-stack network', () => {
+    const sharedNetwork = { name: 'n', gateways: ['172.18.0.1', 'fd00:1::1'] };
+    // IPv4 bind: the IPv6 gateway alone does not cover the proxy, and no /128 is asked for.
+    const v4 = trustIssues({
+      config: behindHostProxy({ forwarded_headers: { trusted_ips: ['fd00:1::1/128'] } }),
+      sharedNetwork,
+    });
+    expect(v4).toHaveLength(1);
+    expect(v4[0].message).toContain('(172.18.0.1)');
+    expect(v4[0].hint).toContain('"172.18.0.1/32"');
+    expect(v4[0].hint).not.toContain('/128');
+    expect(trustIssues({
+      config: behindHostProxy({ forwarded_headers: { trusted_ips: ['172.18.0.1/32'] } }),
+      sharedNetwork,
+    })).toEqual([]);
+    // IPv6 bind: the IPv6 gateway, as a /128.
+    const v6 = trustIssues({
+      config: behindHostProxy({ host_bind: '::1', forwarded_headers: { trusted_ips: ['172.18.0.1/32'] } }),
+      sharedNetwork,
+    });
+    expect(v6).toHaveLength(1);
+    expect(v6[0].hint).toContain('"fd00:1::1/128"');
+    expect(v6[0].hint).not.toContain('/32');
+  });
+
+  it('falls back to the IPv4 gateway for an IPv6 bind on an IPv4-only network', () => {
+    const issues = trustIssues({
+      config: behindHostProxy({ host_bind: '::1', forwarded_headers: { trusted_ips: ['::1/128'] } }),
+      sharedNetwork: { name: 'n', gateways: ['172.18.0.1'] },
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].hint).toContain('"172.18.0.1/32"');
   });
 
   it('is silent when TLS terminates at Traefik', () => {
@@ -298,7 +381,7 @@ describe('resolveNetworkGateways', () => {
       stdout: '[{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"},{"Subnet":"fd00:1::/64","Gateway":"fd00:1::1"}]\n',
       stderr: '',
     });
-    await expect(resolveNetworkGateways('daktela-network')).resolves.toEqual(['172.18.0.1', 'fd00:1::1']);
+    await expect(resolveNetworkGateways('daktela-network')).resolves.toEqual({ gateways: ['172.18.0.1', 'fd00:1::1'] });
     expect(runDockerMock).toHaveBeenCalledWith(
       'docker', ['network', 'inspect', '--format', '{{json .IPAM.Config}}', 'daktela-network'], expect.any(Object),
     );
@@ -306,14 +389,26 @@ describe('resolveNetworkGateways', () => {
 
   it('skips IPAM entries without a usable gateway', async () => {
     runDockerMock.mockResolvedValue({ stdout: '[{"Subnet":"10.9.0.0/24"},{"Gateway":"not-an-ip"}]', stderr: '' });
-    await expect(resolveNetworkGateways('n')).resolves.toEqual([]);
+    await expect(resolveNetworkGateways('n')).resolves.toEqual({ gateways: [] });
     runDockerMock.mockResolvedValue({ stdout: 'null', stderr: '' });
-    await expect(resolveNetworkGateways('n')).resolves.toEqual([]);
+    await expect(resolveNetworkGateways('n')).resolves.toEqual({ gateways: [] });
   });
 
-  it('returns nothing when docker or the network is unavailable', async () => {
-    runDockerMock.mockRejectedValue(new Error('No such network'));
-    await expect(resolveNetworkGateways('missing')).resolves.toEqual([]);
+  it('reports why when docker or the network is unavailable, without throwing', async () => {
+    runDockerMock.mockRejectedValue(new Error('Error: No such network: missing\nmore detail'));
+    await expect(resolveNetworkGateways('missing')).resolves.toEqual({ gateways: [], error: 'Error: No such network: missing' });
+    runDockerMock.mockResolvedValue({ stdout: 'not json', stderr: '' });
+    await expect(resolveNetworkGateways('n')).resolves.toMatchObject({ gateways: [], error: expect.stringContaining('unreadable') });
+  });
+});
+
+describe('needsNetworkGateways', () => {
+  it('is true only when some entrypoint trusts forwarded headers', () => {
+    expect(needsNetworkGateways(withTraefik({}))).toBe(false);
+    expect(needsNetworkGateways(withTraefik({ entrypoints: [{ name: 'web', port: 80 }] }))).toBe(false);
+    expect(needsNetworkGateways(withTraefik({
+      entrypoints: [{ name: 'web', port: 80 }, { name: 'edge', port: 81, forwarded_headers: { trusted_ips: ['10.0.0.0/8'] } }],
+    }))).toBe(true);
   });
 });
 

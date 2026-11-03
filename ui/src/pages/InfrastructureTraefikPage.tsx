@@ -703,6 +703,10 @@ function EntrypointModal({
     const ep: Entrypoint = {
       name: name.trim(),
       port: portNum,
+      // Not editable here; keep them so saving cannot re-publish a loopback-bound
+      // entrypoint on all interfaces while it still trusts the network gateway.
+      host_port: initial?.host_port,
+      host_bind: initial?.host_bind,
       redirect_to: redirectTo.trim() || undefined,
       forwarded_headers: fwIps.length > 0 ? { trusted_ips: fwIps } : undefined,
       proxy_protocol: ppIps.length > 0 ? { trusted_ips: ppIps } : undefined,
@@ -725,7 +729,7 @@ function EntrypointModal({
         </Field>
         <Field label="Forwarded headers — trusted IPs">
           <input value={forwardedTrusted} onChange={e => setForwardedTrusted(e.target.value)} className={inputCls} placeholder="172.18.0.1/32, 10.0.0.0/8" />
-          <p className="mt-1 text-xs text-content-faint">CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust. Required when behind Cloudflare / ALB / nginx. For nginx on this host, use the Docker network gateway as a /32 (e.g. 172.18.0.1/32), not 127.0.0.1.</p>
+          <p className="mt-1 text-xs text-content-faint">CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust. Required when behind Cloudflare / ALB / nginx. For nginx on this host, bind the entrypoint to loopback (host_bind: "127.0.0.1" in overwatch.yaml) and use the Docker network gateway as a /32 (e.g. 172.18.0.1/32), not 127.0.0.1. Trust the gateway only on a loopback-bound entrypoint: otherwise containers on other Docker networks and IPv6 clients also arrive from it and could forge X-Forwarded-For.</p>
         </Field>
         <Field label="PROXY protocol — trusted IPs">
           <input value={proxyTrusted} onChange={e => setProxyTrusted(e.target.value)} className={inputCls} placeholder="10.0.0.0/8" />

@@ -17,6 +17,12 @@ const BASE = {
   database: { type: 'mariadb', host: 'db', port: 3306, container_name: 'db', root_user_env: 'DB_ROOT_USER', root_password_env: 'DB_ROOT_PW' },
 };
 
+const runDockerMock = vi.fn();
+vi.mock('../utils/runDocker', async (orig) => ({
+  ...(await orig<typeof import('../utils/runDocker')>()),
+  runDocker: (...a: unknown[]) => runDockerMock(...a),
+}));
+
 vi.mock('inquirer', () => ({
   default: { prompt: async (qs: any[]) => ({ [qs[0].name]: answers[qs[0].name] ?? qs[0].default }), Separator: class {} },
 }));
@@ -113,5 +119,61 @@ describe('CLI traefik on the host', () => {
     const { runConfigTraefik } = await import('../cli/config/traefik');
     await runConfigTraefik(['resolver', 'remove', 'le']);
     expect(lines.join('\n')).toMatch(/recreate|restart.*overwatch/i);
+  });
+});
+
+describe('CLI traefik doctor — shared network gateway', () => {
+  // Host nginx proxies to Traefik published on 127.0.0.1:8080.
+  const behindHostProxy = (trusted: string[]) => ({
+    networking: { external_network: 'acme-net' },
+    traefik: {
+      tls_termination: 'upstream',
+      upstream_entrypoint: 'web',
+      entrypoints: [{ name: 'web', port: 80, host_port: 8080, host_bind: '127.0.0.1', forwarded_headers: { trusted_ips: trusted } }],
+    },
+  });
+
+  async function runDoctor(): Promise<string> {
+    const lines: string[] = [];
+    (console.log as any).mockImplementation((...a: any[]) => { lines.push(a.join(' ')); });
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit ${code}`); }) as never);
+    const { runConfigTraefik } = await import('../cli/config/traefik');
+    await runConfigTraefik(['doctor']);
+    return lines.join('\n');
+  }
+
+  beforeEach(() => { runDockerMock.mockReset(); });
+
+  it('looks up the configured network and names its gateway in the hint', async () => {
+    await writeConfig(behindHostProxy(['127.0.0.1/32']));
+    runDockerMock.mockResolvedValue({ stdout: '[{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"}]', stderr: '' });
+    const out = await runDoctor();
+    expect(runDockerMock).toHaveBeenCalledWith(
+      'docker', ['network', 'inspect', '--format', '{{json .IPAM.Config}}', 'acme-net'], expect.any(Object),
+    );
+    expect(out).toContain('"172.18.0.1/32"');
+    expect(out).not.toMatch(/gateway check skipped/);
+  });
+
+  it('says the gateway check was skipped when the network cannot be inspected', async () => {
+    await writeConfig(behindHostProxy(['172.18.0.1/32']));
+    runDockerMock.mockRejectedValue(new Error('Error response from daemon: network acme-net not found'));
+    const out = await runDoctor();
+    expect(out).toMatch(/Could not inspect Docker network "acme-net" \(.*not found\); gateway check skipped\./);
+    expect(out).toContain('No issues found.');
+  });
+
+  it('says the gateway check was skipped when the network has no gateway', async () => {
+    await writeConfig(behindHostProxy(['172.18.0.1/32']));
+    runDockerMock.mockResolvedValue({ stdout: '[{"Subnet":"172.18.0.0/16"}]', stderr: '' });
+    expect(await runDoctor()).toMatch(/Docker network "acme-net" reports no gateway address; gateway check skipped\./);
+  });
+
+  it('does not query Docker when no entrypoint trusts forwarded headers', async () => {
+    await writeConfig({ traefik: { cert_resolvers: [RESOLVER] } });
+    const out = await runDoctor();
+    expect(runDockerMock).not.toHaveBeenCalled();
+    expect(out).toContain('No issues found.');
+    expect(out).not.toMatch(/gateway check skipped/);
   });
 });
