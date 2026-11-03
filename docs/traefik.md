@@ -214,9 +214,10 @@ traefik:
       host_port: 8080                # host-side published port (optional; defaults to `port`)
       host_bind: "127.0.0.1"         # host-side bind address (optional; defaults to "0.0.0.0")
       forwarded_headers:
-        # CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust.
+        # Addresses of upstream proxies whose X-Forwarded-* headers Traefik should trust.
         # Without this, Traefik strips them and apps see the upstream's IP.
-        trusted_ips: ["127.0.0.1/32"]
+        # Same-host proxy: the shared Docker network's gateway, NOT 127.0.0.1 (see below).
+        trusted_ips: ["172.18.0.1/32"]
       proxy_protocol:
         # PROXY protocol v1/v2 for HAProxy / AWS NLB. Optional.
         trusted_ips: ["10.0.0.0/8"]
@@ -224,6 +225,14 @@ traefik:
 ```
 
 `host_port` and `host_bind` (v1.6.10+) control the compose `ports:` mapping for Traefik. Use them when the host already has another process on 80/443 — e.g. an upstream nginx terminating TLS with pre-issued certs and proxying to Traefik on loopback. Omit both to publish on `0.0.0.0:port`.
+
+**A proxy on the same host connects from the Docker network gateway, not from `127.0.0.1`.** Traefik runs on the shared bridge network, so Docker delivers a connection to `127.0.0.1:8080` from that network's gateway (for example `172.18.0.1`). A `trusted_ips` list containing only `127.0.0.1/32` never matches: Traefik replaces the proxy's `X-Forwarded-*` headers, and every app sees the gateway as the client (so per-IP rate limits share one bucket). Trust the gateway instead:
+
+```bash
+docker network inspect <prefix>-network --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}'
+```
+
+Add the address as a `/32` (`/128` for IPv6). Do not trust the network's whole subnet: tenant containers connect to Traefik from that subnet and could forge `X-Forwarded-For`. The gateway stays the same while the network exists; if you recreate the network, check it again. `overwatch config traefik doctor` looks up the gateway and warns when it is missing from the list.
 
 When `tls_termination: upstream` is in effect for a router, the generator:
 
@@ -255,7 +264,8 @@ tls_termination: upstream
 | **Cloudflare full / full-strict** | `tls_termination: upstream`, `forwarded_headers.trusted_ips: [<Cloudflare IPs>]`, omit `redirect_to` on `web` |
 | **AWS ALB** | `tls_termination: upstream`, `forwarded_headers.trusted_ips: [<VPC CIDR>]` |
 | **AWS NLB / HAProxy with PROXY** | as above, plus `proxy_protocol.trusted_ips` |
-| **Upstream nginx terminating TLS** | `tls_termination: upstream`, `forwarded_headers.trusted_ips: [<nginx IP>]` |
+| **nginx on the same host terminating TLS** | `tls_termination: upstream`, `host_bind: "127.0.0.1"`, `forwarded_headers.trusted_ips: [<Docker network gateway>/32]` (see above) |
+| **nginx on another host terminating TLS** | `tls_termination: upstream`, `forwarded_headers.trusted_ips: [<nginx IP>]` |
 | **Direct (default)** | leave `tls_termination` unset; Traefik manages certs via `cert_resolvers` |
 
 After changing entrypoint config or `tls_termination`, run **Reload Traefik** (UI button or `overwatch config traefik reload`) — those settings are read at start-time.
@@ -275,6 +285,7 @@ Reports errors (exit 1) and warnings (exit 0) for:
 - Tenant `cert_resolver` overrides that point to a resolver name that isn't defined.
 - Cert-resolver `env: { KEY: ${VAR} }` entries where `VAR` is missing from the deploy `.env` and `process.env`.
 - `tls_termination: upstream` on the global config when the chosen `upstream_entrypoint` either isn't defined or has no `forwarded_headers.trusted_ips` configured.
+- `forwarded_headers.trusted_ips` on that entrypoint that can never match a proxy on the same host: a list of only loopback addresses, or, on a loopback-bound entrypoint, a list without the shared Docker network's gateway. The doctor runs `docker network inspect` to name the gateway in its hint; without Docker access it still flags loopback-only lists.
 - `cert_resolvers` lacking a fallback (no `challenge: http` resolver without patterns AND no resolver with a `*` pattern) — every tenant domain must match an explicit pattern, otherwise tenant-create fails.
 - Cert resolvers still carrying placeholder values from the legacy `networking.cert_resolvers` shim — i.e. you haven't run `overwatch config traefik migrate` yet.
 

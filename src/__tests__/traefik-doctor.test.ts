@@ -1,11 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { validateTraefik, collectPresentEnvVars, type DoctorContext } from '../services/traefikDoctor';
+
+const runDockerMock = vi.fn();
+vi.mock('../utils/runDocker', async (orig) => ({
+  ...(await orig<typeof import('../utils/runDocker')>()),
+  runDocker: (...a: unknown[]) => runDockerMock(...a),
+}));
+
+import { validateTraefik, collectPresentEnvVars, resolveNetworkGateways, type DoctorContext } from '../services/traefikDoctor';
 import type { OverwatchConfig } from '../config/schema';
 import type { AppDefinition } from '../models/app';
-import type { TraefikGlobal, TraefikTenant } from '../models/traefik';
+import type { Entrypoint, TraefikGlobal, TraefikTenant } from '../models/traefik';
 
 function ctxOf(overrides: Partial<DoctorContext>): DoctorContext {
   return {
@@ -188,6 +195,125 @@ describe('validateTraefik — upstream TLS', () => {
       config: withTraefik({} as TraefikGlobal),
     }));
     expect(issues.filter(i => i.scope.includes('forwarded_headers'))).toEqual([]);
+  });
+});
+
+describe('validateTraefik — forwarded-header trust behind a same-host proxy', () => {
+  const TRUST_SCOPE = 'traefik.entrypoints["web"].forwarded_headers.trusted_ips';
+
+  // The production shape: host nginx terminates TLS and proxies to 127.0.0.1:8080.
+  function behindHostProxy(ep: Partial<Entrypoint> = {}): OverwatchConfig {
+    return withTraefik({
+      tls_termination: 'upstream',
+      upstream_entrypoint: 'web',
+      entrypoints: [{
+        name: 'web', port: 80, host_port: 8080, host_bind: '127.0.0.1',
+        forwarded_headers: { trusted_ips: ['127.0.0.1/32'] },
+        ...ep,
+      }],
+    } as TraefikGlobal);
+  }
+  const trustIssues = (ctx: Partial<DoctorContext>) =>
+    validateTraefik(ctxOf(ctx)).filter(i => i.scope === TRUST_SCOPE);
+
+  it('warns when a loopback-bound entrypoint trusts only loopback', () => {
+    const issues = trustIssues({ config: behindHostProxy() });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].message).toMatch(/gateway/);
+    // Without a resolved gateway, the hint says how to look it up.
+    expect(issues[0].hint).toContain('docker network inspect');
+  });
+
+  it('names the resolved gateway as a /32 in the hint', () => {
+    const issues = trustIssues({
+      config: behindHostProxy(),
+      sharedNetwork: { name: 'daktela-network', gateways: ['172.18.0.1'] },
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('daktela-network');
+    expect(issues[0].message).toContain('172.18.0.1');
+    expect(issues[0].hint).toContain('"172.18.0.1/32"');
+    expect(issues[0].hint).not.toContain('172.18.0.0/16');
+  });
+
+  it('passes once the gateway is trusted (the production fix)', () => {
+    expect(trustIssues({
+      config: behindHostProxy({ forwarded_headers: { trusted_ips: ['127.0.0.1/32', '172.18.0.1/32'] } }),
+      sharedNetwork: { name: 'daktela-network', gateways: ['172.18.0.1'] },
+    })).toEqual([]);
+  });
+
+  it('accepts the gateway written as a bare address or inside a wider range', () => {
+    for (const trusted of [['172.18.0.1'], ['172.18.0.0/16']]) {
+      expect(trustIssues({
+        config: behindHostProxy({ forwarded_headers: { trusted_ips: trusted } }),
+        sharedNetwork: { name: 'n', gateways: ['172.18.0.1'] },
+      })).toEqual([]);
+    }
+  });
+
+  it('warns when a loopback-bound entrypoint trusts a different gateway', () => {
+    // 172.17.0.1 is docker0's gateway, a common guess, but not the shared network's.
+    const issues = trustIssues({
+      config: behindHostProxy({ forwarded_headers: { trusted_ips: ['127.0.0.1/32', '172.17.0.1/32'] } }),
+      sharedNetwork: { name: 'daktela-network', gateways: ['172.18.0.1'] },
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0].message).toContain('127.0.0.1');
+    expect(issues[0].hint).toContain('"172.18.0.1/32"');
+  });
+
+  it('warns about loopback-only trust on any bind address, IPv4 or IPv6', () => {
+    for (const ep of [
+      { host_bind: undefined },
+      { host_bind: '::1', forwarded_headers: { trusted_ips: ['::1/128'] } },
+      { forwarded_headers: { trusted_ips: ['127.0.0.0/8'] } },
+    ]) {
+      expect(trustIssues({ config: behindHostProxy(ep) })).toHaveLength(1);
+    }
+  });
+
+  it('does not judge a non-loopback trust list on a public bind', () => {
+    // A remote upstream (ALB, Cloudflare) connects with its own address, not the gateway.
+    expect(trustIssues({
+      config: behindHostProxy({ host_bind: undefined, forwarded_headers: { trusted_ips: ['10.0.0.0/8'] } }),
+      sharedNetwork: { name: 'n', gateways: ['172.18.0.1'] },
+    })).toEqual([]);
+  });
+
+  it('is silent when TLS terminates at Traefik', () => {
+    const config = withTraefik({
+      entrypoints: [{ name: 'web', port: 80, host_bind: '127.0.0.1', forwarded_headers: { trusted_ips: ['127.0.0.1/32'] } }],
+    } as TraefikGlobal);
+    expect(trustIssues({ config })).toEqual([]);
+  });
+});
+
+describe('resolveNetworkGateways', () => {
+  beforeEach(() => { runDockerMock.mockReset(); });
+
+  it('returns every gateway of the network', async () => {
+    runDockerMock.mockResolvedValue({
+      stdout: '[{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"},{"Subnet":"fd00:1::/64","Gateway":"fd00:1::1"}]\n',
+      stderr: '',
+    });
+    await expect(resolveNetworkGateways('daktela-network')).resolves.toEqual(['172.18.0.1', 'fd00:1::1']);
+    expect(runDockerMock).toHaveBeenCalledWith(
+      'docker', ['network', 'inspect', '--format', '{{json .IPAM.Config}}', 'daktela-network'], expect.any(Object),
+    );
+  });
+
+  it('skips IPAM entries without a usable gateway', async () => {
+    runDockerMock.mockResolvedValue({ stdout: '[{"Subnet":"10.9.0.0/24"},{"Gateway":"not-an-ip"}]', stderr: '' });
+    await expect(resolveNetworkGateways('n')).resolves.toEqual([]);
+    runDockerMock.mockResolvedValue({ stdout: 'null', stderr: '' });
+    await expect(resolveNetworkGateways('n')).resolves.toEqual([]);
+  });
+
+  it('returns nothing when docker or the network is unavailable', async () => {
+    runDockerMock.mockRejectedValue(new Error('No such network'));
+    await expect(resolveNetworkGateways('missing')).resolves.toEqual([]);
   });
 });
 
