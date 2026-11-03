@@ -34,7 +34,15 @@ export interface InfraDeployResult {
   changes: InfraFileChange[];
   composeRestarted: boolean;
   dryRun: boolean;
+  /**
+   * The Overwatch image in the existing overwatch/docker-compose.yml and in
+   * the rendered one. Absent when that file does not exist yet. They differ
+   * only when the existing file's image could not be read.
+   */
+  overwatchImage?: { current: string | null; rendered: string | null };
 }
+
+const OVERWATCH_COMPOSE = 'overwatch/docker-compose.yml';
 
 /**
  * The canonical list of template → destination mappings. Kept as a static
@@ -220,6 +228,30 @@ async function assertNoDbDowngrade(infraCompose: string): Promise<void> {
   }
 }
 
+/** The overwatch service's `image:` in a compose file; null when absent or unreadable. */
+function readOverwatchImage(compose: string): string | null {
+  try {
+    const doc = yaml.load(compose) as { services?: { overwatch?: { image?: unknown } } } | null | undefined;
+    const image = doc?.services?.overwatch?.image;
+    return typeof image === 'string' && image.trim() !== '' ? image : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Put `image` on the overwatch service of a rendered compose file, keeping
+ * the rest of the rendered text (comments, key order) as it is. The file has
+ * a single service, so its only `image:` line is the one to replace. Returns
+ * the input unchanged if the result does not read back as `image`; the
+ * deploy then reports the image change instead of hiding it.
+ */
+function withOverwatchImage(compose: string, image: string): string {
+  const scalar = yaml.dump(image, { lineWidth: -1 }).trimEnd();
+  const out = compose.replace(/^([ \t]+image:[ \t]*).*$/m, (_line, lead: string) => lead + scalar);
+  return readOverwatchImage(out) === image ? out : compose;
+}
+
 /**
  * Render every template, compare to the existing file on disk, and either
  * write (actual run) or report (dry-run). Runs `docker compose up -d` on
@@ -249,9 +281,19 @@ export async function deployInfra(options: {
     if (infra) await assertNoDbDowngrade(infra.content);
   }
 
-  for (const { dest, content: rendered } of files) {
-    const destPath = path.join(deployDir, dest);
+  let overwatchImage: InfraDeployResult['overwatchImage'];
+  for (const file of files) {
+    const destPath = path.join(deployDir, file.dest);
     const existing = await readDestIfExists(destPath);
+    let rendered = file.content;
+    if (file.dest === OVERWATCH_COMPOSE && existing !== null) {
+      // `overwatch update --tag` pins the image in this file, its only home.
+      // Re-rendering must not swap the pin for `:latest`: the next
+      // `docker compose up` would silently move Overwatch to another version.
+      const current = readOverwatchImage(existing);
+      if (current) rendered = withOverwatchImage(rendered, current);
+      overwatchImage = { current, rendered: readOverwatchImage(rendered) };
+    }
     let status: InfraFileChange['status'];
     if (existing === null) {
       status = 'created';
@@ -289,5 +331,5 @@ export async function deployInfra(options: {
     composeRestarted = true;
   }
 
-  return { changes, composeRestarted, dryRun };
+  return { changes, composeRestarted, dryRun, ...(overwatchImage ? { overwatchImage } : {}) };
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `overwatch infra deploy` no longer unpins Overwatch. It used to re-render `overwatch/docker-compose.yml` with `ghcr.io/marwain91/overwatch:latest`, replacing a version pinned by `overwatch update --tag`, so the next `docker compose up` silently upgraded Overwatch. The deploy now keeps the existing `image:` (tag, digest or compose variable) and prints `Overwatch image kept: ...`. If the existing image cannot be read, `--dry-run` reports `Overwatch image would change: ... -> ...`.
+
 ## [1.11.0] — 2026-10-26
 
 ### Added

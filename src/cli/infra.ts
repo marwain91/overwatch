@@ -60,6 +60,16 @@ async function runDeploy(args: string[]): Promise<void> {
     console.log(formatChange(change));
   }
 
+  const image = result.overwatchImage;
+  if (image && image.current !== image.rendered) {
+    console.log('');
+    console.log(`${YELLOW}!${NC} Overwatch image ${dryRun ? 'would change' : 'changed'}: ` +
+      `${image.current ?? '(not readable in the existing file)'} -> ${image.rendered ?? '(none)'}`);
+    console.log(`  ${DIM}Applies on the next \`docker compose up\` in overwatch/. Pin a version with \`overwatch update --tag <tag>\`.${NC}`);
+  } else if (image) {
+    console.log(`  ${DIM}Overwatch image kept: ${image.current}${NC}`);
+  }
+
   const createdOrUpdated = result.changes.filter(c => c.status !== 'unchanged').length;
   console.log('');
   if (dryRun) {
