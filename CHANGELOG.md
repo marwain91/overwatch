@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `overwatch config traefik doctor` now warns when `forwarded_headers.trusted_ips` can never match a proxy on the same host. Docker delivers connections to a published port from the shared network's gateway (e.g. `172.18.0.1`), not from `127.0.0.1`, so a loopback-only list silently made every app see the gateway as the client and collapsed per-IP rate limits into one bucket. The doctor looks up the gateway with `docker network inspect` and names the `/32` to add.
 - The upstream-TLS example in [docs/traefik.md](docs/traefik.md#behind-an-upstream-ssl-terminator) trusted `127.0.0.1/32`, which never matches. It now uses the network gateway and explains how to find it.
+- `overwatch infra deploy` no longer unpins Overwatch. It used to re-render `overwatch/docker-compose.yml` with `ghcr.io/marwain91/overwatch:latest`, replacing a version pinned by `overwatch update --tag`, so the next `docker compose up` silently upgraded Overwatch. The deploy now keeps the existing `image:` (tag, digest or compose variable) and prints `Overwatch image kept: ...`. If the existing image cannot be read, `--dry-run` reports `Overwatch image would change: ... -> ...`.
 
 ## [1.11.0] — 2026-10-26
 

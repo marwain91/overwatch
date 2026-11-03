@@ -10,6 +10,8 @@ overwatch update
 
 This pulls the latest image, compares digests, and recreates the container if an update is available.
 
+To run a specific version, `overwatch update --tag <tag>` (list them with `--list-tags`) pins that tag as the `image:` in `overwatch/docker-compose.yml`. `overwatch infra deploy` keeps whatever image that file has, and prints it as `Overwatch image kept: ...`, so redeploying the infrastructure never moves a pinned Overwatch to `:latest`.
+
 To check for updates without applying:
 
 ```bash
@@ -134,7 +136,7 @@ The deploy command writes into `$DEPLOY_DIR/`:
 | `infrastructure/traefik/dynamic.yml` | Global middlewares + dashboard router |
 | `infrastructure/traefik/dynamic/dashboard.yml` | Removed when `traefik.dashboard` is configured (folded into `dynamic.yml`) |
 | `infrastructure/mariadb/init/.gitkeep` | Placeholder for init SQL |
-| `overwatch/docker-compose.yml` | Overwatch container (requires manual restart to apply) |
+| `overwatch/docker-compose.yml` | Overwatch container (requires manual restart to apply). The existing `image:` is kept; `--dry-run` warns if it would change |
 
 Install-time variables (`${PROJECT_PREFIX}`, `${NETWORK_NAME}`, `${APPS_PATH_ON_HOST}`) are substituted from `overwatch.yaml`. Everything else (`${BASE_DOMAIN}`, `${MYSQL_ROOT_PASSWORD}`, `${CF_DNS_API_TOKEN}`, …) is left untouched and resolved by Docker Compose from your `.env` at compose time.
 
