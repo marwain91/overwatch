@@ -9,7 +9,7 @@ import { maskTraefikSecrets, upsertCertResolver, deleteCertResolver } from '../.
 import type { CertResolver } from '../../models/traefik';
 import { listApps } from '../../services/app';
 import { getAppsDir } from '../../config';
-import { validateTraefik, collectPresentEnvVars, collectTenantOverrides, resolveNetworkGateways } from '../../services/traefikDoctor';
+import { validateTraefik, collectPresentEnvVars, collectTenantOverrides, needsNetworkGateways, resolveNetworkGateways } from '../../services/traefikDoctor';
 import { sharedNetworkName } from '../../services/infraTemplates';
 import { BOLD, DIM, NC, header, success, warn, info, fail, restartNotice } from './utils';
 
@@ -247,12 +247,24 @@ async function doctor(): Promise<void> {
   const appsDir = getAppsDir();
   const deployDir = path.dirname(findConfigPath());
   const network = sharedNetworkName(config);
+  let gateways: string[] = [];
+  if (needsNetworkGateways(config)) {
+    const lookup = await resolveNetworkGateways(network);
+    gateways = lookup.gateways;
+    // Without the gateway, the trust-list checks that need it cannot run.
+    // Say so, so "No issues found." is not read as a pass.
+    if (lookup.error) {
+      warn(`Could not inspect Docker network "${network}" (${lookup.error}); gateway check skipped.`);
+    } else if (gateways.length === 0) {
+      warn(`Docker network "${network}" reports no gateway address; gateway check skipped.`);
+    }
+  }
   const issues = validateTraefik({
     config,
     apps,
     tenantOverrides: collectTenantOverrides(appsDir),
     presentEnvVars: collectPresentEnvVars(deployDir),
-    sharedNetwork: { name: network, gateways: await resolveNetworkGateways(network) },
+    sharedNetwork: { name: network, gateways },
   });
 
   if (issues.length === 0) {

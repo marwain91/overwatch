@@ -216,7 +216,8 @@ traefik:
       forwarded_headers:
         # Addresses of upstream proxies whose X-Forwarded-* headers Traefik should trust.
         # Without this, Traefik strips them and apps see the upstream's IP.
-        # Same-host proxy: the shared Docker network's gateway, NOT 127.0.0.1 (see below).
+        # Same-host proxy on a loopback-bound entrypoint: the shared Docker network's
+        # gateway, NOT 127.0.0.1 (see below).
         trusted_ips: ["172.18.0.1/32"]
       proxy_protocol:
         # PROXY protocol v1/v2 for HAProxy / AWS NLB. Optional.
@@ -232,7 +233,9 @@ traefik:
 docker network inspect <prefix>-network --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}'
 ```
 
-Add the address as a `/32` (`/128` for IPv6). Do not trust the network's whole subnet: tenant containers connect to Traefik from that subnet and could forge `X-Forwarded-For`. The gateway stays the same while the network exists; if you recreate the network, check it again. `overwatch config traefik doctor` looks up the gateway and warns when it is missing from the list.
+**Trust the gateway only on a loopback-bound entrypoint** (`host_bind: "127.0.0.1"`, as in the example above). On any other bind, Docker also delivers connections from containers on other Docker networks (for example a tenant's `internal` network) and, through its userland proxy, IPv6 clients from the same gateway address, so they could forge `X-Forwarded-For` and `X-Real-IP`. Bind to loopback first, then add the gateway.
+
+Add the address as a `/32` (`/128` when the entrypoint is bound to `::1` on an IPv6-enabled network). Do not trust the network's whole subnet: tenant containers connect to Traefik from that subnet and could forge `X-Forwarded-For`. The gateway stays the same while the network exists; if you recreate the network, check it again. `overwatch config traefik doctor` looks up the gateway, warns when it is missing from the list, and warns when an entrypoint that is not bound to loopback trusts it.
 
 When `tls_termination: upstream` is in effect for a router, the generator:
 
@@ -285,9 +288,12 @@ Reports errors (exit 1) and warnings (exit 0) for:
 - Tenant `cert_resolver` overrides that point to a resolver name that isn't defined.
 - Cert-resolver `env: { KEY: ${VAR} }` entries where `VAR` is missing from the deploy `.env` and `process.env`.
 - `tls_termination: upstream` on the global config when the chosen `upstream_entrypoint` either isn't defined or has no `forwarded_headers.trusted_ips` configured.
-- `forwarded_headers.trusted_ips` on that entrypoint that can never match a proxy on the same host: a list of only loopback addresses, or, on a loopback-bound entrypoint, a list without the shared Docker network's gateway. The doctor runs `docker network inspect` to name the gateway in its hint; without Docker access it still flags loopback-only lists.
+- `forwarded_headers.trusted_ips` on that entrypoint that can never match a proxy on the same host: a list of only loopback addresses, or, on a loopback-bound entrypoint, a list without the shared Docker network's gateway (of the bind's address family). If the entrypoint is not bound to loopback, the hint says to set `host_bind: "127.0.0.1"` before trusting the gateway.
+- `forwarded_headers.trusted_ips` on any entrypoint not bound to loopback that covers the shared network's gateway: containers on other Docker networks and IPv6 clients arrive from that address and could forge `X-Forwarded-For`.
 - `cert_resolvers` lacking a fallback (no `challenge: http` resolver without patterns AND no resolver with a `*` pattern) — every tenant domain must match an explicit pattern, otherwise tenant-create fails.
 - Cert resolvers still carrying placeholder values from the legacy `networking.cert_resolvers` shim — i.e. you haven't run `overwatch config traefik migrate` yet.
+
+For the gateway checks the doctor runs `docker network inspect`, only when some entrypoint has `forwarded_headers.trusted_ips`. If it cannot read the gateway, it prints `gateway check skipped` and still flags loopback-only lists.
 
 The same checks are pure functions (`validateTraefik` in `src/services/traefikDoctor.ts`) so a CI hook or REST endpoint can use them.
 
