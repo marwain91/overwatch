@@ -243,15 +243,54 @@ function readOverwatchImage(compose: string): string | null {
 }
 
 /**
- * Put `image` on the overwatch service of a rendered compose file, keeping
- * the rest of the rendered text (comments, key order) as it is. The file has
- * a single service, so its only `image:` line is the one to replace. Returns
- * the input unchanged if the result does not read back as `image`; the
- * deploy then reports the image change instead of hiding it.
+ * Index of the `image:` line that belongs to the overwatch service itself
+ * (top-level `services:` → `overwatch:` → `image:`), or -1. Walks the blocks
+ * by indentation, so the `image:` of any other service is never chosen.
  */
-function withOverwatchImage(compose: string, image: string): string {
-  const scalar = yaml.dump(image, { lineWidth: -1 }).trimEnd();
-  const out = compose.replace(/^([ \t]+image:[ \t]*).*$/m, (_line, lead: string) => lead + scalar);
+function overwatchImageLine(lines: string[]): number {
+  let inServices = false;
+  let inOverwatch = false;
+  let serviceIndent = -1; // service names under `services:`
+  let keyIndent = -1;     // the overwatch service's own keys
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i].trim();
+    if (text === '' || text.startsWith('#')) continue;
+    const indent = lines[i].length - lines[i].trimStart().length;
+    if (indent === 0) {
+      if (inServices) return -1;
+      inServices = /^services:[ \t]*(#.*)?$/.test(text);
+      continue;
+    }
+    if (!inServices) continue;
+    if (serviceIndent === -1) serviceIndent = indent;
+    if (indent <= serviceIndent) {
+      if (inOverwatch) return -1;
+      inOverwatch = indent === serviceIndent && /^overwatch:[ \t]*(#.*)?$/.test(text);
+      continue;
+    }
+    if (!inOverwatch) continue;
+    if (keyIndent === -1) keyIndent = indent;
+    if (indent === keyIndent && text.startsWith('image:')) return i;
+  }
+  return -1;
+}
+
+/**
+ * Put `image` on the overwatch service of a rendered compose file, keeping
+ * the rest of the rendered text (comments, key order, other services) as it
+ * is. Leaves the file alone when it already has that image. Returns the input
+ * unchanged if the overwatch `image:` line cannot be found or the result does
+ * not read back as `image`; the deploy then reports the image change instead
+ * of hiding it.
+ */
+export function withOverwatchImage(compose: string, image: string): string {
+  if (readOverwatchImage(compose) === image) return compose;
+  const lines = compose.split('\n');
+  const at = overwatchImageLine(lines);
+  if (at === -1) return compose;
+  const lead = /^[ \t]*image:[ \t]*/.exec(lines[at])![0];
+  lines[at] = lead + yaml.dump(image, { lineWidth: -1 }).trimEnd();
+  const out = lines.join('\n');
   return readOverwatchImage(out) === image ? out : compose;
 }
 

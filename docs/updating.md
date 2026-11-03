@@ -10,7 +10,7 @@ overwatch update
 
 This pulls the latest image, compares digests, and recreates the container if an update is available.
 
-To run a specific version, `overwatch update --tag <tag>` (list them with `--list-tags`) pins that tag as the `image:` in `overwatch/docker-compose.yml`. `overwatch infra deploy` keeps whatever image that file has, and prints it as `Overwatch image kept: ...`, so redeploying the infrastructure never moves a pinned Overwatch to `:latest`.
+To run a specific version, `overwatch update --tag <tag>` (list them with `--list-tags`) pins that tag as the `image:` in `overwatch/docker-compose.yml`. `overwatch infra deploy` keeps whatever image that file has and prints it as `Overwatch image kept: ...`. If it cannot read that image (for example, the service is no longer named `overwatch`), the deploy writes the template's `:latest` and reports `Overwatch image changed: ... -> ...` (`would change` with `--dry-run`); run `--dry-run` first and re-pin with `overwatch update --tag <tag>` if needed.
 
 To check for updates without applying:
 
