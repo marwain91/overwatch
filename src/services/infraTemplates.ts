@@ -59,13 +59,16 @@ const TEMPLATE_FILES: Array<{ source: string; dest: string }> = [
   { source: 'overwatch/docker-compose.yml', dest: 'overwatch/docker-compose.yml' },
 ];
 
+/** The Docker network shared by Traefik, the database, Overwatch and tenants. */
+export function sharedNetworkName(config: OverwatchConfig): string {
+  return config.networking?.external_network || `${config.project.prefix}-network`;
+}
+
 export function resolveDeployVars(deployDir: string): InfraDeployVars {
   const config = loadConfig();
-  const projectPrefix = config.project.prefix;
-  const networkName = config.networking?.external_network || `${projectPrefix}-network`;
   return {
-    PROJECT_PREFIX: projectPrefix,
-    NETWORK_NAME: networkName,
+    PROJECT_PREFIX: config.project.prefix,
+    NETWORK_NAME: sharedNetworkName(config),
     APPS_PATH_ON_HOST: path.join(deployDir, 'apps'),
   };
 }

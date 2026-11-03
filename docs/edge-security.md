@@ -4,6 +4,8 @@ Overwatch optionally manages an existing host Nginx proxy in front of Traefik. E
 
 Use this when Nginx receives the real connection but Traefik sees a Docker gateway. Rules use the TCP peer IP, never client-supplied forwarding headers. Keep Traefik loopback-only. A CDN/upstream proxy requires a separately reviewed client-IP design.
 
+For apps to see the client IP that Nginx forwards, Traefik's `forwarded_headers.trusted_ips` must list the Docker network gateway (e.g. `172.18.0.1/32`), not `127.0.0.1`. See [Behind an upstream SSL terminator](traefik.md#behind-an-upstream-ssl-terminator); `overwatch config traefik doctor` checks it.
+
 ## Example
 
 ```yaml

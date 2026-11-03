@@ -724,8 +724,8 @@ function EntrypointModal({
           <p className="mt-1 text-xs text-content-faint">Set on the HTTP entrypoint to redirect to HTTPS. Leave empty when sitting behind an upstream HTTPS terminator.</p>
         </Field>
         <Field label="Forwarded headers — trusted IPs">
-          <input value={forwardedTrusted} onChange={e => setForwardedTrusted(e.target.value)} className={inputCls} placeholder="10.0.0.0/8, 172.16.0.0/12" />
-          <p className="mt-1 text-xs text-content-faint">CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust. Required when behind Cloudflare / ALB / nginx.</p>
+          <input value={forwardedTrusted} onChange={e => setForwardedTrusted(e.target.value)} className={inputCls} placeholder="172.18.0.1/32, 10.0.0.0/8" />
+          <p className="mt-1 text-xs text-content-faint">CIDRs of upstream proxies whose X-Forwarded-* headers Traefik should trust. Required when behind Cloudflare / ALB / nginx. For nginx on this host, use the Docker network gateway as a /32 (e.g. 172.18.0.1/32), not 127.0.0.1.</p>
         </Field>
         <Field label="PROXY protocol — trusted IPs">
           <input value={proxyTrusted} onChange={e => setProxyTrusted(e.target.value)} className={inputCls} placeholder="10.0.0.0/8" />

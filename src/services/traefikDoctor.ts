@@ -1,10 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { BlockList, isIP } from 'net';
 import * as yaml from 'js-yaml';
 import type { OverwatchConfig } from '../config/schema';
 import type { AppDefinition } from '../models/app';
 import type { Entrypoint, TraefikGlobal, TraefikTenant } from '../models/traefik';
 import { listTenantDirsSync } from './tenantStore';
+import { runDocker } from '../utils/runDocker';
 
 export type IssueSeverity = 'error' | 'warning';
 
@@ -22,6 +24,12 @@ export interface DoctorContext {
   tenantOverrides: Map<string, Map<string, TraefikTenant>>;
   /** Names of env vars that are present in process.env or the deploy .env file. */
   presentEnvVars: Set<string>;
+  /**
+   * The shared Docker network Traefik runs on and its gateway address(es), from
+   * `resolveNetworkGateways`. Optional: without gateways the doctor still flags
+   * loopback-only trust lists, but cannot name the address to trust.
+   */
+  sharedNetwork?: { name: string; gateways: string[] };
 }
 
 /**
@@ -125,6 +133,9 @@ export function validateTraefik(ctx: DoctorContext): DoctorIssue[] {
         message: 'tls_termination=upstream but the upstream entrypoint has no forwarded_headers.trusted_ips. Apps will see the upstream proxy IP, not the real client.',
         hint: 'Add CIDRs of upstream proxies (Cloudflare ranges, ALB subnet, nginx host) to forwarded_headers.trusted_ips.',
       });
+    } else {
+      const issue = checkSameHostProxyTrust(ep, ctx.sharedNetwork);
+      if (issue) issues.push(issue);
     }
   }
 
@@ -223,6 +234,95 @@ function defaultEntrypoints(): Entrypoint[] {
 
 function effectiveGlobalTermination(t: TraefikGlobal | undefined): 'traefik' | 'upstream' {
   return t?.tls_termination ?? 'traefik';
+}
+
+// ─── Forwarded-header trust behind a proxy on the same host ─────────────────
+
+/**
+ * Traefik runs on a Docker bridge network, so no peer ever reaches it from a
+ * loopback address. A proxy on the same host that connects to the published
+ * port (nginx → 127.0.0.1:8080) is delivered by Docker from the network's
+ * gateway, e.g. 172.18.0.1. A trust list naming only loopback, or a
+ * loopback-bound entrypoint whose list misses the gateway, never matches:
+ * Traefik replaces X-Forwarded-* and every app sees the gateway as the client.
+ */
+function checkSameHostProxyTrust(ep: Entrypoint, net: DoctorContext['sharedNetwork']): DoctorIssue | null {
+  const trusted = ep.forwarded_headers?.trusted_ips ?? [];
+  const gateways = net?.gateways ?? [];
+  const loopbackOnly = trusted.length > 0 && trusted.every(isLoopbackRange);
+  const gatewayMissed = isLoopbackBind(ep.host_bind) && gateways.length > 0
+    && !gateways.some(g => rangesInclude(trusted, g));
+  if (!loopbackOnly && !gatewayMissed) return null;
+
+  const gateway = `the ${net ? `"${net.name}" ` : ''}Docker network gateway${gateways.length > 0 ? ` (${gateways.join(', ')})` : ''}`;
+  const message = loopbackOnly
+    ? `trusted_ips lists only loopback addresses, which never match: a proxy on this host reaches Traefik from ${gateway}, not from 127.0.0.1. Traefik replaces X-Forwarded-* and apps see the gateway as every client's IP.`
+    : `The entrypoint is published on ${ep.host_bind}, so every connection arrives from ${gateway}, which trusted_ips does not include. Traefik replaces X-Forwarded-* and apps see the gateway as every client's IP.`;
+  const toAdd = gateways.length > 0
+    ? gateways.map(g => `"${g}/${isIP(g) === 6 ? 128 : 32}"`).join(' and ')
+    : `the gateway as a /32 (\`docker network inspect ${net?.name ?? '<network>'} --format '{{range .IPAM.Config}}{{.Gateway}} {{end}}'\`)`;
+  return {
+    severity: 'warning',
+    scope: `traefik.entrypoints["${ep.name}"].forwarded_headers.trusted_ips`,
+    message,
+    hint: `Add ${toAdd} to forwarded_headers.trusted_ips, run \`overwatch infra deploy\`, then \`overwatch config traefik reload\`. ` +
+      'Trust the gateway address only, not the network subnet: tenant containers connect from the subnet and could forge X-Forwarded-For.',
+  };
+}
+
+const LOOPBACK = new BlockList();
+LOOPBACK.addSubnet('127.0.0.0', 8, 'ipv4');
+LOOPBACK.addAddress('::1', 'ipv6');
+
+/** An address or CIDR as Traefik's trustedIPs accepts it; null when malformed. */
+function parseRange(range: string): { address: string; bits: number; type: 'ipv4' | 'ipv6' } | null {
+  const [address, prefix, extra] = range.trim().split('/');
+  const family = isIP(address);
+  if (!family || extra !== undefined || (prefix !== undefined && !/^\d{1,3}$/.test(prefix))) return null;
+  const max = family === 4 ? 32 : 128;
+  const bits = prefix === undefined ? max : Number(prefix);
+  return bits > max ? null : { address, bits, type: family === 4 ? 'ipv4' : 'ipv6' };
+}
+
+/** True when every address the range covers is a loopback address. */
+function isLoopbackRange(range: string): boolean {
+  const r = parseRange(range);
+  return !!r && LOOPBACK.check(r.address, r.type) && r.bits >= (r.type === 'ipv4' ? 8 : 128);
+}
+
+function isLoopbackBind(hostBind: string | undefined): boolean {
+  if (!hostBind) return false; // omitted = all interfaces
+  const host = hostBind.replace(/^\[|\]$/g, '');
+  return host === 'localhost' || isLoopbackRange(host);
+}
+
+function rangesInclude(ranges: string[], ip: string): boolean {
+  const target = parseRange(ip);
+  if (!target) return false;
+  const list = new BlockList();
+  for (const range of ranges) {
+    const r = parseRange(range);
+    if (r) list.addSubnet(r.address, r.bits, r.type);
+  }
+  return list.check(target.address, target.type);
+}
+
+/**
+ * Gateway address(es) of a Docker network, as `docker network inspect` reports
+ * them. Empty when Docker or the network is unavailable, so the doctor falls
+ * back to its static checks.
+ */
+export async function resolveNetworkGateways(network: string): Promise<string[]> {
+  try {
+    const { stdout } = await runDocker('docker', ['network', 'inspect', '--format', '{{json .IPAM.Config}}', network], { timeoutMs: 15_000 });
+    const config: unknown = JSON.parse(stdout.trim());
+    if (!Array.isArray(config)) return [];
+    return config
+      .map(c => (c as { Gateway?: unknown } | null)?.Gateway)
+      .filter((g): g is string => typeof g === 'string' && isIP(g) !== 0);
+  } catch {
+    return [];
+  }
 }
 
 /**

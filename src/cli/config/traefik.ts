@@ -9,7 +9,8 @@ import { maskTraefikSecrets, upsertCertResolver, deleteCertResolver } from '../.
 import type { CertResolver } from '../../models/traefik';
 import { listApps } from '../../services/app';
 import { getAppsDir } from '../../config';
-import { validateTraefik, collectPresentEnvVars, collectTenantOverrides } from '../../services/traefikDoctor';
+import { validateTraefik, collectPresentEnvVars, collectTenantOverrides, resolveNetworkGateways } from '../../services/traefikDoctor';
+import { sharedNetworkName } from '../../services/infraTemplates';
 import { BOLD, DIM, NC, header, success, warn, info, fail, restartNotice } from './utils';
 
 const execFileAsync = promisify(execFile);
@@ -245,11 +246,13 @@ async function doctor(): Promise<void> {
   const apps = await listApps();
   const appsDir = getAppsDir();
   const deployDir = path.dirname(findConfigPath());
+  const network = sharedNetworkName(config);
   const issues = validateTraefik({
     config,
     apps,
     tenantOverrides: collectTenantOverrides(appsDir),
     presentEnvVars: collectPresentEnvVars(deployDir),
+    sharedNetwork: { name: network, gateways: await resolveNetworkGateways(network) },
   });
 
   if (issues.length === 0) {
