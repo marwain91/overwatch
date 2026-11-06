@@ -8,9 +8,26 @@ export interface ImageRef {
   repo: string;
 }
 
-interface RegistryAuth {
+export interface RegistryAuth {
   user: string;
   token: string;
+}
+
+/** Bound on one registry request (token exchange or one tag list page). */
+export const REGISTRY_REQUEST_TIMEOUT_MS = 30_000;
+
+/** Pages of 100 tags read before a listing counts as endless. */
+export const MAX_TAG_PAGES = 100;
+
+/** A registry answered a token exchange or tag list request with a non-2xx status. */
+export class RegistryHttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'RegistryHttpError';
+    this.status = status;
+  }
 }
 
 /**
@@ -61,9 +78,9 @@ async function exchangeToken(registry: string, repo: string, auth: RegistryAuth 
     const basic = Buffer.from(`${auth.user}:${auth.token}`).toString('base64');
     headers.Authorization = `Basic ${basic}`;
   }
-  const res = await fetchNoRedirect(url, { headers });
+  const res = await fetchNoRedirect(url, { headers, signal: AbortSignal.timeout(REGISTRY_REQUEST_TIMEOUT_MS) });
   if (!res.ok) {
-    throw new Error(`registry token exchange failed (HTTP ${res.status})`);
+    throw new RegistryHttpError(`registry token exchange failed (HTTP ${res.status})`, res.status);
   }
   const json = (await res.json()) as { token?: string; access_token?: string };
   const token = json.token || json.access_token;
@@ -92,22 +109,39 @@ function parseNextLink(link: string | null, registry: string): string | null {
 }
 
 /**
- * List all tags for `image` against its registry. Handles anonymous and
- * PAT-authenticated flows (`~/.docker/config.json`) and follows `Link: next`
- * pagination. Credentials are never included in thrown error messages.
+ * List all tags for `image` against its registry. `auth` undefined uses the
+ * registry's credentials from `~/.docker/config.json`, if any; `null` lists
+ * anonymously. See listRepositoryTags.
  */
-export async function listImageTags(image: string): Promise<string[]> {
+export async function listImageTags(image: string, auth?: RegistryAuth | null): Promise<string[]> {
   const { registry, repo } = parseImageRef(image);
-  const auth = readRegistryAuth(registry);
+  return listRepositoryTags(registry, repo, auth === undefined ? readRegistryAuth(registry) : auth);
+}
+
+/**
+ * List all tags of `repo` on `registry` (a host with optional port), following
+ * `Link: next` pagination on the same origin. `auth` goes only to the token
+ * endpoint; `null` lists anonymously. Each request times out after
+ * REGISTRY_REQUEST_TIMEOUT_MS, and a listing that has not ended after
+ * MAX_TAG_PAGES pages, or links back to a page it already read, fails.
+ * Credentials are never included in thrown error messages.
+ */
+export async function listRepositoryTags(registry: string, repo: string, auth: RegistryAuth | null): Promise<string[]> {
   const bearer = await exchangeToken(registry, repo, auth);
 
   const tags: string[] = [];
+  const read = new Set<string>();
   let url: string | null = `https://${registry}/v2/${repo}/tags/list?n=100`;
   while (url) {
+    if (read.has(url) || read.size >= MAX_TAG_PAGES) {
+      throw new Error(`registry tag list did not end after ${read.size} pages`);
+    }
+    read.add(url);
     const res: Response = await fetchNoRedirect(url, {
       headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(REGISTRY_REQUEST_TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`registry tag list failed (HTTP ${res.status})`);
+    if (!res.ok) throw new RegistryHttpError(`registry tag list failed (HTTP ${res.status})`, res.status);
     const json = (await res.json()) as { tags?: string[] | null };
     if (Array.isArray(json.tags)) tags.push(...json.tags);
     url = parseNextLink(res.headers.get('link'), registry);

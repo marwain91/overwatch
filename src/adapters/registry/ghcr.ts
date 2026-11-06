@@ -1,25 +1,22 @@
-import { fetchNoRedirect } from './safeFetch';
 import { RegistryAdapter, RegistryAdapterConfig } from './types';
 import { dockerLogin } from './login';
-
-interface GitHubTag {
-  name: string;
-}
+import { validateRegistryUrl } from './urlValidation';
+import { isRegistryImageName } from '../../models/app';
+import { ValidationError } from '../../utils/httpErrors';
+import { RegistryAuth, RegistryHttpError, listRepositoryTags, sortTagsForDisplay } from '../../services/registry';
 
 /**
  * GitHub Container Registry adapter.
  *
- * Container pulls use GHCR (requires `read:packages`). Tag listing reads
- * GitHub git tags (requires `repo` scope for private source repos) so the
- * UI surfaces coordinated cross-service release tags rather than per-image
- * registry tags (which diverge across backend/frontend/migrator images).
+ * Pulls and tag listing both need only `read:packages`. Tags come from the
+ * registry itself (`/v2/<image>/tags/list`), not from the source repository,
+ * so the token needs no access to code. A tag is listed only when every
+ * service image of the app has it.
  *
- * Auth: PAT only. `config.token` is the bearer for both docker login and the
- * tags API. GitHub App auth was attempted in v1.6.x but removed in v1.6.7
- * because GHCR's permission model doesn't honor App tokens for non-public
- * packages — see the rationale in models/app.ts. For service-to-service
- * pulls of private/internal packages, use a fine-grained PAT under a
- * dedicated service-account user.
+ * Auth: a classic PAT is the bearer for docker login and tag listing. GHCR
+ * accepts neither fine-grained PATs nor GitHub App installation tokens for
+ * private packages (App auth was removed in v1.6.7, see models/app.ts).
+ * Without a token, tags of public packages are listed anonymously.
  */
 export class GHCRAdapter implements RegistryAdapter {
   private config: RegistryAdapterConfig;
@@ -53,43 +50,59 @@ export class GHCRAdapter implements RegistryAdapter {
     }
   }
 
-  async getImageTags(): Promise<string[]> {
-    const token = this.config.token;
-    if (!token) {
-      throw new Error('GHCR auth not configured');
+  async getImageTags(images: string[]): Promise<string[]> {
+    const names = [...new Set(images)];
+    if (names.length === 0) {
+      throw new Error('No service images to list GHCR tags for');
     }
-
-    const url = `https://api.github.com/repos/${this.config.repository}/tags?per_page=100`;
-    const response = await fetchNoRedirect(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-
-    if (response.status === 401 || response.status === 403) {
-      throw new Error(
-        `GitHub API denied access (HTTP ${response.status}). ` +
-        `GHCR_TOKEN (or the configured token_env) needs the 'repo' scope to list tags for ${this.config.repository}.`,
+    // Image names go into the token scope and the tags/list path, so they get
+    // the same check as `repository` before any request is made.
+    const invalid = names.filter((name) => !isRegistryImageName(name));
+    if (invalid.length > 0) {
+      throw new ValidationError(
+        `Refusing to list tags: service image ${invalid.map((n) => JSON.stringify(n)).join(', ')} is not a registry path ` +
+        '(letters, digits, ".", "_" and "-", separated by "/")',
       );
     }
-    if (response.status === 404) {
-      throw new Error(
-        `GitHub repository ${this.config.repository} not found or not accessible to the configured credentials.`,
-      );
-    }
-    if (!response.ok) {
-      throw new Error(`GitHub tags API failed (HTTP ${response.status}).`);
+    // The host is passed on as is, never re-derived from an image reference.
+    const [host, ...urlPath] = this.config.url.split('/');
+    // ghcr.io itself is trusted; only validate an operator-supplied host.
+    if (host.toLowerCase() !== 'ghcr.io') {
+      await validateRegistryUrl(this.config.url);
     }
 
-    const gitTags = (await response.json()) as GitHubTag[];
+    const auth = this.config.token
+      ? { user: this.config.username || 'x-access-token', token: this.config.token }
+      : null;
+    const perImage = await Promise.all(
+      names.map((name) => this.listTags(host, [...urlPath, this.config.repository, name].join('/'), auth)),
+    );
+    const [first, ...rest] = perImage.map((tags) => new Set(tags));
     const pattern = this.config.tagPattern;
+    const common = [...first].filter((tag) => rest.every((tags) => tags.has(tag)) && (!pattern || pattern.test(tag)));
+    return sortTagsForDisplay(common);
+  }
 
-    return gitTags
-      .map((t) => t.name)
-      .filter((name) => (pattern ? pattern.test(name) : true))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  private async listTags(host: string, repo: string, auth: RegistryAuth | null): Promise<string[]> {
+    const image = `${host}/${repo}`;
+    try {
+      return await listRepositoryTags(host, repo, auth);
+    } catch (error) {
+      if (error instanceof RegistryHttpError && (error.status === 401 || error.status === 403)) {
+        throw new Error(
+          auth
+            ? `GHCR denied access to ${image} (HTTP ${error.status}). GHCR_TOKEN (or the configured token_env) ` +
+              `needs the 'read:packages' scope and read access to the package.`
+            : `GHCR denied access to ${image} (HTTP ${error.status}) without a token. No registry token is configured: ` +
+              `set the app's token_env (e.g. GHCR_TOKEN) to a classic PAT with 'read:packages'. ` +
+              'Only public packages can be listed without one.',
+        );
+      }
+      if (error instanceof RegistryHttpError && error.status === 404) {
+        throw new Error(`GHCR package ${image} not found (HTTP 404), or not accessible to the configured credentials.`);
+      }
+      throw error;
+    }
   }
 
   getImageRef(service: string, tag: string): string {

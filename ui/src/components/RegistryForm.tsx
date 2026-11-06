@@ -97,7 +97,7 @@ export function RegistryForm({ value: registry, onChange, smartDefaults = false 
           className="input"
           value={registry.tag_pattern || ''}
           onChange={(e) => onChange({ ...registry, tag_pattern: e.target.value || undefined })}
-          placeholder="^v\d+\.\d+\.\d+$"
+          placeholder="^v?\d+\.\d+\.\d+$"
         />
         <p className="mt-1 text-xs text-content-faint">Regular expression a registry tag must match to be offered as an image version.</p>
       </div>

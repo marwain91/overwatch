@@ -30,7 +30,7 @@
 
 **Solutions:**
 1. Verify registry credentials environment variables are set (check the app's registry config — names live in `auth.*_env` and `api_url`).
-2. **GHCR:** use a service-account PAT with `read:packages`; add `repo` when tag listing must inspect a private source repository. `github_app` auth was removed in v1.6.7 because GHCR does not honor App tokens for private/internal packages.
+2. **GHCR:** use a classic PAT with `read:packages`, ideally under a service account. It also needs read access to every service image of the app: tag listing asks the registry for each one, and the Overwatch log shows `GHCR denied access to <image>` for an image it cannot read. GHCR accepts neither fine-grained PATs nor GitHub App tokens for private/internal packages (`github_app` auth was removed in v1.6.7).
 3. **GitLab:** token needs `read_api` + `read_registry`. Group Access Tokens are recommended for org repos. Self-hosted? Set `api_url` to the GitLab web URL (registry host and API host commonly differ). Full guide: [registry-gitlab.md](./registry-gitlab.md).
 4. **GitLab self-hosted on a private network:** the SSRF guard refuses RFC1918 / loopback addresses. Set `OVERWATCH_ALLOW_PRIVATE_REGISTRY_URL=1` if intentional.
 5. **ECR:** AWS credentials need ECR pull permissions.

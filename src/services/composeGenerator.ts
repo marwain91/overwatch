@@ -1,5 +1,5 @@
 import * as yaml from 'js-yaml';
-import { AppDefinition, AppService } from '../models/app';
+import { AppDefinition, AppService, serviceImageName } from '../models/app';
 import { OverwatchConfig } from '../config/schema';
 import type { TraefikTenant } from '../models/traefik';
 import { resolveCertResolver } from '../config/loader';
@@ -103,7 +103,7 @@ export function generateComposeFile(options: GenerateOptions): string {
   });
 
   const services = sortedServices.map((service): [string, ComposeService] => {
-    const imageName = service.image_suffix || service.name;
+    const imageName = serviceImageName(service);
 
     const serviceNetworks = service.networks || ['external'];
     const networks: string[] = [];

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { listImageTags } from '../services/registry';
+import { listImageTags, MAX_TAG_PAGES, RegistryHttpError } from '../services/registry';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -62,5 +62,63 @@ describe('registry service never follows redirects', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toMatch(/Ignoring Link: next/);
     expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRET');
+  });
+});
+
+describe('registry service credentials and errors', () => {
+  it('sends explicit credentials to the token endpoint only', async () => {
+    const f = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: ['a'] }));
+    expect(await listImageTags('reg.example.com/o/r', { user: 'u', token: 'pat' })).toEqual(['a']);
+    expect((f.mock.calls[0][1] as any).headers.Authorization).toBe(`Basic ${Buffer.from('u:pat').toString('base64')}`);
+    expect((f.mock.calls[1][1] as any).headers.Authorization).toBe('Bearer t');
+  });
+
+  it('lists anonymously when credentials are null', async () => {
+    const f = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: [] }));
+    expect(await listImageTags('reg.example.com/o/r', null)).toEqual([]);
+    expect((f.mock.calls[0][1] as any).headers.Authorization).toBeUndefined();
+  });
+
+  it.each([
+    ['token exchange', [new Response('{}', { status: 403 })], 403],
+    ['tag list', [json({ token: 't' }), new Response('{}', { status: 404 })], 404],
+  ])('throws a RegistryHttpError with the status when the %s fails', async (_label, responses, status) => {
+    const f = vi.spyOn(globalThis, 'fetch');
+    for (const r of responses) f.mockResolvedValueOnce(r);
+    const error = await listImageTags('reg.example.com/o/r', null).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RegistryHttpError);
+    expect((error as RegistryHttpError).status).toBe(status);
+    expect(String(error)).toContain(`(HTTP ${status})`);
+  });
+
+  it('bounds every request with a timeout', async () => {
+    const f = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: ['a'] }));
+    await listImageTags('reg.example.com/o/r', null);
+    for (const call of f.mock.calls) expect((call[1] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('fails when a next link points back at a page it already read', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: ['a'] }, { link: '</v2/o/r/tags/list?last=a>; rel="next"' }))
+      .mockResolvedValueOnce(json({ tags: ['b'] }, { link: '</v2/o/r/tags/list?last=a>; rel="next"' }));
+    await expect(listImageTags('reg.example.com/o/r', null)).rejects.toThrow(/did not end after 2 pages/);
+  });
+
+  it(`stops after ${MAX_TAG_PAGES} pages`, async () => {
+    let page = 0;
+    const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (String(url).includes('/token')) return json({ token: 't' });
+      page += 1;
+      return json({ tags: [`t${page}`] }, { link: `</v2/o/r/tags/list?last=t${page}>; rel="next"` });
+    });
+    await expect(listImageTags('reg.example.com/o/r', null)).rejects.toThrow(new RegExp(`did not end after ${MAX_TAG_PAGES} pages`));
+    expect(f).toHaveBeenCalledTimes(MAX_TAG_PAGES + 1);
   });
 });

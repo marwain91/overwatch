@@ -30,7 +30,7 @@ describe('registry fetches never follow redirects', () => {
     vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as any);
     const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => redirect());
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    await expect(new GHCRAdapter({ repository: 'o/r', token: 't' } as any).getImageTags()).rejects.toThrow(/redirect/i);
+    await expect(new GHCRAdapter({ url: 'ghcr.io', repository: 'o/r', token: 't' } as any).getImageTags(['backend'])).rejects.toThrow(/redirect/i);
     expect(await new DockerHubAdapter({ repository: 'o/r' } as any).getImageTags()).toEqual([]);
     expect(await new CustomRegistryAdapter({ repository: 'o/r', url: 'reg.example.com' } as any).getImageTags()).toEqual([]);
     expect(f).toHaveBeenCalledTimes(3);

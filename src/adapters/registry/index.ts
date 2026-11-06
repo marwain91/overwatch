@@ -8,7 +8,7 @@ import { DockerHubAdapter } from './dockerhub';
 import { ECRAdapter } from './ecr';
 import { CustomRegistryAdapter } from './custom';
 import { isReservedSecretEnv, loadConfigOrNull } from '../../utils/reservedEnv';
-import { AppDefinition, AppRegistry } from '../../models/app';
+import { AppDefinition, AppRegistry, serviceImageName } from '../../models/app';
 
 export * from './types';
 export { GHCRAdapter } from './ghcr';
@@ -189,5 +189,5 @@ export async function loginToAllRegistries(apps: AppDefinition[]): Promise<void>
 export async function getImageTagsForApp(app: AppDefinition): Promise<string[]> {
   assertRegistryUsable(app, 'list tags');
   const adapter = getRegistryAdapterForApp(app);
-  return adapter.getImageTags();
+  return adapter.getImageTags(app.services.map(serviceImageName));
 }

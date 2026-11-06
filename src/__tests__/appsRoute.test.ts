@@ -158,11 +158,12 @@ describe('service names on the write path', () => {
 
 describe('GET /api/apps/:appId/tags', () => {
   const cases: Array<[string, Error, RegExp]> = [
-    ['authentication', new Error('GitHub API denied access (HTTP 403). GHCR_TOKEN needs the repo scope for ns/demo.'), /authentication failed/i],
-    ['missing token', new Error('GHCR auth not configured'), /authentication failed/i],
-    ['not found', new Error('GitHub repository ns/demo not found or not accessible to the configured credentials.'), /repository not found/i],
+    ['authentication', new Error("GHCR denied access to ghcr.io/ns/demo/web (HTTP 403). GHCR_TOKEN (or the configured token_env) needs the 'read:packages' scope and read access to the package."), /authentication failed/i],
+    ['missing token', new Error("GHCR denied access to ghcr.io/ns/demo/web (HTTP 401) without a token. No registry token is configured: set the app's token_env (e.g. GHCR_TOKEN) to a classic PAT with 'read:packages'. Only public packages can be listed without one."), /authentication failed/i],
+    ['missing GitLab token', new Error('GitLab token not configured'), /authentication failed/i],
+    ['not found', new Error('GHCR package ghcr.io/ns/demo/web not found (HTTP 404), or not accessible to the configured credentials.'), /repository not found/i],
     ['unreachable', Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }), /unreachable/i],
-    ['other', new Error('GitHub tags API failed (HTTP 502).'), /failed to list tags/i],
+    ['other', new Error('registry tag list failed (HTTP 502)'), /failed to list tags/i],
   ];
 
   for (const [label, err, expected] of cases) {

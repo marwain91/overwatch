@@ -31,7 +31,7 @@ Overwatch provides a web-based admin panel to manage multi-tenant deployments, i
 
 **Databases:** MySQL / MariaDB, PostgreSQL
 
-**Container Registries:** GitHub Container Registry (GHCR), [GitLab](docs/registry-gitlab.md) (SaaS + self-hosted), Docker Hub, Amazon ECR, Custom registries. For private/internal GHCR packages, use a service-account PAT with `read:packages` (and `repo` when tag listing must inspect a private source repository).
+**Container Registries:** GitHub Container Registry (GHCR), [GitLab](docs/registry-gitlab.md) (SaaS + self-hosted), Docker Hub, Amazon ECR, Custom registries. For private/internal GHCR packages, use a classic PAT with only `read:packages`, ideally under a service account (GHCR accepts no fine-grained PATs).
 
 **Backup Providers:** S3-compatible storage (AWS S3, Cloudflare R2, MinIO, etc.)
 

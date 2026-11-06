@@ -490,14 +490,16 @@ environment:
 
 | Registry | Type | Auth Type | Required Env Vars |
 |----------|------|-----------|-------------------|
-| GHCR | `ghcr` | `token` | `GHCR_TOKEN` (PAT with `read:packages`, plus `repo` for private source repos) |
+| GHCR | `ghcr` | `token` | `GHCR_TOKEN` (classic PAT with `read:packages`) |
 | GitLab (SaaS) | `gitlab` | `token` | `GITLAB_TOKEN` (Group/Project/Personal AT with `read_api` + `read_registry`) — see [registry-gitlab.md](./registry-gitlab.md) |
 | GitLab (self-hosted) | `gitlab` | `token` | `GITLAB_TOKEN` plus `api_url` set to the GitLab web URL (e.g. `https://gitlab.acme.com`) |
 | Docker Hub | `dockerhub` | `basic` | `DOCKER_USERNAME`, `DOCKER_PASSWORD` |
 | AWS ECR | `ecr` | `aws_iam` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | Custom | `custom` | `token` or `basic` | Varies |
 
-> **Note on `github_app` removal (v1.6.7):** GitHub App auth was added in v1.6.x as a way to authenticate to GHCR with rotating installation tokens, but GHCR's permission model only honors App tokens for *public* packages. For service-to-service pulls of private/internal GHCR packages, use a fine-grained PAT under a dedicated service-account user (cleanest non-public option) — same shape as the `token` row above, just with a different env var name.
+> **Note on `github_app` removal (v1.6.7):** GitHub App auth was added in v1.6.x as a way to authenticate to GHCR with rotating installation tokens, but GHCR's permission model only honors App tokens for *public* packages. GHCR does not accept fine-grained PATs for packages either, so pulls of private/internal GHCR packages need a classic PAT with `read:packages`, ideally under a dedicated service-account user — same shape as the `token` row above.
+
+**GHCR tag listing** reads the registry (`ghcr.io/v2/<repository>/<image>/tags/list`), not the source repository, so `read:packages` is the only scope Overwatch needs; `repo` is not needed. A tag is listed only when every service image of the app (`<repository>/<image_suffix or service name>`) has it. Non-version tags such as `latest` or `canary-*` are listed too; set `tag_pattern` (for example `^v?[0-9]`) to hide them. A `tag_pattern` written for git tags (`^v...`) hides image tags without the `v` (`1.6.9`). Without a token, tags of public packages are listed anonymously.
 
 ### Registry field formats
 
