@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { listImageTags } from '../services/registry';
+import { listImageTags, RegistryHttpError } from '../services/registry';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -62,5 +62,36 @@ describe('registry service never follows redirects', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toMatch(/Ignoring Link: next/);
     expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRET');
+  });
+});
+
+describe('registry service credentials and errors', () => {
+  it('sends explicit credentials to the token endpoint only', async () => {
+    const f = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: ['a'] }));
+    expect(await listImageTags('reg.example.com/o/r', { user: 'u', token: 'pat' })).toEqual(['a']);
+    expect((f.mock.calls[0][1] as any).headers.Authorization).toBe(`Basic ${Buffer.from('u:pat').toString('base64')}`);
+    expect((f.mock.calls[1][1] as any).headers.Authorization).toBe('Bearer t');
+  });
+
+  it('lists anonymously when credentials are null', async () => {
+    const f = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(json({ token: 't' }))
+      .mockResolvedValueOnce(json({ tags: [] }));
+    expect(await listImageTags('reg.example.com/o/r', null)).toEqual([]);
+    expect((f.mock.calls[0][1] as any).headers.Authorization).toBeUndefined();
+  });
+
+  it.each([
+    ['token exchange', [new Response('{}', { status: 403 })], 403],
+    ['tag list', [json({ token: 't' }), new Response('{}', { status: 404 })], 404],
+  ])('throws a RegistryHttpError with the status when the %s fails', async (_label, responses, status) => {
+    const f = vi.spyOn(globalThis, 'fetch');
+    for (const r of responses) f.mockResolvedValueOnce(r);
+    const error = await listImageTags('reg.example.com/o/r', null).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RegistryHttpError);
+    expect((error as RegistryHttpError).status).toBe(status);
+    expect(String(error)).toContain(`(HTTP ${status})`);
   });
 });

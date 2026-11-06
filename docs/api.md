@@ -63,7 +63,7 @@ The `registry` block accepts these auth shapes:
 
 | Registry type | Auth type | Required `auth` fields | Notes |
 |---|---|---|---|
-| `ghcr` | `token` | `token_env` | PAT with `read:packages`; add `repo` when tag listing must inspect a private source repository |
+| `ghcr` | `token` | `token_env` | Classic PAT with `read:packages` (GHCR accepts no fine-grained PATs). Tags are listed from the registry. |
 | `gitlab` | `token` | `token_env` | Add top-level `api_url` for self-hosted; see [registry-gitlab.md](./registry-gitlab.md) |
 | `dockerhub` | `basic` | `username_env`, `token_env` | Use a Docker Hub access token |
 | `ecr` | `aws_iam` | `aws_region_env` plus standard AWS env | |

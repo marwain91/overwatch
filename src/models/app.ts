@@ -9,8 +9,9 @@ import { volumeNameIssues } from '../utils/validators';
 // packages, but GHCR's actual permission model only honors App tokens for
 // PUBLIC packages. After end-to-end testing the auth grant simply doesn't
 // resolve for non-public images, regardless of repo linkage, GHA push history,
-// or "Manage Actions access" bindings. The clean path for service-to-service
-// pulls is a PAT (classic or fine-grained) under a service-account user.
+// or "Manage Actions access" bindings. GHCR does not accept fine-grained PATs
+// for packages either, so service-to-service pulls need a classic PAT with
+// `read:packages`, ideally under a service-account user.
 export const AppRegistryAuthSchema = z.object({
   type: z.enum(['token', 'basic', 'aws_iam']),
   username_env: z.string().optional(),
@@ -158,6 +159,11 @@ export const AppServiceSchema = z.object({
   depends_on: z.array(z.string()).optional(),
   networks: z.array(z.enum(['external', 'internal'])).optional(),
 });
+
+/** The image a service runs is `<registry url>/<repository>/<this name>:<tag>`. */
+export function serviceImageName(service: { name: string; image_suffix?: string }): string {
+  return service.image_suffix || service.name;
+}
 
 // Services as create, update and `overwatch apps apply` accept them: a volume
 // name Docker would mount as a host path (`/var/run/docker.sock`, `./data`,

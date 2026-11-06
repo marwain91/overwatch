@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- GHCR apps list versions from the registry instead of the source repository's git tags. Git tags and image tags often differ (`v1.6.9` in git, `1.6.9` on the image), so the version picker offered tags that could not be pulled. It now offers only tags that every service image of the app has, newest first, with `latest` and `main` on top; `tag_pattern` still filters them. Public packages are listed without a token.
+
+### Security
+
+- `GHCR_TOKEN` no longer needs the `repo` scope, which gave it read access to the source code of every private repository its account can see. Tag listing now needs only `read:packages`. GitHub lets you edit a classic token's scopes without changing the token, so after upgrading you can untick `repo` and keep `read:packages`. The docs no longer recommend fine-grained PATs, which GHCR does not accept for packages.
+
 ## [1.11.2] — 2026-11-03
 
 ### Security

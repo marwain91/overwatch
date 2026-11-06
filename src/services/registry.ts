@@ -8,9 +8,20 @@ export interface ImageRef {
   repo: string;
 }
 
-interface RegistryAuth {
+export interface RegistryAuth {
   user: string;
   token: string;
+}
+
+/** A registry answered a token exchange or tag list request with a non-2xx status. */
+export class RegistryHttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'RegistryHttpError';
+    this.status = status;
+  }
 }
 
 /**
@@ -63,7 +74,7 @@ async function exchangeToken(registry: string, repo: string, auth: RegistryAuth 
   }
   const res = await fetchNoRedirect(url, { headers });
   if (!res.ok) {
-    throw new Error(`registry token exchange failed (HTTP ${res.status})`);
+    throw new RegistryHttpError(`registry token exchange failed (HTTP ${res.status})`, res.status);
   }
   const json = (await res.json()) as { token?: string; access_token?: string };
   const token = json.token || json.access_token;
@@ -92,14 +103,14 @@ function parseNextLink(link: string | null, registry: string): string | null {
 }
 
 /**
- * List all tags for `image` against its registry. Handles anonymous and
- * PAT-authenticated flows (`~/.docker/config.json`) and follows `Link: next`
- * pagination. Credentials are never included in thrown error messages.
+ * List all tags for `image` against its registry and follow `Link: next`
+ * pagination. `auth` undefined uses the registry's credentials from
+ * `~/.docker/config.json`, if any; `null` lists anonymously. Credentials are
+ * never included in thrown error messages.
  */
-export async function listImageTags(image: string): Promise<string[]> {
+export async function listImageTags(image: string, auth?: RegistryAuth | null): Promise<string[]> {
   const { registry, repo } = parseImageRef(image);
-  const auth = readRegistryAuth(registry);
-  const bearer = await exchangeToken(registry, repo, auth);
+  const bearer = await exchangeToken(registry, repo, auth === undefined ? readRegistryAuth(registry) : auth);
 
   const tags: string[] = [];
   let url: string | null = `https://${registry}/v2/${repo}/tags/list?n=100`;
@@ -107,7 +118,7 @@ export async function listImageTags(image: string): Promise<string[]> {
     const res: Response = await fetchNoRedirect(url, {
       headers: { Authorization: `Bearer ${bearer}`, Accept: 'application/json' },
     });
-    if (!res.ok) throw new Error(`registry tag list failed (HTTP ${res.status})`);
+    if (!res.ok) throw new RegistryHttpError(`registry tag list failed (HTTP ${res.status})`, res.status);
     const json = (await res.json()) as { tags?: string[] | null };
     if (Array.isArray(json.tags)) tags.push(...json.tags);
     url = parseNextLink(res.headers.get('link'), registry);
