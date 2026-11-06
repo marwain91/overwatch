@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.3] — 2026-11-06
+
 ### Fixed
 
 - GHCR apps list versions from the registry instead of the source repository's git tags. Git tags and image tags often differ (`v1.6.9` in git, `1.6.9` on the image), so the version picker offered tags that could not be pulled. It now offers only tags that every service image of the app has, newest first, with `latest` and `main` on top. Public packages are listed without a token. `tag_pattern` still filters the list, so a pattern written for git tags such as `^v\d+` now hides image tags like `1.6.9`: change it to `^v?\d+`.
