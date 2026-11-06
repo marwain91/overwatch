@@ -31,6 +31,11 @@ const REGISTRY_URL_RE = new RegExp(
 );
 const REGISTRY_REPOSITORY_RE = new RegExp(`^${REGISTRY_PATH_COMPONENT}(?:/${REGISTRY_PATH_COMPONENT})*$`);
 
+/** True when a service image name (see serviceImageName) has the `repository` path format. */
+export function isRegistryImageName(name: string): boolean {
+  return REGISTRY_REPOSITORY_RE.test(name);
+}
+
 // An http(s) URL, or a bare host as validateRegistryUrl accepts, with no
 // credentials, query or fragment.
 function isRegistryApiUrl(value: string): boolean {

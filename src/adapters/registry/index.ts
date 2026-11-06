@@ -189,5 +189,5 @@ export async function loginToAllRegistries(apps: AppDefinition[]): Promise<void>
 export async function getImageTagsForApp(app: AppDefinition): Promise<string[]> {
   assertRegistryUsable(app, 'list tags');
   const adapter = getRegistryAdapterForApp(app);
-  return adapter.getImageTags([...new Set(app.services.map(serviceImageName))]);
+  return adapter.getImageTags(app.services.map(serviceImageName));
 }

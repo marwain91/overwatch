@@ -10,8 +10,12 @@ vi.mock('../adapters/registry/urlValidation', () => ({
   validateRegistryUrl: (...args: any[]) => validateRegistryUrlMock(...args),
 }));
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { GHCRAdapter } from '../adapters/registry/ghcr';
 import { clearAdapterCache, getImageTagsForApp } from '../adapters/registry';
+import { RegistryHttpError } from '../services/registry';
 
 const fetchMock = vi.fn();
 
@@ -121,19 +125,87 @@ describe('GHCRAdapter — tag listing from the registry', () => {
     expect(await ghcr({ tagPattern: /^v?\d/ }).getImageTags(['backend', 'web'])).toEqual(['1.2.0', 'v1.1.0']);
   });
 
-  it('lowercases the image path and lists each image once', async () => {
+  it('lists each image once', async () => {
     registry({ 'org/repo/backend': ['1.0.0'] });
 
-    expect(await ghcr({ repository: 'Org/Repo' }).getImageTags(['backend', 'backend'])).toEqual(['1.0.0']);
+    expect(await ghcr().getImageTags(['backend', 'backend'])).toEqual(['1.0.0']);
     expect(tokenCalls()).toHaveLength(1);
     expect(new URL(String(tokenCalls()[0][0])).searchParams.get('scope')).toBe('repository:org/repo/backend:pull');
   });
 
-  it('lists public packages anonymously when no token is configured', async () => {
-    registry({ 'org/repo/backend': ['1.0.0'] });
+  it.each([
+    'x&service=ghcr.io&scope=repository:victim/secret:pull&/../../victim/secret/tags/list#',
+    '../secret',
+    'web#frag',
+    'web?n=1',
+    '-web',
+    'web/',
+    '',
+  ])('refuses the image name %j before any request', async (bad) => {
+    await expect(ghcr().getImageTags(['backend', bad])).rejects.toThrow(/not a registry path/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
-    expect(await ghcr({ token: undefined }).getImageTags(['backend'])).toEqual(['1.0.0']);
-    expect((fetchMock.mock.calls[0][1] as any).headers.Authorization).toBeUndefined();
+  it('accepts multi-segment image names', async () => {
+    registry({ 'org/repo/services/web': ['1.0.0'] });
+
+    expect(await ghcr().getImageTags(['services/web'])).toEqual(['1.0.0']);
+  });
+
+  it('calls the configured host itself, also when it has no dot (never docker.io)', async () => {
+    validateRegistryUrlMock.mockResolvedValue(undefined);
+    fetchMock.mockImplementation(async () => new Response('{}', { status: 401 }));
+
+    await expect(ghcr({ url: 'registry' }).getImageTags(['backend'])).rejects.toThrow(/denied access to registry\/org\/repo\/backend/);
+    expect(validateRegistryUrlMock).toHaveBeenCalledWith('registry');
+    expect(calledUrls()).toEqual(['https://registry/token?scope=repository:org/repo/backend:pull&service=registry']);
+  });
+
+  it('puts a path in the registry url in front of the repository', async () => {
+    fetchMock.mockImplementation(async () => new Response('{}', { status: 401 }));
+
+    await expect(ghcr({ url: 'ghcr.io/team' }).getImageTags(['backend'])).rejects.toThrow(/HTTP 401/);
+    expect(calledUrls()).toEqual(['https://ghcr.io/token?scope=repository:team/org/repo/backend:pull&service=ghcr.io']);
+  });
+
+  describe('without a token', () => {
+    const savedHome = process.env.HOME;
+    let home: string;
+
+    beforeEach(() => {
+      // A docker login for ghcr.io that anonymous listing must not pick up.
+      home = fs.mkdtempSync(path.join(os.tmpdir(), 'ghcr-home-'));
+      fs.mkdirSync(path.join(home, '.docker'));
+      const auth = Buffer.from('someone:other_pat').toString('base64');
+      fs.writeFileSync(path.join(home, '.docker', 'config.json'), JSON.stringify({ auths: { 'ghcr.io': { auth } } }));
+      process.env.HOME = home;
+    });
+
+    afterEach(() => {
+      process.env.HOME = savedHome;
+      fs.rmSync(home, { recursive: true, force: true });
+    });
+
+    it('lists public packages anonymously, ignoring docker logins', async () => {
+      registry({ 'org/repo/backend': ['1.0.0'] });
+
+      expect(await ghcr({ token: undefined }).getImageTags(['backend'])).toEqual(['1.0.0']);
+      expect((fetchMock.mock.calls[0][1] as any).headers.Authorization).toBeUndefined();
+    });
+
+    it('says that no token is configured when GHCR refuses anonymous access', async () => {
+      registry({ 'org/repo/backend': 401 });
+
+      await expect(ghcr({ token: undefined }).getImageTags(['backend'])).rejects.toThrow(/HTTP 401\) without a token\. No registry token is configured/);
+    });
+  });
+
+  it('passes other registry failures through with their status', async () => {
+    registry({ 'org/repo/backend': { list: 502 } });
+
+    const error = await ghcr().getImageTags(['backend']).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RegistryHttpError);
+    expect(String(error)).toMatch(/registry tag list failed \(HTTP 502\)/);
   });
 
   it.each([401, 403])('names read:packages, not the repo scope, when GHCR answers %i', async (status) => {

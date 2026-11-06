@@ -19,7 +19,7 @@ export interface RegistryAdapter {
    * service image names (`image_suffix`, else the service name). Adapters
    * that list tags per image use them; the others list the repository's tags.
    */
-  getImageTags(images?: string[]): Promise<string[]>;
+  getImageTags(images: string[]): Promise<string[]>;
 
   /**
    * Get the full image reference for a service and tag

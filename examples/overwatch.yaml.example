@@ -25,7 +25,7 @@ registry:
   auth:
     type: "basic"
     username_env: "DOCKER_USERNAME"
-  # tag_pattern: "^v\\d+"   # Optional: regex to filter image tags
+  # tag_pattern: "^v?\\d+"   # Optional: regex to filter image tags
 
 # Services to manage per tenant
 services:
