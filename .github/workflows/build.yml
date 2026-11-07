@@ -23,6 +23,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # build-push-action otherwise uploads a build record (*.dockerbuild) artifact on every release; nothing reads it.
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
 
 jobs:
   build:
