@@ -30,7 +30,7 @@ afterEach(async () => {
 describe('deployment and image build hardening', () => {
   it('builds the server from source in the Dockerfile instead of copying checked-in dist', async () => {
     const dockerfile = await fs.readFile(path.join(process.cwd(), 'Dockerfile'), 'utf-8');
-    expect(dockerfile).toMatch(/^FROM node:24-alpine@sha256:[0-9a-f]{64} AS server-build$/m);
+    expect(dockerfile).toMatch(/^FROM node:26-alpine@sha256:[0-9a-f]{64} AS server-build$/m);
     expect(dockerfile).toContain('RUN npm run build');
     expect(dockerfile).toContain('COPY --from=server-build /app/dist ./dist');
     expect(dockerfile).not.toMatch(/^COPY dist\/ .*dist/m);

@@ -28,14 +28,14 @@ The UI is a React app built with Vite. For development with hot module replaceme
 cd ui
 
 # Install dependencies in Docker
-docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:24-alpine npm ci
+docker run --rm -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:26-alpine npm ci
 
 # Start Vite dev server with HMR
 docker run --rm -u "$(id -u):$(id -g)" -p 5173:5173 \
   -v "$(pwd)":/app -w /app \
   -e API_HOST=host.docker.internal \
   -e API_PORT=3010 \
-  node:24-alpine npm run dev -- --host 0.0.0.0
+  node:26-alpine npm run dev -- --host 0.0.0.0
 ```
 
 The Vite dev server proxies `/api` and `/ws` requests to the backend via `API_HOST`/`API_PORT` environment variables (defaults to `localhost:3010`).
@@ -67,17 +67,32 @@ docker run -p 3002:3002 \
 ## Building the CLI Binary
 
 The CLI is built with `@yao-pkg/pkg` in SEA mode, embedding stock Node.js
-24.22.3 for Linux x64 and arm64. Standard pkg mode currently embeds Node.js
-24.20.0, which lacks the October 21, 2026 security fixes. Updating the build
-container alone does not update that embedded runtime.
+26.13.1 for Linux x64 and arm64. The exact embedded version is independent
+of the build container; CI verifies the runtime inside the executable.
 
 ```bash
-docker run --rm --pull=always -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:24-bookworm-slim sh -c "npm ci && npm run build:cli"
+docker run --rm --pull=always -u "$(id -u):$(id -g)" -v "$(pwd)":/app -w /app node:26-bookworm-slim sh -c "npm ci && npm run build:cli"
 ```
 
 The binaries are written to `dist/bin/overwatch-linux-x64` and
 `dist/bin/overwatch-linux-arm64`. Keep the explicit Node.js targets in
 `build:cli` current when applying future runtime security updates.
+
+### TypeScript compiler and API
+
+Builds and type checks use TypeScript 7. The UI type generator and its tests
+also need the stable TypeScript 6 compiler API, which TypeScript 7 no longer
+exports from its package root. Following the upstream migration guidance,
+the root package aliases `typescript` to `@typescript/typescript6` and
+`@typescript/native` to TypeScript 7. The latter supplies `tsc`; the former
+supplies the JavaScript API and `tsc6` without a binary-name conflict.
+
+### Automated dependency updates
+
+Dependabot groups CodeQL actions so `init` and `analyze` always move together.
+Docker Node major upgrades are coordinated with the standalone CLI and CI;
+digest updates remain automatic. `@types/node` stays on the deployed runtime
+major, currently 26. Revisit both rules when moving to the next Node LTS.
 
 ## Project Layout
 

@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import * as yaml from 'js-yaml';
+import * as yaml from '../../utils/yaml';
 import { OverwatchConfigSchema } from '../../config/schema';
 import { validateEnvironment } from '../../config/validate';
 import { findConfigPath } from '../../config/loader';
