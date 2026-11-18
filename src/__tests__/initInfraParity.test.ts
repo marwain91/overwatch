@@ -108,7 +108,7 @@ describe('init output content', () => {
     const files = Object.fromEntries(renderInitInfraFiles(answers(deployDir)).map(f => [f.dest, f.content]));
     const infra = files['infrastructure/docker-compose.yml'];
     expect(infra).toContain('image: mariadb:10.11');
-    expect(infra).toContain('image: traefik:v3.6');
+    expect(infra).toContain('image: traefik:v3.7.19');
     expect(infra).toContain('traefik-letsencrypt:/letsencrypt');
     expect(infra).toContain('CF_DNS_API_TOKEN=${CF_DNS_API_TOKEN}');
     const ow = files['overwatch/docker-compose.yml'];

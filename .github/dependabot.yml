@@ -6,12 +6,6 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
-    # zod stays on v3: the MCP SDK and scripts/gen-ui-types.mjs depend on zod v3
-    # internals. A v4 migration is a separate project.
-    ignore:
-      - dependency-name: zod
-        update-types:
-          - version-update:semver-major
     groups:
       dev-dependencies:
         dependency-type: development
@@ -50,7 +44,7 @@ updates:
 
   # The Dockerfile pins node:24-alpine by digest (tag@sha256:...); this bumps
   # the digest of all three FROM lines whenever the tag is rebuilt.
-  # The generated infrastructure templates (traefik:v3.6, mariadb:10.11,
+  # The generated infrastructure templates (traefik:v3.7.19, mariadb:10.11,
   # postgres:16) are not digest-pinned on purpose: their minor-line tags keep
   # delivering security patches to hosts whenever the images are pulled.
   - package-ecosystem: docker

@@ -38,7 +38,7 @@ export function buildInfraComposeYml(config: OverwatchConfig): string {
   // `environment` is always present (empty array under upstream-only mode);
   // js-yaml renders `environment: []` cleanly and compose ignores it.
   const traefikSvc: any = {
-    image: 'traefik:v3.6',
+    image: 'traefik:v3.7.19',
     container_name: '${PROJECT_PREFIX}-traefik',
     restart: 'unless-stopped',
     security_opt: ['no-new-privileges:true'],

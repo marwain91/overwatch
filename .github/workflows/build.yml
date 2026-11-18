@@ -160,7 +160,7 @@ jobs:
         run: npm test
 
       - name: Build CLI binaries
-        # SEA embeds stock Node 24.22.1. Standard pkg mode still embeds the
+        # SEA embeds stock Node 24.22.3. Standard pkg mode still embeds the
         # vulnerable 24.20.0 runtime, regardless of the setup-node version.
         run: npm run build:cli
 
@@ -171,7 +171,7 @@ jobs:
           cat > "$RUNNER_TEMP/check-cli-runtime.cjs" <<'JS'
           const [major, minor, patch] = process.versions.node.split('.').map(Number);
           require('node:assert/strict')(
-            major === 24 && (minor > 22 || (minor === 22 && patch >= 1)),
+            major === 24 && (minor > 22 || (minor === 22 && patch >= 3)),
             `CLI embeds unpatched Node.js ${process.version}`,
           );
           console.log(`CLI runtime: ${process.version}`);

@@ -159,10 +159,10 @@ describe('buildOverwatchComposeYml — tls_termination=upstream', () => {
 describe('buildInfraComposeYml — database engine', () => {
   const http = { log_level: 'INFO', cert_resolvers: [{ name: 'le', challenge: 'http', acme_email: 'a@b.c', entrypoint: 'web' }] } as TraefikGlobal;
 
-  it('pins MariaDB 10.11 and Traefik v3.6 (the reference versions)', () => {
+  it('pins MariaDB 10.11 and Traefik v3.7.19 (the reference versions)', () => {
     const yml = buildInfraComposeYml(makeConfig(http));
     expect(yml).toContain('image: mariadb:10.11');
-    expect(yml).toContain('image: traefik:v3.6');
+    expect(yml).toContain('image: traefik:v3.7.19');
     expect(yml).toContain('traefik-letsencrypt:/letsencrypt');
   });
 

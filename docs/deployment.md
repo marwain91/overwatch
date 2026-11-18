@@ -195,7 +195,7 @@ cd /opt/myapp/deploy
 overwatch infra deploy --dry-run   # review: infrastructure/ (Traefik + MariaDB 10.11) and overwatch/docker-compose.yml
 ```
 
-The infrastructure stack is Traefik `v3.6` plus MariaDB `10.11` (or PostgreSQL `16` when `database.type: postgres`). `overwatch infra deploy` refuses to replace a running database with an older version, because an older server cannot open a newer data volume; pass `--allow-db-downgrade` only after restoring from a backup.
+The infrastructure stack is Traefik `v3.7.19` plus MariaDB `10.11` (or PostgreSQL `16` when `database.type: postgres`). `overwatch infra deploy` refuses to replace a running database with an older version, because an older server cannot open a newer data volume; pass `--allow-db-downgrade` only after restoring from a backup.
 
 ### Step 4: Environment files
 

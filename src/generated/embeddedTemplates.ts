@@ -11,7 +11,7 @@ export const EMBEDDED_TEMPLATES: Record<string, string> = {
 
 services:
   traefik:
-    image: traefik:v3.6
+    image: traefik:v3.7.19
     container_name: \${PROJECT_PREFIX}-traefik
     restart: unless-stopped
     security_opt:
