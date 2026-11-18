@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.4] — 2026-11-18
+
+### Security
+
+- Update the pinned Docker base and both standalone CLI targets to Node.js 24.22.3, including the November security fixes. Remove npm and Yarn and their bundled dependencies from the production image. Existing deployments must recreate their Overwatch container; CLI users must replace their binary.
+- Update Traefik infrastructure templates and the compose generator to 3.7.19. Existing proxies must be redeployed separately.
+- Refresh vulnerable Hono and node-server dependencies. Audit backend and UI dependency trees in CI and add a regression test for malformed compressed JSON requests.
+- Document nginx2root checks and mitigations for external and application-embedded nginx. Overwatch does not bundle nginx; patch those instances to 1.30.7 stable / 1.31.9 mainline or a vendor backport, and retain the SCTP mitigation until a kernel fix is confirmed.
+
 ## [1.11.3] — 2026-11-06
 
 ### Fixed

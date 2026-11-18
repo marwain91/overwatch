@@ -34,6 +34,9 @@ jobs:
       - name: Install root dependencies
         run: npm ci
 
+      - name: Audit backend and build dependencies
+        run: npm audit
+
       - name: Run tests
         run: npm test
 
@@ -42,6 +45,9 @@ jobs:
 
       - name: Build backend + UI
         run: npm run build:all
+
+      - name: Audit UI dependencies
+        run: npm --prefix ui audit
 
       - name: Verify generated files are committed
         run: git diff --exit-code -- src/generated ui/src/lib/api-types.generated.ts

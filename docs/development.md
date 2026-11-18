@@ -67,7 +67,7 @@ docker run -p 3002:3002 \
 ## Building the CLI Binary
 
 The CLI is built with `@yao-pkg/pkg` in SEA mode, embedding stock Node.js
-24.22.1 for Linux x64 and arm64. Standard pkg mode currently embeds Node.js
+24.22.3 for Linux x64 and arm64. Standard pkg mode currently embeds Node.js
 24.20.0, which lacks the October 21, 2026 security fixes. Updating the build
 container alone does not update that embedded runtime.
 
