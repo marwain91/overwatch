@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as yaml from 'js-yaml';
+import * as yaml from '../utils/yaml';
 import { tenantDir, listTenantDirs, readTenantEnv } from './tenantStore';
 import { loadConfig } from '../config/loader';
 import { TraefikTenantSchema, type TraefikTenant } from '../models/traefik';

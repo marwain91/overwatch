@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { BlockList, isIP } from 'net';
-import * as yaml from 'js-yaml';
+import * as yaml from '../utils/yaml';
 import type { OverwatchConfig } from '../config/schema';
 import type { AppDefinition } from '../models/app';
 import type { Entrypoint, TraefikGlobal, TraefikTenant } from '../models/traefik';

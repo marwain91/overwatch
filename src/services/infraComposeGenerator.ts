@@ -1,4 +1,5 @@
 import * as yaml from 'js-yaml';
+import { composeYamlOptions } from '../utils/composeYaml';
 import type { OverwatchConfig } from '../config/schema';
 import type { Entrypoint, TraefikGlobal, TraefikOverwatch } from '../models/traefik';
 import { isBlockedRawLabelKey, rawLabelOwnerForRouter } from '../models/traefik';
@@ -106,7 +107,7 @@ export function buildInfraComposeYml(config: OverwatchConfig): string {
   };
 
   return banner('Shared infrastructure stack — Traefik + database. Generated from overwatch.yaml.') +
-    yaml.dump(out, { lineWidth: 120, noRefs: true, quotingType: '"' });
+    yaml.dump(out, { ...composeYamlOptions, lineWidth: 120 });
 }
 
 /**
@@ -191,7 +192,7 @@ export function buildOverwatchComposeYml(config: OverwatchConfig): string {
   };
 
   return banner('Overwatch admin container. Generated from overwatch.yaml.traefik.overwatch.') +
-    yaml.dump(out, { lineWidth: 120, noRefs: true, quotingType: '"' });
+    yaml.dump(out, { ...composeYamlOptions, lineWidth: 120 });
 }
 
 function buildOverwatchLabels(ow: TraefikOverwatch, traefik: TraefikGlobal): string[] {

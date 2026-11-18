@@ -1,4 +1,5 @@
-import * as yaml from 'js-yaml';
+import * as yaml from '../utils/yaml';
+import { composeYamlOptions } from '../utils/composeYaml';
 import { AppDefinition, AppService, serviceImageName } from '../models/app';
 import { OverwatchConfig } from '../config/schema';
 import type { TraefikTenant } from '../models/traefik';
@@ -157,9 +158,8 @@ export function generateComposeFile(options: GenerateOptions): string {
   if (volumes.length > 0) compose.volumes = toMapping(volumes, 'volume', where);
 
   // lineWidth -1 keeps every value (long Traefik rules included) on one line.
-  // js-yaml's default compat mode also quotes YAML 1.1 look-alikes ("no",
-  // "1000:1000"), so any compose YAML parser reads them back as strings.
-  return yaml.dump(compose, { lineWidth: -1, noRefs: true, quotingType: '"' });
+  // Keep YAML 1.1 look-alikes quoted for older Compose readers too.
+  return yaml.dump(compose, { ...composeYamlOptions, lineWidth: -1 });
 }
 
 export interface DeclaredVolume {
@@ -216,7 +216,7 @@ export function protectUnownedVolumes(composeText: string, appId: string, tenant
   for (const v of unowned) {
     Object.defineProperty(doc.volumes, v.key, { value: { external: true, name: v.name }, enumerable: true, writable: true, configurable: true });
   }
-  return yaml.dump(doc, { lineWidth: -1, noRefs: true, quotingType: '"' });
+  return yaml.dump(doc, { ...composeYamlOptions, lineWidth: -1 });
 }
 
 /** `$` → `$$`: compose reads `$$` as a literal `$` and interpolates a bare `$`. */

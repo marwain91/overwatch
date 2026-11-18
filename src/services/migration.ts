@@ -3,7 +3,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { isDeepStrictEqual } from 'util';
-import * as yaml from 'js-yaml';
+import * as yaml from '../utils/yaml';
 import { findConfigPath } from '../config/loader';
 import { writeOverwatchConfig } from '../config/writer';
 import { LegacyOverwatchConfigSchema, OverwatchConfig } from '../config/schema';

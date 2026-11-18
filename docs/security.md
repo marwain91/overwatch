@@ -2,7 +2,7 @@
 
 ## Security updates (2026-11-18)
 
-- The Docker base and standalone CLI runtime use Node.js 24.22.3. All Docker
+- The Docker base and standalone CLI runtime use Node.js 26.13.1. All Docker
   stages share a pinned digest. Runtime images omit npm and Yarn, including
   their bundled dependencies; use a development container for package tooling.
 - Backend dependencies include Zod 4.6.7 and patched body-parser, Hono,

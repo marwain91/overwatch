@@ -6,6 +6,10 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 10
+    # Types must describe the deployed Node 26 LTS runtime.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
     groups:
       dev-dependencies:
         dependency-type: development
@@ -38,6 +42,9 @@ updates:
 
   - package-ecosystem: github-actions
     directory: "/"
+    groups:
+      codeql:
+        patterns: ["github/codeql-action/*"]
     schedule:
       interval: weekly
       day: monday
@@ -49,6 +56,11 @@ updates:
   # delivering security patches to hosts whenever the images are pulled.
   - package-ecosystem: docker
     directory: "/"
+    # Runtime major upgrades require a coordinated Docker/CLI migration.
+    # Continue receiving all security digest updates within Node 26 LTS.
+    ignore:
+      - dependency-name: "node"
+        update-types: [version-update:semver-major]
     schedule:
       interval: weekly
       day: monday

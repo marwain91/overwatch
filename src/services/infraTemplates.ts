@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import * as yaml from 'js-yaml';
+import * as yaml from '../utils/yaml';
 import { loadConfig } from '../config';
 import type { OverwatchConfig } from '../config/schema';
 import { EMBEDDED_TEMPLATES } from '../generated/embeddedTemplates';

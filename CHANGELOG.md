@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.5] — 2026-11-18
+
+### Changed
+
+- Move Docker, CI, standalone CLI binaries and Node type definitions together to Node.js 26 LTS (26.13.1).
+- Refresh backend and UI dependencies, including google-auth-library 11, Inquirer 14, js-yaml 5, Vitest 5 and TypeScript 7. Keep the stable TypeScript 6 API alongside the native compiler for generated UI types.
+- Update pinned GitHub Actions. Group CodeQL updates so initialization and analysis use the same version; keep automated Node updates within the selected LTS major.
+
+### Fixed
+
+- Preserve YAML anchor merge keys and quote colon-separated numeric strings in generated Compose files when using js-yaml 5.
+
 ## [1.11.4] — 2026-11-18
 
 ### Security

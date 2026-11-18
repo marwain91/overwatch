@@ -433,7 +433,7 @@ describe('generateComposeFile treats every value as data', () => {
   });
 
   it('keeps strings that look like numbers, booleans or null as strings', () => {
-    const lookalikes = ['true', 'no', 'off', 'yes', 'null', '~', '123', '0755', '1e3', '.5', '0x1F', '1000:1000', '2026-01-01'];
+    const lookalikes = ['true', 'no', 'off', 'yes', 'null', '~', '123', '0755', '1e3', '.5', '0x1F', '1000:1000', '2026-01-01', '1:30'];
     const env = Object.fromEntries(lookalikes.map((v, i) => [`V${i}`, { static: v }]));
     const yml = render([{
       name: 'web', required: true, user: '1000:1000', command: ['sleep', '300', 'true'],
@@ -451,6 +451,8 @@ describe('generateComposeFile treats every value as data', () => {
     // Either quote style is fine: only "not a plain scalar" matters.
     expect(yml).toMatch(/^\s*user: (["'])1000:1000\1$/m);
     expect(yml).toMatch(/^\s+V1: (["'])no\1$/m);
+    expect(yml).toMatch(/^\s+V13: (["'])1:30\1$/m);
+    expect((yaml.load(yml, { schema: yaml.YAML11_SCHEMA }) as any).services.web.environment.V13).toBe('1:30');
   });
 
   it('keeps a key named __proto__ as an ordinary key', () => {

@@ -1,11 +1,11 @@
 # Overwatch - Multi-Tenant Management Tool
 
-# Every stage uses node:24-alpine pinned by digest, so a rebuild of the same
+# Every stage uses node:26-alpine pinned by digest, so a rebuild of the same
 # commit gets the same base image. The tag stays in the reference for humans
 # and for Dependabot, which bumps the digest (all three FROM lines together).
 
 # ── Stage 1: Build server from source ──
-FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS server-build
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS server-build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -16,7 +16,7 @@ COPY src/ ./src/
 RUN npm run build
 
 # ── Stage 2: Build React UI ──
-FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS ui-build
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS ui-build
 WORKDIR /ui
 COPY ui/package*.json ./
 RUN npm ci
@@ -24,7 +24,7 @@ COPY ui/ ./
 RUN npm run build
 
 # ── Stage 3: Runtime ──
-FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5
 
 ARG BUILD_TIME=dev
 ARG BUILD_COMMIT=dev
