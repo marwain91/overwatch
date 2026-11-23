@@ -820,11 +820,22 @@ async function stageSnapshot(app: AppDefinition, snapshotId: string, targetTenan
   );
 
   // Find the backup data
-  const { stdout: findOutput } = await execFileAsync('find', [restoreDir, '-name', 'metadata.json', '-type', 'f'], { env: { PATH: process.env.PATH } });
-  const metadataPath = findOutput.trim();
-  if (!metadataPath) {
+  // restic restores the staging dir under its original absolute path, so the
+  // backup's metadata.json is searched for. Tenant data below it may hold files
+  // of the same name: the backup's own is the single shallowest one. -print0
+  // keeps a path with a newline in it from splitting into bogus entries.
+  const { stdout: findOutput } = await execFileAsync('find', [restoreDir, '-name', 'metadata.json', '-type', 'f', '-print0'], { env: { PATH: process.env.PATH } });
+  const found = findOutput.split('\0').filter(Boolean);
+  if (found.length === 0) {
     throw new RestoreStepError('Invalid backup: metadata.json not found');
   }
+  const depth = (p: string) => p.split(path.sep).length;
+  const minDepth = Math.min(...found.map(depth));
+  const shallowest = found.filter(p => depth(p) === minDepth);
+  if (shallowest.length !== 1) {
+    throw new RestoreStepError('Invalid backup: more than one metadata.json at the top level');
+  }
+  const metadataPath = shallowest[0];
 
   // Verify metadata path is within the restore directory (prevents symlink attacks)
   await assertWithinDir(metadataPath, restoreDir);

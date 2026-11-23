@@ -62,7 +62,7 @@ function isoStamp(): string {
  * regular file. Snapshot and restore often run as root, so following a link
  * would copy any file on the host into the data dir or a snapshot.
  */
-async function readRegularFile(file: string): Promise<{ data: Buffer; mode: number } | null> {
+export async function readRegularFile(file: string): Promise<{ data: Buffer; mode: number } | null> {
   const before = await fs.lstat(file);
   if (!before.isFile()) return null;
   let fh: fs.FileHandle;

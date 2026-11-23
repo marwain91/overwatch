@@ -59,6 +59,8 @@ const world = {
   cpFail: [] as string[], // contents of the data whose copy into the container fails
   failStart: false,
   failStop: false,
+  /** The tenant's own data holds a file named metadata.json. */
+  nestedMetadata: false,
 };
 const resticRestores: string[] = [];
 const backupTags: string[][] = [];
@@ -81,6 +83,7 @@ vi.mock('child_process', () => ({
         await fs.writeFile(path.join(dir, 'metadata.json'), JSON.stringify({ appId: 'gadgets', tenants: [isSafety ? 't1' : 'src'] }));
         await fs.writeFile(path.join(dir, isSafety ? 't1' : 'src', 'database.sql'), isSafety ? '-- safety' : '-- snapshot');
         await fs.writeFile(path.join(dir, isSafety ? 't1' : 'src', 'data', 'f'), id);
+        if (world.nestedMetadata) await fs.writeFile(path.join(dir, isSafety ? 't1' : 'src', 'data', 'metadata.json'), '{"appId":"other"}');
         log.push(`restic-restore:${isSafety ? 'safety' : 'snapshot'}`);
         return done(null, { stdout: '', stderr: '' });
       }
@@ -99,7 +102,7 @@ vi.mock('child_process', () => ({
           }
         };
         await walk(args[0]);
-        return done(null, { stdout: out.join('\n'), stderr: '' });
+        return done(null, { stdout: out.map(p => `${p}\0`).join(''), stderr: '' });
       }
       if (cmd === 'docker' && args[0] === 'compose') {
         const sub = args[args.indexOf('-f') + 2];
@@ -151,7 +154,7 @@ beforeEach(async () => {
   log.length = 0;
   resticRestores.length = 0;
   backupTags.length = 0;
-  Object.assign(world, { running: 'running', failSafetyBackup: false, copyOutError: null, cpFail: [], failStart: false, failStop: false });
+  Object.assign(world, { running: 'running', failSafetyBackup: false, copyOutError: null, cpFail: [], failStart: false, failStop: false, nestedMetadata: false });
   world.snapshots = {
     [SNAP]: owned(['app:gadgets', 'tenant:t1']),
     [SAFETY_FULL]: [{ id: SAFETY_FULL, short_id: SAFETY, tags: ['app:gadgets', 'pre-restore', 'tenant:t1'] }],
@@ -200,6 +203,12 @@ describe('restore checks that the snapshot belongs to the app and tenant', () =>
   it('allows any tenant of the app for create-from-backup', async () => {
     world.snapshots[SNAP] = owned(['app:gadgets', 'tenant:src']);
     const r = await restoreBackupLocked('gadgets', SNAP, 't1', { createNew: true, newDomain: 't1.example.com', containersStopped: true });
+    expect(r.success).toBe(true);
+  });
+
+  it("reads the backup's own metadata.json when the tenant data holds a file of that name", async () => {
+    world.nestedMetadata = true;
+    const r = await restoreBackup('gadgets', SNAP, 't1', { allowCrossTenant: true });
     expect(r.success).toBe(true);
   });
 

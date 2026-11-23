@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Apply the API rate limit before authentication on every `/api` route, so requests with a missing or invalid token are throttled as well.
+- Read a tenant's `shared.env` through a no-follow open that checks the opened file is the one inspected, closing a check-then-read gap.
+- Reject non-string values in the slug, snapshot ID, container ID and email checks. A one-element array such as `["abc"]` previously passed as `"abc"`.
+
+### Fixed
+
+- Restore and create-from-backup no longer fail when the backed-up tenant data contains a file named `metadata.json`.
+
 ## [1.11.6] — 2026-11-23
 
 ### Security

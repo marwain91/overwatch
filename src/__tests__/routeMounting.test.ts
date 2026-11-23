@@ -32,6 +32,16 @@ describe('src/index.ts route mounting', () => {
     expect(src).toMatch(/app\.use\('\/api\/database',[^\n]*\bdestructiveLimiter\b/);
   });
 
+  it('rate-limits before authenticating, so unauthenticated requests are throttled too', async () => {
+    const src = await fs.readFile(INDEX_PATH, 'utf-8');
+    const mounts = src.split('\n').filter(l => /app\.use\('\/api\//.test(l) && /\bauthMiddleware\b/.test(l));
+    expect(mounts.length).toBeGreaterThanOrEqual(10);
+    for (const line of mounts) {
+      expect(line.indexOf('apiLimiter'), line).toBeGreaterThan(-1);
+      expect(line.indexOf('apiLimiter'), line).toBeLessThan(line.indexOf('authMiddleware'));
+    }
+  });
+
   it('audits /api/status mutations (container restart)', async () => {
     const src = await fs.readFile(INDEX_PATH, 'utf-8');
     expect(src).toMatch(/app\.use\('\/api\/status',[^\n]*\bauditLog\b/);
