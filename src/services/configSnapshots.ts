@@ -1,11 +1,11 @@
 import * as fs from 'fs/promises';
-import { constants as fsConstants } from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { getDataDir } from '../config';
 import { snapshotDataFiles } from '../config/dataFiles';
 import { NotFoundError, ValidationError } from '../utils/httpErrors';
 import { withFileLock } from './fileLock';
+import { readRegularFile } from '../utils/regularFile';
 
 const SNAPSHOT_DIR = '.snapshots';
 const FILES_TO_SNAPSHOT = snapshotDataFiles();
@@ -53,33 +53,6 @@ const isPreRestoreSnapshot = (s: SnapshotInfo) => s.name.endsWith('_pre-restore'
 
 function isoStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-');
-}
-
-/**
- * Read a regular file without following symlinks: lstat must say regular
- * file, the open uses O_NOFOLLOW, and the opened inode must be the one lstat
- * saw (a swap in between is caught). Null when it is a symlink or not a
- * regular file. Snapshot and restore often run as root, so following a link
- * would copy any file on the host into the data dir or a snapshot.
- */
-async function readRegularFile(file: string): Promise<{ data: Buffer; mode: number } | null> {
-  const before = await fs.lstat(file);
-  if (!before.isFile()) return null;
-  let fh: fs.FileHandle;
-  try {
-    // O_NONBLOCK: a FIFO swapped in after the lstat must not hang the open.
-    fh = await fs.open(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-  } catch (err: any) {
-    if (err.code === 'ELOOP') return null;
-    throw err;
-  }
-  try {
-    const st = await fh.stat();
-    if (!st.isFile() || st.dev !== before.dev || st.ino !== before.ino) return null;
-    return { data: await fh.readFile(), mode: st.mode & 0o777 };
-  } finally {
-    await fh.close();
-  }
 }
 
 /** Write a new file (never through an existing path or link), keeping `mode`. */

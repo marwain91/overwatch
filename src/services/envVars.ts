@@ -7,6 +7,7 @@ import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 import { writeSecretFile } from '../utils/security';
 import { tenantDir, assertTenantDir, listTenantDirs } from './tenantStore';
 import { parseEnv } from '../utils/env';
+import { readRegularFile } from '../utils/regularFile';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const EnvVarSchema = z.object({
@@ -142,8 +143,8 @@ function parseStore<T>(spec: StoreSpec<T>, data: string): T {
 /** Variables in a shared.env; 0 when it is absent or not a regular file (a symlink is not followed). */
 async function countSharedEnvVars(file: string): Promise<number> {
   try {
-    if (!(await fs.lstat(file)).isFile()) return 0;
-    return Object.keys(parseEnv(await fs.readFile(file, 'utf-8'))).length;
+    const content = await readRegularFile(file);
+    return content ? Object.keys(parseEnv(content.data.toString('utf-8'))).length : 0;
   } catch (err: any) {
     if (err.code === 'ENOENT') return 0;
     throw err;

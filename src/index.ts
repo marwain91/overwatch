@@ -123,24 +123,28 @@ async function start() {
   app.post('/api/auth/google', authLimiter);
   app.use('/api/auth', apiLimiter, authRouter);
 
+  // apiLimiter runs before authMiddleware on every mount below, so requests
+  // with a missing or invalid token are throttled too instead of costing a
+  // token check and a log line each.
+  //
   // App-scoped routes. Must be mounted BEFORE '/api/apps': that prefix also
   // matches these paths and appsRouter falls through on no match, so the
   // reverse order ran auth, both limiters and auditLog twice per request
   // (duplicate audit lines, halved rate limits).
-  app.use('/api/apps/:appId/tenants', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, tenantsRouter);
-  app.use('/api/apps/:appId/env-vars', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, envVarsRouter);
-  app.use('/api/apps/:appId/backups', authMiddleware, validateAppId, apiLimiter, destructiveLimiter, auditLog, backupsRouter);
+  app.use('/api/apps/:appId/tenants', apiLimiter, authMiddleware, validateAppId, destructiveLimiter, auditLog, tenantsRouter);
+  app.use('/api/apps/:appId/env-vars', apiLimiter, authMiddleware, validateAppId, destructiveLimiter, auditLog, envVarsRouter);
+  app.use('/api/apps/:appId/backups', apiLimiter, authMiddleware, validateAppId, destructiveLimiter, auditLog, backupsRouter);
 
   // App routes (with auth + appId validation for :appId sub-routes)
-  app.use('/api/apps', authMiddleware, apiLimiter, destructiveLimiter, auditLog, appsRouter);
+  app.use('/api/apps', apiLimiter, authMiddleware, destructiveLimiter, auditLog, appsRouter);
 
   // Global routes
-  app.use('/api/admin-users', authMiddleware, apiLimiter, destructiveLimiter, auditLog, adminUsersRouter);
-  app.use('/api/status', authMiddleware, apiLimiter, auditLog, statusRouter);
-  app.use('/api/audit-logs', authMiddleware, apiLimiter, auditLogsRouter);
-  app.use('/api/monitoring', authMiddleware, apiLimiter, destructiveLimiter, auditLog, monitoringRouter);
-  app.use('/api/database', authMiddleware, apiLimiter, destructiveLimiter, auditLog, databaseRouter);
-  app.use('/api/traefik', authMiddleware, apiLimiter, destructiveLimiter, auditLog, traefikRouter);
+  app.use('/api/admin-users', apiLimiter, authMiddleware, destructiveLimiter, auditLog, adminUsersRouter);
+  app.use('/api/status', apiLimiter, authMiddleware, auditLog, statusRouter);
+  app.use('/api/audit-logs', apiLimiter, authMiddleware, auditLogsRouter);
+  app.use('/api/monitoring', apiLimiter, authMiddleware, destructiveLimiter, auditLog, monitoringRouter);
+  app.use('/api/database', apiLimiter, authMiddleware, destructiveLimiter, auditLog, databaseRouter);
+  app.use('/api/traefik', apiLimiter, authMiddleware, destructiveLimiter, auditLog, traefikRouter);
 
   // MCP server + OAuth endpoints — opt-in. Mounted before the SPA fallback so
   // /mcp and /oauth/* are matched as API routes, not served the React index.

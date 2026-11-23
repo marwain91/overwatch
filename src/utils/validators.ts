@@ -19,8 +19,10 @@ export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 // Bounded quantifiers cap input length and rule out the polynomial-backtracking shape CodeQL flagged.
 export const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{1,63}$/;
 
-export function isValidSlug(id: string, maxLength: number = 63): boolean {
-  return id.length <= maxLength && SLUG_RE.test(id);
+// These take request input: `RegExp.test` stringifies its argument, so without
+// the type check a one-element array such as ["abc"] would pass as "abc".
+export function isValidSlug(id: unknown, maxLength: number = 63): boolean {
+  return typeof id === 'string' && id.length <= maxLength && SLUG_RE.test(id);
 }
 
 /**
@@ -120,14 +122,14 @@ export function assertHealthcheckDurationsValid(services: unknown): void {
   }
 }
 
-export function isValidContainerId(id: string): boolean {
-  return CONTAINER_ID_RE.test(id);
+export function isValidContainerId(id: unknown): boolean {
+  return typeof id === 'string' && CONTAINER_ID_RE.test(id);
 }
 
-export function isValidSnapshotId(id: string): boolean {
-  return SNAPSHOT_ID_RE.test(id);
+export function isValidSnapshotId(id: unknown): boolean {
+  return typeof id === 'string' && SNAPSHOT_ID_RE.test(id);
 }
 
-export function isValidEmail(email: string): boolean {
-  return email.length <= 254 && EMAIL_RE.test(email);
+export function isValidEmail(email: unknown): boolean {
+  return typeof email === 'string' && email.length <= 254 && EMAIL_RE.test(email);
 }

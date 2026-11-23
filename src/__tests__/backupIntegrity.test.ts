@@ -96,7 +96,7 @@ vi.mock('child_process', () => ({
           }
         };
         await walk(args[0]);
-        return done(null, { stdout: out.join('\n'), stderr: '' });
+        return done(null, { stdout: out.map(p => `${p}\0`).join(''), stderr: '' });
       }
       if (cmd === 'docker') dockerCmds.push(args);
       if (cmd === 'docker' && args[0] === 'cp' && args[1].includes(':') && behaviour.copyOutError) {
