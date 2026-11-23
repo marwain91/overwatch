@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.6] — 2026-11-23
+
+### Security
+
+- Rebuild the Docker image so it installs the Alpine `mariadb-client` 11.8.10 package, which fixes CVE-2026-101679, CVE-2026-101775 and CVE-2026-101796 in the client tools used for database dumps. No Overwatch code changed. Existing deployments must recreate their Overwatch container.
+
+### Changed
+
+- Remove the obsolete `@types/inquirer` development dependency; Inquirer 14 ships its own types.
+
 ## [1.11.5] — 2026-11-18
 
 ### Changed
