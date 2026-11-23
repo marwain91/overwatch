@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { isValidSlug, isValidSnapshotId, isValidContainerId, isValidEmail } from '../utils/validators';
-import { readRegularFile } from '../utils/regularFile';
+import { readRegularFile } from '../services/configSnapshots';
 
 describe('request-input validators reject non-strings', () => {
   // RegExp.test stringifies its argument: ["abc"] becomes "abc".

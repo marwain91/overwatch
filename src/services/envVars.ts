@@ -7,7 +7,7 @@ import { COMPOSE_LONG_TIMEOUT_MS } from './composeTimeouts';
 import { writeSecretFile } from '../utils/security';
 import { tenantDir, assertTenantDir, listTenantDirs } from './tenantStore';
 import { parseEnv } from '../utils/env';
-import { readRegularFile } from '../utils/regularFile';
+import { readRegularFile } from './configSnapshots';
 import { ConflictError, HttpError, NotFoundError, ValidationError } from '../utils/httpErrors';
 
 const EnvVarSchema = z.object({
