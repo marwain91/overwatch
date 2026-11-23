@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.7] — 2026-11-23
+
 ### Security
 
 - Apply the API rate limit before authentication on every `/api` route, so requests with a missing or invalid token are throttled as well.
